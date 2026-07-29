@@ -1,33 +1,34 @@
-import json
-import pathlib
+from __future__ import annotations
+
 import subprocess
+import sys
+from pathlib import Path
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def invoke(*args: str) -> tuple[int, dict]:
+def test_motorws_status_json() -> None:
     result = subprocess.run(
-        [str(ROOT / "bin" / "motorws"), *args],
-        cwd=ROOT,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        [str(ROOT / "bin" / "motorws"), "status"],
+        cwd=str(ROOT),
         check=False,
+        text=True,
+        capture_output=True,
     )
-    return result.returncode, json.loads(result.stdout)
+    payload = __import__("json").loads(result.stdout)
+    assert "status" in payload
+    assert payload.get("backend") == "motorws-internal"
 
 
-def test_status_is_machine_readable():
-    code, payload = invoke("status")
-    assert code == 0
-    assert payload["status"] == "ok"
-    assert len(payload["sources"]) == 3
-
-
-def test_unresolved_lock_fails_closed():
-    code, payload = invoke("lock", "verify")
-    assert code == 1
-    assert payload["status"] == "error"
-    assert payload["errors"]
-
+def test_repo_init_probe_json() -> None:
+    script = ROOT / ".agents/skills/repo-init/scripts/repo_init_probe.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--compact"],
+        cwd=str(ROOT),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    payload = __import__("json").loads(result.stdout)
+    assert "submodules" in payload

@@ -5,6 +5,8 @@
     "model": "Atlas 800I A2",
     "resource_name": "huawei.com/Ascend910"
   },
+  "mount_root": "/mnt",
+  "parity_backend": "shared-hostpath",
   "kubernetes": {
     "context": "",
     "namespace": "motor-workspace-dev",
@@ -24,13 +26,8 @@
       "podgroups"
     ]
   },
-  "build": {
-    "builder": "remote-buildkit",
-    "registry": ""
-  },
   "deploy": {
     "adapter": "motor-upstream",
     "config": ""
   }
 }
-

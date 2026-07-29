@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "remote-dev": {
+      "command": "python3",
+      "args": [".remote-dev/mcp/server.py"],
+      "env": {
+        "REMOTE_DEV_DEFAULT_USER": "root",
+        "REMOTE_DEV_DEFAULT_ROOT": "/mnt",
+        "REMOTE_DEV_DEFAULT_CWD": "/mnt/motor-workspace"
+      },
+      "timeout": 600000
+    }
+  }
+}

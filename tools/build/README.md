@@ -1,14 +1,14 @@
-# Motor image build adapter
+# Optional image build bypass (non-default)
 
-This directory will materialize a build context from a successful source
-snapshot and adapt Motor's current `docker/mindie-motor-vllm` Dockerfile/Makefile.
+**Not the primary development path.** Daily validation uses
+`remote-code-parity` → shared mount root → Pod hostPath + `PYTHONPATH`.
 
-Required output:
+Use this directory only when:
 
-- immutable image digest;
-- Motor, vLLM and vLLM Ascend source commits and snapshot hashes;
-- base image digest and patch application result;
-- import/NPU smoke results and build log references.
+- delivering a release image;
+- shared mount storage is unavailable; or
+- the user explicitly requests an image build.
 
-No shared image tag may be overwritten implicitly.
-
+When used, materialize a build context from parity output and adapt Motor's
+`docker/mindie-motor-vllm` Dockerfile/Makefile. Record image digest and provenance
+in the run manifest. Skill routing must label this path as bypass.

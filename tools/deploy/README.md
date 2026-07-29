@@ -1,9 +1,14 @@
-# Motor Kubernetes deploy adapter
+# Motor Kubernetes deploy helpers
 
-This directory will provide a thin wrapper around Motor's current deployer and
-MindCluster best practice. It must not implement a competing P/D controller.
+Thin helpers for the `motor-k8s-deploy` skill. They wrap Motor's current
+`examples/deployer` entry points — they do not implement a competing P/D
+controller.
 
-The adapter will support render, server-side dry-run, diff, confirmed apply,
-status, logs, rollback and run-scoped cleanup. Readiness must cover Controller,
-Coordinator, Prefill/Decode registration, KV connectivity and an OpenAI request.
+Responsibilities:
 
+- render / server-side dry-run / diff / confirmed apply;
+- inject per-role `PYTHONPATH` for session source roots after render;
+- status, logs, rollback and run-scoped cleanup;
+- readiness covering Controller, Coordinator, Prefill/Decode, KV and OpenAI smoke.
+
+Primary implementation lives under `.agents/skills/motor-k8s-deploy/scripts/`.
