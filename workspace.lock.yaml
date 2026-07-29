@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "compatibility": {
+    "current_line": "0.23.0",
+    "policy": "follow-development-branches-and-pin-reviewed-commits"
+  },
+  "sources": {
+    "motor": {
+      "path": "motor",
+      "url": "https://gitcode.com/Ascend/MindIE-Motor.git",
+      "branch": "master",
+      "commit": "UNRESOLVED"
+    },
+    "vllm": {
+      "path": "vllm",
+      "url": "https://github.com/vllm-project/vllm.git",
+      "branch": "main",
+      "commit": "UNRESOLVED"
+    },
+    "vllm_ascend": {
+      "path": "vllm-ascend",
+      "url": "https://github.com/vllm-project/vllm-ascend.git",
+      "branch": "main",
+      "commit": "UNRESOLVED"
+    }
+  },
+  "runtime": {
+    "base_image": "UNRESOLVED",
+    "hardware_profile": "a2-dev"
+  },
+  "patches": []
+}
+

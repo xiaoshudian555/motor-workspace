@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "a2-dev",
+  "hardware": {
+    "model": "Atlas 800I A2",
+    "resource_name": "huawei.com/Ascend910"
+  },
+  "kubernetes": {
+    "context": "",
+    "namespace": "motor-workspace-dev",
+    "volcano_queue": "default",
+    "scheduler_name": "volcano"
+  },
+  "mindcluster": {
+    "component_patterns": [
+      "noded",
+      "clusterd",
+      "ascend-device-plugin",
+      "ascend-operator",
+      "volcano"
+    ],
+    "required_api_resources": [
+      "ascendjobs",
+      "podgroups"
+    ]
+  },
+  "build": {
+    "builder": "remote-buildkit",
+    "registry": ""
+  },
+  "deploy": {
+    "adapter": "motor-upstream",
+    "config": ""
+  }
+}
+
