@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Remote-code-parity helpers: sync local dirty tree to shared mount root."""
+"""Remote-code-parity helpers: sync local dirty tree to machine fixed directories."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import subprocess
 import tarfile
 import tempfile
@@ -12,14 +11,22 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from mws_local_state import ROOT, WorkspaceStateError, utc_now_iso
+from mws_local_state import ROOT, LOCAL_ROOT, WorkspaceStateError, utc_now_iso
+from mws_machine_target import build_fixed_source_paths, machine_ref
 from mws_result import progress
+from mws_transport import FakeRemoteTransport, RemoteTransport, shell_quote, transport_for_machine, validate_machine_transport_fields
 
 REPO_DIRS = {
     "motor": ROOT / "motor",
     "vllm": ROOT / "vllm",
     "vllm_ascend": ROOT / "vllm-ascend",
 }
+REPO_REMOTE_KEYS = {
+    "motor": "motor_source",
+    "vllm": "vllm_source",
+    "vllm_ascend": "vllm_ascend_source",
+}
+OVERLAY_ROOT = LOCAL_ROOT / "python-overlay"
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -62,23 +69,38 @@ def repo_manifest(name: str, path: Path) -> dict[str, Any]:
     }
 
 
-def build_source_manifest(session: dict[str, Any]) -> dict[str, Any]:
+def overlay_manifest() -> dict[str, str]:
+    if not OVERLAY_ROOT.exists():
+        return {}
+    hashes: dict[str, str] = {}
+    for path in sorted(OVERLAY_ROOT.rglob("*")):
+        if path.is_file():
+            rel = str(path.relative_to(OVERLAY_ROOT))
+            hashes[rel] = _sha256_bytes(path.read_bytes())
+    return hashes
+
+
+def build_source_manifest(machine: dict[str, Any]) -> dict[str, Any]:
+    paths = build_fixed_source_paths(machine)
     repos = [repo_manifest(name, path) for name, path in REPO_DIRS.items()]
-    manifest: dict[str, Any] = {
-        "schema_version": 1,
+    return {
+        "schema_version": 2,
         "created_at": utc_now_iso(),
-        "session_id": session.get("session_id"),
-        "mount_root": session.get("paths", {}).get("mount_root"),
-        "remote_session_root": session.get("remote_session_root"),
+        "machine": machine_ref(machine),
+        "mount_root": paths["mount_root"],
+        "remote_workspace_root": paths["remote_workspace_root"],
+        "source_dirs": {
+            "motor": paths["motor_source"],
+            "vllm": paths["vllm_source"],
+            "vllm_ascend": paths["vllm_ascend_source"],
+            "python_overlay": paths["python_overlay"],
+        },
         "repositories": repos,
+        "python_overlay_hashes": overlay_manifest(),
     }
-    canonical = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode()
-    manifest["snapshot_sha256"] = _sha256_bytes(canonical)
-    return manifest
 
 
 def create_repo_tarball(repo_path: Path) -> bytes:
-    """Archive working tree including dirty/untracked non-ignored files."""
     if not repo_path.exists():
         raise WorkspaceStateError(f"repository path missing: {repo_path}")
     ls = _git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], repo_path)
@@ -94,83 +116,72 @@ def create_repo_tarball(repo_path: Path) -> bytes:
     return buffer.getvalue()
 
 
-def ssh_base(machine: dict[str, Any]) -> list[str]:
-    host = machine["host"]
-    user = machine.get("user", "root")
-    port = str(machine.get("port", 22))
-    return ["ssh", "-p", port, f"{user}@{host}"]
+def create_overlay_tarball() -> bytes | None:
+    if not OVERLAY_ROOT.exists() or not any(OVERLAY_ROOT.rglob("*")):
+        return None
+    buffer = BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path in sorted(OVERLAY_ROOT.rglob("*")):
+            if path.is_file():
+                archive.add(path, arcname=str(path.relative_to(OVERLAY_ROOT)))
+    return buffer.getvalue()
 
 
-def remote_mkdir(machine: dict[str, Any], remote_path: str) -> None:
-    cmd = ssh_base(machine) + ["mkdir", "-p", remote_path]
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+def _publish_tarball_to_remote(
+    transport: RemoteTransport,
+    *,
+    repo_name: str,
+    remote_dir: str,
+    tarball: bytes | None,
+    empty_ok: bool = False,
+) -> dict[str, Any]:
+    if tarball is None:
+        if not empty_ok:
+            raise WorkspaceStateError(f"no tarball content for {repo_name}")
+        transport.run(f"rm -rf {shell_quote(remote_dir)}")
+        transport.mkdir(remote_dir)
+        return {"name": repo_name, "remote_dir": remote_dir, "tarball_sha256": None}
+
+    digest = _sha256_bytes(tarball)[:12]
+    remote_archive = f"/tmp/mws-parity-{repo_name}-{digest}.tar.gz"
+    staging = f"{remote_dir}.staging"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as handle:
+        handle.write(tarball)
+        local_archive = handle.name
+    try:
+        transport.upload_file(local_archive, remote_archive)
+    finally:
+        Path(local_archive).unlink(missing_ok=True)
+
+    transport.run(f"rm -rf {shell_quote(staging)}")
+    transport.mkdir(staging)
+    extract = (
+        f"tar -xzf {shell_quote(remote_archive)} -C {shell_quote(staging)} && "
+        f"rm -f {shell_quote(remote_archive)}"
+    )
+    result = transport.run(extract)
     if result.returncode:
+        transport.run(f"rm -rf {shell_quote(staging)}")
         raise WorkspaceStateError(
-            f"remote mkdir failed for {remote_path}: {result.stderr.strip() or result.stdout.strip()}"
+            f"extract failed for {repo_name}: {result.stderr.strip() or result.stdout.strip()}"
         )
 
-
-def remote_extract_tarball(
-    machine: dict[str, Any], remote_dir: str, tarball: bytes
-) -> None:
-    remote_mkdir(machine, remote_dir)
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz") as tmp:
-        tmp.write(tarball)
-        tmp.flush()
-        scp_port = str(machine.get("port", 22))
-        user = machine.get("user", "root")
-        host = machine["host"]
-        remote_tmp = f"/tmp/mws-parity-{hashlib.sha256(tarball).hexdigest()[:12]}.tar.gz"
-        scp = [
-            "scp",
-            "-P",
-            scp_port,
-            tmp.name,
-            f"{user}@{host}:{remote_tmp}",
-        ]
-        result = subprocess.run(scp, check=False, text=True, capture_output=True)
-        if result.returncode:
-            raise WorkspaceStateError(
-                f"scp failed: {result.stderr.strip() or result.stdout.strip()}"
-            )
-        extract = ssh_base(machine) + [
-            "bash",
-            "-lc",
-            f"mkdir -p {remote_dir} && tar -xzf {remote_tmp} -C {remote_dir} && rm -f {remote_tmp}",
-        ]
-        result = subprocess.run(extract, check=False, text=True, capture_output=True)
-        if result.returncode:
-            raise WorkspaceStateError(
-                f"remote extract failed: {result.stderr.strip() or result.stdout.strip()}"
-            )
-
-
-def sync_session_to_remote(session: dict[str, Any], machine: dict[str, Any]) -> dict[str, Any]:
-    paths = session.get("paths", {})
-    manifest = build_source_manifest(session)
-    progress("building repository tarballs")
-    synced: list[dict[str, Any]] = []
-    for name, repo_path in REPO_DIRS.items():
-        key = f"{name}_source" if name != "vllm_ascend" else "vllm_ascend_source"
-        if name == "motor":
-            key = "motor_source"
-        elif name == "vllm":
-            key = "vllm_source"
-        else:
-            key = "vllm_ascend_source"
-        remote_dir = paths[key]
-        tarball = create_repo_tarball(repo_path)
-        progress(f"syncing {name} to {remote_dir}")
-        remote_extract_tarball(machine, remote_dir, tarball)
-        synced.append(
-            {
-                "name": name,
-                "remote_dir": remote_dir,
-                "tarball_sha256": _sha256_bytes(tarball),
-            }
+    switch = (
+        f"rm -rf {shell_quote(remote_dir)} && "
+        f"mv {shell_quote(staging)} {shell_quote(remote_dir)}"
+    )
+    switch_result = transport.run(switch)
+    if switch_result.returncode:
+        transport.run(f"rm -rf {shell_quote(staging)}")
+        raise WorkspaceStateError(
+            f"publish failed for {repo_name}: {switch_result.stderr.strip() or switch_result.stdout.strip()}"
         )
-    manifest["synced"] = synced
-    return manifest
+    return {
+        "name": repo_name,
+        "remote_dir": remote_dir,
+        "tarball_sha256": _sha256_bytes(tarball),
+    }
 
 
 def fanout_nodes(machine: dict[str, Any], nodes: list[str]) -> list[str]:
@@ -178,7 +189,86 @@ def fanout_nodes(machine: dict[str, Any], nodes: list[str]) -> list[str]:
     if backend == "shared-hostpath":
         return [machine["host"]]
     if backend == "node-local-hostpath":
-        if not nodes:
-            raise WorkspaceStateError("node-local-hostpath requires candidate_nodes")
-        return list(nodes)
+        raise WorkspaceStateError(
+            "node-local-hostpath is not supported yet; use shared-hostpath with a shared /mnt"
+        )
     raise WorkspaceStateError(f"unsupported parity_backend: {backend}")
+
+
+def sync_workspace_to_remote(
+    machine: dict[str, Any],
+    *,
+    transport: RemoteTransport | None = None,
+    fake_root: Path | None = None,
+) -> dict[str, Any]:
+    validate_machine_transport_fields(machine)
+    paths = build_fixed_source_paths(machine)
+    manifest = build_source_manifest(machine)
+    tx = transport or transport_for_machine(machine, fake_root=fake_root)
+    progress(f"sync target host={machine.get('host')}")
+
+    synced: list[dict[str, Any]] = []
+    for name, repo_path in REPO_DIRS.items():
+        remote_dir = paths[REPO_REMOTE_KEYS[name]]
+        tarball = create_repo_tarball(repo_path)
+        progress(f"syncing {name} to {remote_dir}")
+        synced.append(
+            _publish_tarball_to_remote(
+                tx,
+                repo_name=name,
+                remote_dir=remote_dir,
+                tarball=tarball,
+            )
+        )
+
+    overlay_dir = paths["python_overlay"]
+    overlay_tarball = create_overlay_tarball()
+    progress(f"syncing python-overlay to {overlay_dir}")
+    synced.append(
+        _publish_tarball_to_remote(
+            tx,
+            repo_name="python-overlay",
+            remote_dir=overlay_dir,
+            tarball=overlay_tarball,
+            empty_ok=True,
+        )
+    )
+
+    manifest["synced"] = synced
+    manifest["pythonpath"] = ":".join(
+        [
+            paths["motor_source"],
+            paths["vllm_source"],
+            paths["vllm_ascend_source"],
+            paths["python_overlay"],
+        ]
+    )
+    manifest["target"] = machine.get("host")
+    return manifest
+
+
+def sync_workspace_fanout(
+    machine: dict[str, Any],
+    *,
+    fake_roots: dict[str, Path] | None = None,
+) -> dict[str, Any]:
+    nodes = fanout_nodes(machine, machine.get("candidate_nodes", []))
+    targets: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for node in nodes:
+        fake_root = (fake_roots or {}).get(node)
+        try:
+            manifest = sync_workspace_to_remote(machine, fake_root=fake_root)
+            targets.append({"node": node, "status": "ok", "manifest": manifest})
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{node}: {exc}")
+            targets.append({"node": node, "status": "error", "error": str(exc)})
+    overall = {
+        "schema_version": 2,
+        "status": "error" if errors else "ok",
+        "errors": errors,
+        "targets": targets,
+    }
+    if targets and targets[0]["status"] == "ok":
+        overall.update(targets[0]["manifest"])
+    return overall

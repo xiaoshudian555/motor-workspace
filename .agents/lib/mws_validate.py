@@ -8,6 +8,9 @@ from pathlib import Path, PurePosixPath
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$")
+# Kubernetes DNS-1123 label: lowercase alphanumeric, '-' allowed internally, 1-63 chars
+K8S_DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,253}$")
 
 
 class ValidationError(ValueError):
@@ -29,6 +32,24 @@ def require_safe_id(value: str, *, label: str = "id") -> str:
             "no slashes, spaces, path traversal, or absolute paths"
         )
     return value
+
+
+def require_k8s_dns_label(value: str, *, label: str = "label") -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"invalid {label}: must be a string")
+    normalized = value.strip().lower()
+    if not normalized or not K8S_DNS_LABEL_RE.fullmatch(normalized):
+        raise ValidationError(
+            f"invalid {label}: must be a Kubernetes DNS-1123 label "
+            "(lowercase alphanumeric or '-', 1-63 chars, start/end alphanumeric)"
+        )
+    return normalized
+
+
+def require_hostname(value: str, *, label: str = "host") -> str:
+    if not isinstance(value, str) or not HOSTNAME_RE.fullmatch(value.strip()):
+        raise ValidationError(f"invalid {label}: {value!r}")
+    return value.strip()
 
 
 def require_remote_leaf(value: str, *, label: str = "id") -> str:
@@ -82,3 +103,12 @@ def normalize_mount_root(value: str | None) -> str:
     if ".." in PurePosixPath(root).parts:
         raise ValidationError("mount_root must not contain '..'")
     return root or "/mnt"
+
+
+def validate_remote_posix_path(value: str, *, label: str = "path") -> str:
+    if not isinstance(value, str) or not value.startswith("/"):
+        raise ValidationError(f"{label} must be an absolute POSIX path")
+    parts = PurePosixPath(value).parts
+    if ".." in parts:
+        raise ValidationError(f"{label} must not contain '..'")
+    return value.rstrip("/") or "/"

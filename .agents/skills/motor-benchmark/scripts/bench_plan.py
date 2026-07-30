@@ -10,23 +10,27 @@ LIB = ROOT / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
 from mws_result import emit  # noqa: E402
-from mws_session_state import load_session  # noqa: E402
+from mws_run_state import load_deploy_run  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--session-id", required=True)
+    parser.add_argument("--machine", required=True)
+    parser.add_argument("--deploy-run-id", required=True)
     args = parser.parse_args()
-    session_id = require_safe_id(args.session_id, label="session-id")
-    lookup = load_session(session_id)
+    alias = require_safe_id(args.machine, label="machine")
+    run_record = load_deploy_run(args.deploy_run_id)
+    if run_record.get("machine") != alias:
+        return emit({"status": "error", "errors": ["deploy run machine mismatch"]})
     return emit(
         {
             "status": "warning",
-            "session_id": session_id,
+            "machine": alias,
+            "deploy_run_id": args.deploy_run_id,
             "phase": "P3",
             "message": "motor-benchmark wrapper scaffold only; requires stable deploy run",
-            "namespace": lookup.session.get("namespace"),
+            "namespace": run_record.get("namespace"),
         }
     )
 

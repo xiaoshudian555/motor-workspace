@@ -3,20 +3,54 @@
 Independent meta-repository for developing and validating MindIE Motor with vLLM
 and vLLM Ascend on MindCluster Kubernetes. It does not replace Motor's deployer.
 
-## Primary workflow (Agent skills)
+## Primary workflow
+
+motor-workspace 按用户工作流划分为三个主要部分：
+
+1. 远程开发准备与代码同步：证明远端目录中是目标代码。
+2. Motor Deploy：拉起服务，并证明 Pod 实际运行的是目标代码。
+3. 部署后验证与测试：对运行中的服务执行 smoke、benchmark、profiling
+   和诊断。
+
+三部分的详细职责、完成标志和交接物见
+[docs/functional-boundaries.md](docs/functional-boundaries.md)。
+
+```text
+本地 dirty tree
+  -> SSH 覆盖同步到远端固定目录 (/mnt/motor-workspace/)
+  -> Pod 通过 /mnt:/mnt hostPath 读取同一路径
+  -> PYTHONPATH 优先加载 motor / vllm / vllm-ascend / python-overlay
+  -> 首次 deploy 或后续 deploy_restart
+```
 
 ```text
 repo-init
   -> machine-management
-  -> session-management
   -> remote-code-parity
   -> motor-k8s-deploy
+  -> deploy_restart (日常改码)
   -> OpenAI smoke
 ```
 
-Development uses **parity sync to a shared mount root** (profile `mount_root`,
-default `/mnt`) and existing Pod hostPath mounts — not a new image per edit.
-Image build under `tools/build/` is an optional bypass for release/delivery only.
+Development uses **parity sync to fixed remote directories** under the shared
+mount root (profile `mount_root`, default `/mnt`). No snapshot, no `current`
+symlink, no plan digest, and no Git commit is required for daily Python edits.
+Image build under `tools/build/` remains an optional bypass for release/delivery.
+
+## Fixed remote workspace layout
+
+```text
+/mnt/motor-workspace/motor
+/mnt/motor-workspace/vllm
+/mnt/motor-workspace/vllm-ascend
+/mnt/motor-workspace/python-overlay
+```
+
+`PYTHONPATH`:
+
+```text
+<motor>:<vllm>:<vllm-ascend>:<python-overlay>
+```
 
 ## Repository layout
 
@@ -24,15 +58,20 @@ Image build under `tools/build/` is an optional bypass for release/delivery only
 motor/                         Motor submodule
 vllm/                          vLLM submodule
 vllm-ascend/                   vLLM Ascend submodule
-.agents/skills/                Agent domain workflows (primary entry)
-.remote-dev/                   Remote read/edit/bash/search substrate
-profiles/                      hardware + MindCluster profiles
-workspace.lock.yaml            reviewed source/runtime lock
-.motor-workspace-local/        ignored run state (machines, sessions, runs)
+.agents/skills/                Agent-facing workflows (primary entry)
+.agents/lib/                   Shared workflow implementation
+.remote-dev/                   Generic remote operation substrate
+profiles/                      Shared machine and deploy inputs
+workspace.lock.yaml            diagnostic lock (dirty tree allowed)
+.motor-workspace-local/        ignored state and run evidence
 bin/motorws                    internal skill backend (not the product CLI)
 tools/build/                   optional image bypass (non-default)
-tools/deploy/                  deploy adapter helpers for motor-k8s-deploy skill
 ```
+
+The three functional boundaries do not map one-to-one to three directories.
+Skills are user-facing workflows; `.agents/lib/` and `.remote-dev/` are shared
+implementation layers. Directory ownership is defined in
+[docs/directory-ownership.md](docs/directory-ownership.md).
 
 ## Quick start
 
@@ -40,33 +79,26 @@ tools/deploy/                  deploy adapter helpers for motor-k8s-deploy skill
 git submodule update --init --recursive
 ```
 
-With an Agent-capable IDE, use natural language:
-
-> "Initialize this workspace and add my NPU machine."
-
-Or invoke skills directly, for example:
-
 ```bash
 python3 .agents/skills/repo-init/scripts/repo_init_probe.py --compact
 python3 .agents/skills/machine-management/scripts/inventory.py list
-python3 .agents/skills/session-management/scripts/session_create.py --machine <alias>
-python3 .agents/skills/remote-code-parity/scripts/parity_sync.py --session-id <id>
-python3 .agents/skills/motor-k8s-deploy/scripts/deploy_plan.py --session-id <id> --profile profiles/a2-dev.yaml
 ```
 
 Every skill script writes progress to stderr and one JSON object to stdout.
 
 ## Version locking
 
-Three submodule gitlinks lock source code. `workspace.lock.yaml` repeats those
-commits and records `mount_root`, `hardware_profile`, and deploy-time
-`base_image_ref`. Runtime versions belong in each run record as diagnostic
-evidence, not a manually maintained compatibility matrix.
+Three submodule gitlinks record source commits. `workspace.lock.yaml` is
+diagnostic only: dirty working trees are allowed, and HEAD/lock mismatch is a
+warning—not a deploy blocker. Base image comes from deploy `user_config.json`
+first.
 
 ## Safety
 
 - Credentials, kubeconfig content, model paths and local inventory are never tracked.
-- Apply, scale, delete, rollback and remote directory overwrite require consent.
+- Apply, stop, restart and remote directory overwrite require explicit consent flags.
 - Deployment adapters invoke Motor's existing deployer/config semantics.
 
-See [docs/architecture.md](docs/architecture.md) for boundaries and phases.
+See [docs/functional-boundaries.md](docs/functional-boundaries.md) for the
+three user-workflow boundaries and [docs/architecture.md](docs/architecture.md)
+for implementation layers and runtime constraints.

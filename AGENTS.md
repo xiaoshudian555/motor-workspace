@@ -30,11 +30,12 @@ Default endpoint fields:
 - `host`
 - `port`
 - `user`, default `root`
-- `root`, default session shared mount root
-- `cwd`, default session workspace directory
+- `root`, default shared mount root
+- `cwd`, default fixed remote workspace directory
 
 Prefer `host + port` direct endpoints for ordinary remote development.
-`session_id`, `session_file`, and `machine` remain managed-session paths.
+Machine inventory is resolved in `.agents/lib` and passed as direct endpoints to
+`.remote-dev` tools.
 
 ## Skills
 
@@ -45,10 +46,9 @@ read that before invoking.
 |-------|---------|
 | `repo-init` | Initialize workspace: gh, GitHub auth, submodules, fork topology, lock |
 | `machine-management` | Add / verify / repair / remove remote NPU machine + kube context + mount root |
-| `session-management` | Create / inspect / remove isolated sessions (worktree + remote dir + leases) |
-| `remote-toolbox` | Managed session target/probe/exec/job/sync/artifact/cleanup backend |
-| `remote-code-parity` | Sync local dirty tree to shared mount root before deploy/verify |
-| `motor-k8s-deploy` | Plan / apply / status / stop Motor on Kubernetes via upstream deployer |
+| `remote-toolbox` | Remote target/probe/exec/job/sync/artifact/cleanup backend |
+| `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
+| `motor-k8s-deploy` | Plan / apply / status / stop / restart Motor on Kubernetes via upstream deployer |
 | `motor-benchmark` | Benchmark a successful deploy run (second phase) |
 | `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts (second phase) |
 
@@ -64,15 +64,16 @@ domain workflows.
 - Keep `.gitmodules` on community upstream URLs.
 - Prefer `.remote-dev` or skill wrapper scripts over raw SSH for remote work.
 - Skill wrappers: progress on `stderr`, final JSON on `stdout`.
-- For parallel managed remote work, create or reuse a `session-management`
-  session and pass `--session-id` through parity and deploy commands.
-- Development parity syncs source to the shared mount root; Pods pick it up via
-  existing hostPath (default `/mnt:/mnt`) and injected `PYTHONPATH`. Image
+- Development binds one local workspace to one machine and one fixed
+  `remote_workspace_root` under the shared mount root.
+- Development parity syncs source once to fixed directories under the shared
+  mount root; Pods pick it up via existing hostPath (default `/mnt:/mnt`) and
+  injected `PYTHONPATH`. Do not fan out copies to per-session paths. Image
   rebuild is an optional bypass for release/delivery, not the default loop.
 - Reuse Motor's current deployer and MindCluster resources. Do not implement a
   competing P/D controller or generic serving engine.
-- Preflight and plan are read-only by default. Apply, scale, delete, rollback,
-  and overwriting remote session directories require explicit consent.
+- Preflight and plan are read-only by default. Apply, scale, delete, restart,
+  and overwriting fixed remote source directories require explicit consent.
 - Profiling integration is second-phase work.
 - This repo targets Huawei Ascend NPU. Local machines cannot run
   `torch`/`torch_npu`-dependent code — validate on remote cluster/Pods.

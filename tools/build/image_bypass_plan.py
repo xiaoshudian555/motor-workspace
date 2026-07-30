@@ -16,14 +16,14 @@ from mws_result import emit  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--session-id", default="")
+    parser.add_argument("--machine", default="")
     args = parser.parse_args()
     return emit(
         {
             "status": "warning",
             "bypass": "image-build",
             "message": "Image build bypass scaffold. Use only for release/delivery or when mount parity is unavailable.",
-            "session_id": args.session_id or None,
+            "machine": args.machine or None,
             "reference": "motor/docker/mindie-motor-vllm",
         }
     )

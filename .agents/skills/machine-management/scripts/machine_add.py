@@ -21,12 +21,14 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--user", default="root")
     parser.add_argument("--mount-root", default="/mnt")
+    parser.add_argument("--remote-workspace-root", default="")
     parser.add_argument("--kube-context", default="")
     parser.add_argument("--parity-backend", choices=["shared-hostpath", "node-local-hostpath"], default="shared-hostpath")
     parser.add_argument("--candidate-nodes", default="")
     args = parser.parse_args()
     alias = require_safe_id(args.alias, label="alias")
     mount_root = normalize_mount_root(args.mount_root)
+    remote_workspace_root = args.remote_workspace_root.strip() or f"{mount_root}/motor-workspace"
     progress(f"registering machine {alias}")
     inventory = load_inventory()
     machines = inventory.setdefault("machines", {})
@@ -37,13 +39,21 @@ def main() -> int:
         "port": args.port,
         "user": args.user,
         "mount_root": mount_root,
+        "remote_workspace_root": remote_workspace_root,
         "kube_context": args.kube_context,
         "parity_backend": args.parity_backend,
         "candidate_nodes": nodes,
         "created_at": utc_now_iso(),
     }
     save_inventory(inventory)
-    return emit({"status": "ok", "alias": alias, "mount_root": mount_root})
+    return emit(
+        {
+            "status": "ok",
+            "alias": alias,
+            "mount_root": mount_root,
+            "remote_workspace_root": remote_workspace_root,
+        }
+    )
 
 
 if __name__ == "__main__":

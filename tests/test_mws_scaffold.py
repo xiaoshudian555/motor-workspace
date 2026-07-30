@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -9,9 +8,19 @@ LIB = ROOT / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
 from mws_local_state import load_profile, save_profile  # noqa: E402
+from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine  # noqa: E402
 from mws_parity import build_source_manifest, repo_manifest  # noqa: E402
-from mws_session_state import build_session_paths, pythonpath_for_session  # noqa: E402
 from mws_validate import ValidationError, normalize_mount_root, require_safe_id  # noqa: E402
+
+
+def _machine() -> dict:
+    return {
+        "alias": "dev1",
+        "host": "dev1.example",
+        "port": 22,
+        "user": "root",
+        "mount_root": "/mnt",
+    }
 
 
 def test_normalize_mount_root_default() -> None:
@@ -27,25 +36,16 @@ def test_require_safe_id_rejects_traversal() -> None:
         pass
 
 
-def test_build_session_paths() -> None:
-    paths = build_session_paths(
-        workspace_id="mws-deadbeef",
-        session_id="sess-test123",
-        mount_root="/mnt",
-    )
-    assert paths["remote_session_root"] == "/mnt/motor-workspace/mws-deadbeef/sess-test123"
-    assert paths["motor_source"].endswith("/motor")
+def test_build_fixed_source_paths() -> None:
+    paths = build_fixed_source_paths(_machine())
+    root = "/mnt/motor-workspace"
+    assert paths["remote_workspace_root"] == root
+    assert paths["motor_source"] == f"{root}/motor"
+    assert "current" not in paths
 
 
 def test_pythonpath_order() -> None:
-    session = {
-        "paths": build_session_paths(
-            workspace_id="mws-a",
-            session_id="sess-b",
-            mount_root="/mnt",
-        )
-    }
-    value = pythonpath_for_session(session)
+    value = pythonpath_for_machine(_machine())
     parts = value.split(":")
     assert parts[0].endswith("/motor")
     assert parts[1].endswith("/vllm")
@@ -62,17 +62,9 @@ def test_repo_manifest_on_motor_submodule() -> None:
 
 
 def test_build_source_manifest_structure() -> None:
-    session = {
-        "session_id": "sess-x",
-        "paths": build_session_paths(
-            workspace_id="mws-x",
-            session_id="sess-x",
-            mount_root="/mnt",
-        ),
-    }
-    manifest = build_source_manifest(session)
-    assert manifest["schema_version"] == 1
-    assert "snapshot_sha256" in manifest
+    manifest = build_source_manifest(_machine())
+    assert manifest["schema_version"] == 2
+    assert "runtime_snapshot_id" not in manifest
     assert len(manifest["repositories"]) == 3
 
 

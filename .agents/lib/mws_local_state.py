@@ -113,18 +113,35 @@ def _save_json(path: Path, data: Any) -> None:
             os.unlink(temp_name)
 
 
-def load_profile() -> dict[str, Any]:
+def ensure_workspace_id(*, persist: bool = True) -> str:
+    profile = load_profile(persist_missing=False)
+    workspace_id = profile.get("workspace_id")
+    if not workspace_id:
+        workspace_id = default_workspace_id()
+        profile["workspace_id"] = workspace_id
+        profile.setdefault("created_at", utc_now_iso())
+        if persist:
+            save_profile(profile)
+    return str(workspace_id)
+
+
+def load_profile(*, persist_missing: bool = True) -> dict[str, Any]:
     if not PROFILE_PATH.exists():
-        return {
+        data = {
             "schema_version": PROFILE_SCHEMA_VERSION,
             "workspace_id": default_workspace_id(),
             "created_at": utc_now_iso(),
         }
+        if persist_missing:
+            save_profile(data)
+        return data
     data = _load_json(PROFILE_PATH)
     if not isinstance(data, dict):
         raise WorkspaceStateError(f"{PROFILE_PATH} must contain a JSON object")
     if "workspace_id" not in data:
         data["workspace_id"] = default_workspace_id()
+        if persist_missing:
+            save_profile(data)
     return data
 
 
@@ -164,15 +181,17 @@ def list_machines() -> dict[str, dict[str, Any]]:
     return dict(load_inventory().get("machines", {}))
 
 
-def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy with common secret keys masked."""
+def redact_secrets(payload: Any) -> Any:
+    """Return a copy with common secret keys masked in dict/list trees."""
     secret_keys = {"password", "token", "kubeconfig", "secret", "private_key"}
-    out: dict[str, Any] = {}
-    for key, value in payload.items():
-        if any(part in key.lower() for part in secret_keys):
-            out[key] = "<redacted>"
-        elif isinstance(value, dict):
-            out[key] = redact_secrets(value)
-        else:
-            out[key] = value
-    return out
+    if isinstance(payload, dict):
+        out: dict[str, Any] = {}
+        for key, value in payload.items():
+            if any(part in str(key).lower() for part in secret_keys):
+                out[key] = "<redacted>"
+            else:
+                out[key] = redact_secrets(value)
+        return out
+    if isinstance(payload, list):
+        return [redact_secrets(item) for item in payload]
+    return payload

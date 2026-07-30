@@ -9,6 +9,9 @@ Use this directory only when:
 - shared mount storage is unavailable; or
 - the user explicitly requests an image build.
 
-When used, materialize a build context from parity output and adapt Motor's
-`docker/mindie-motor-vllm` Dockerfile/Makefile. Record image digest and provenance
-in the run manifest. Skill routing must label this path as bypass.
+When used, select and record the image source inputs explicitly, then adapt
+Motor's `docker/mindie-motor-vllm` Dockerfile/Makefile. Record image digest and
+provenance in the build result. Skill routing must label this path as bypass.
+
+The parity manifest may be referenced as synchronization evidence, but it is not
+an immutable source snapshot and must not be treated as the build context.

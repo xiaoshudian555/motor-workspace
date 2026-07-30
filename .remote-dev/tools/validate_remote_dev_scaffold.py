@@ -51,7 +51,7 @@ def local_checks() -> list[dict[str, Any]]:
     commands = [
         ("compileall", ["python3", "-m", "compileall", "-q", ".remote-dev", ".agents"]),
         ("remote_dev_unittest", ["python3", "-m", "unittest", "discover", "-s", ".remote-dev/tests"]),
-        ("agents_unittest", ["python3", "-m", "unittest", "discover", "-s", ".agents/tests"]),
+        ("agents_unittest", ["python3", "-m", "pytest", "-q", "tests"]),
         ("claude_skill_shims", ["python3", ".remote-dev/tools/sync_claude_skills.py", "--check"]),
         (
             "diff_check",
@@ -162,9 +162,6 @@ def endpoint_payload(args: argparse.Namespace) -> dict[str, Any]:
         "cwd": cwd,
         "connect_timeout_ms": args.connect_timeout_ms,
         "alias": args.alias,
-        "session_id": args.session_id,
-        "session_file": args.session_file,
-        "machine": args.machine,
     }
     return {key: value for key, value in payload.items() if value is not None}
 
@@ -196,7 +193,7 @@ def run_parallel_worker(endpoint: dict[str, Any], scratch: str, index: int, time
 
 def live_endpoint_checks(args: argparse.Namespace) -> dict[str, Any]:
     endpoint = endpoint_payload(args)
-    if not any(endpoint.get(key) for key in ("host", "alias", "session_id", "session_file", "machine")):
+    if not any(endpoint.get(key) for key in ("host", "alias")):
         return {"status": "skipped", "reason": "no endpoint selector was provided"}
     timeout_ms = args.timeout_ms
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -304,9 +301,6 @@ def main() -> int:
     parser.add_argument("--cwd")
     parser.add_argument("--connect-timeout-ms", type=int, default=10000)
     parser.add_argument("--alias")
-    parser.add_argument("--session-id")
-    parser.add_argument("--session-file")
-    parser.add_argument("--machine")
     parser.add_argument("--timeout-ms", type=int, default=30000)
     parser.add_argument("--parallel-workers", type=int, default=3)
     parser.add_argument("--skip-local", action="store_true")
