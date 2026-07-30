@@ -27,14 +27,24 @@ motor-workspace 按用户工作流划分为三个主要部分：
 repo-init
   -> machine-management
   -> remote-code-parity
+  -> motor-deploy-preflight       (K8s/MindCluster environment)
+  -> motor-deploy-configure       (immutable config bundle + dry-run)
   -> motor-k8s-deploy
   -> deploy_restart (日常改码)
   -> OpenAI smoke
 ```
 
+The two middle Motor skills are target workflow units and are not implemented
+yet. The target 3+3 contract is defined in
+[scaffold/docs/motor-deploy.md](scaffold/docs/motor-deploy.md); implementation
+gaps and unresolved contracts are tracked in
+[scaffold/docs/technical-debt.md](scaffold/docs/technical-debt.md).
+
 Development uses **parity sync to fixed remote directories** under the shared
 mount root (profile `mount_root`, default `/mnt`). No snapshot, no `current`
-symlink, no plan digest, and no Git commit is required for daily Python edits.
+symlink, and no Git commit is required for daily Python edits. Immutable deploy
+config bundles do use an integrity digest/fingerprint, while code-only changes
+may reuse the same bundle after rebinding it to the current parity result.
 Image build under `scaffold/tools/build/` remains an optional bypass for
 release/delivery.
 
@@ -69,7 +79,7 @@ scaffold/                      Workflow and remote-dev substrate
   bin/motorws                  internal skill backend (not the product CLI)
   tools/build/                 optional image bypass (non-default)
   docs/                        architecture and boundary docs
-.motor-workspace-local/        ignored state and run evidence (repo root)
+.motor-workspace-local/        ignored machine state and workflow run evidence
 ```
 
 The three functional boundaries do not map one-to-one to directories.

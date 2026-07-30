@@ -15,4 +15,8 @@ python3 .agents/skills/machine-management/scripts/machine_add.py --alias dev1 --
 python3 .agents/skills/machine-management/scripts/machine_verify.py --alias dev1
 ```
 
-MindCluster/K8s checks are part of verify, not a replacement for inventory.
+Current implementation note: `machine_verify.py` still mixes in
+MindCluster/K8s checks. This is legacy behavior, not the target contract.
+The target keeps machine verification limited to remote development/parity
+readiness and moves cluster checks to the three-step Motor workflow described
+in `scaffold/docs/motor-deploy.md`.

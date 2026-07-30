@@ -31,7 +31,8 @@ motor-workspace 给 Motor 分配 namespace 或 job-id。
 ```
 
 三个阶段是责任和交接顺序，不要求用户每次手工调用三个 skill。机器登记和
-验证通常只在首次配置或环境变化后执行；日常循环主要是 parity → deploy。
+验证通常只在首次配置或环境变化后执行；日常循环主要是 parity → 配置包
+兼容性检查/复用 → deploy restart。
 
 ## 1. 本地工作区可用
 
@@ -185,22 +186,30 @@ session ID、deploy run ID 或 validation run ID。
 这里证明的是“可以把代码同步到固定远端位置”，不是“Motor Pod 已经能够
 挂载该位置”。
 
-### 2.5 与 Motor Deploy preflight 的边界
+### 2.5 与 Motor Deploy 三个步骤的边界
 
-不属于 `machine-management`，而属于第二部分 `motor-k8s-deploy`
-preflight：
+不属于 `machine-management`，而属于第二部分第一步
+`motor-deploy-preflight`：
 
 - 验证 kube context 和 Kubernetes API 可用。
-- 检查本次 namespace 和资源操作所需的 RBAC。
-- 检查 MindCluster、Volcano、AscendJob、PodGroup 等依赖和 CRD。
-- 检查本次部署所需的 NPU resource、节点标签、affinity 和可调度条件。
+- 检查基础读取权限。
+- 检查 MindCluster、Volcano、AscendJob、PodGroup、device plugin 等基础
+  组件、controller、scheduler 和 CRD。
+- 检查集群是否报告环境 profile 要求的 NPU resource 类型。
+
+不属于 `machine-management`，而属于第二部分第二步
+`motor-deploy-configure`：
+
+- 读取和验证本次 Motor user config。
+- 检查本次 namespace 和资源操作所需的精确 RBAC。
+- 检查本次配置所需的 NPU 数量、节点标签、affinity 和可调度条件。
 - 根据本次部署的候选节点验证相同 `mount_root` 和内容可见。
 - 检查本次模型路径、`base_image_ref`、registry 和 imagePullSecret。
 - 运行 upstream deployer dry-run、manifest 校验和 Kubernetes
   server-side dry-run。
 
-这些条件依赖具体 deploy profile、Motor user config、模型、镜像、
-namespace 和候选节点，不能固化成 machine 的永久 ready 状态。
+Pod Ready、容器内模型/挂载可用以及实际代码加载证明属于第二部分第三步
+`motor-k8s-deploy`。
 
 `machine-management` 可以记录 kube context、hardware profile 或 NPU
 硬件观察结果，但这些只是引用或事实，不等于本次部署可调度。
@@ -272,11 +281,14 @@ parity 不创建 session，也不生成新的远端源码路径。
 
 - 验证远端目标文件集合和内容摘要。
 - 验证共享目录中的内容与本地当前 workspace 一致。
-- 在必要时从候选节点只读验证相同路径和内容可见。
 - 明确报告无法覆盖的节点或文件。
 
 这里证明“共享目录中的文件已经同步正确”。Pod 是否实际看到并导入这些文件，
 由 `motor-k8s-deploy` 证明。
+
+本次 Motor 候选节点是否都能在相同路径看到这些内容，依赖最终 deploy
+profile、manifest、调度和节点选择，属于第二部分第二步配置准备与验证，
+不属于 parity。
 
 ### 3.5 manifest 和下游交接
 
@@ -354,12 +366,14 @@ content consistency evidence
 
 不交付 session-ref，也不为 Deploy 生成 namespace 或 job-id。
 
-Motor Deploy 接收上述结果后，必须先结合 deploy profile、Motor user config
-和 parity manifest 完成本次 `deploy-preflight-ready` 检查；不能把历史
-`machine-ready` 当作集群可部署证明。
+第二部分第一步 `motor-deploy-preflight` 先独立证明 K8s 与 MindCluster
+基础环境可用，不读取本次 Motor 配置。第二步 `motor-deploy-configure` 再结合
+deploy profile、Motor user config 和 parity manifest 生成或复用不可变
+配置包并交付 `deploy-config-ready`。第三步 `motor-k8s-deploy` 只消费成功的
+配置结果，执行实际部署和运行验收。
 
 该边界对应的当前实现缺口见
-[technical-debt.md](technical-debt.md#machine-management-与-deploy-preflight-拆分)。
+[technical-debt.md](technical-debt.md#第一部分远程开发准备与代码同步)。
 
 ## 当前实现状态
 

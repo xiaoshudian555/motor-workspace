@@ -21,4 +21,6 @@ python3 .agents/skills/motor-k8s-deploy/scripts/deploy_stop.py --machine <alias>
 ```
 
 Apply, stop, and restart require `--approved-by-user`.
-Daily code changes use `deploy_restart` after parity sync; no plan digest gate.
+This is the current legacy wrapper. The target 3+3 workflow requires
+`deploy_restart` to consume a current `deploy-config-ready` binding; code-only
+changes may reuse the same immutable config bundle after compatibility checks.

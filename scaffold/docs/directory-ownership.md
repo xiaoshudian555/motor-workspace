@@ -9,6 +9,8 @@
 
 第一部分的三阶段交接和具体功能归属见
 [remote-development-and-parity.md](remote-development-and-parity.md)。
+第二部分的环境、配置和实际部署三步见
+[motor-deploy.md](motor-deploy.md)。
 
 ## Agent 工作流
 
@@ -20,7 +22,9 @@
 | `machine-management` | 登记并验证远程 Motor 目标 | 第一部分 |
 | `remote-code-parity` | 同步本地 dirty workspace 并证明远端目录内容 | 第一部分 |
 | `remote-toolbox` | 尚未迁移能力的兼容入口 | 兼容层 |
-| `motor-k8s-deploy` | 拉起 Motor 并证明 Pod 加载目标代码 | 第二部分 |
+| `motor-deploy-preflight`（目标） | 验证 K8s 与 MindCluster 基础环境 | 第二部分第一步 |
+| `motor-deploy-configure`（目标） | 生成或复用不可变配置包并完成配置验证 | 第二部分第二步 |
+| `motor-k8s-deploy` | 原样 apply 配置包并证明 Ready 和 Pod 加载目标代码 | 第二部分第三步 |
 | `motor-benchmark` | 对成功 deploy run 执行正式 benchmark | 第三部分 |
 | `motor-diagnosis` | 收集 run-scoped 失败证据 | 跨闭环失败处理 |
 
@@ -39,7 +43,7 @@ Kubernetes 生命周期属于对应业务 skill。
 | parity/deploy run 记录 | `mws_run_state.py` |
 | 通用 JSON/lock 工具 | `mws_state.py` |
 | 代码 parity | `mws_parity.py` |
-| Motor deploy | `mws_deploy.py` |
+| Motor 环境、配置和 deploy 公共能力 | 当前集中在 `mws_deploy.py`，目标按三步拆分 |
 | 结果输出 | `mws_result.py` |
 | 输入和边界校验 | `mws_validate.py` |
 | 历史 lock 诊断 | `mws_lock.py` |
@@ -69,7 +73,11 @@ machine 到 endpoint 的解析应由 `.agents/lib/` 中的适配层完成，
 
 ```text
 machines
+workspace runs
+machine runs
 parity runs
+environment runs
+config runs
 deploy runs
 validation runs
 ```
@@ -92,5 +100,5 @@ validation runs
 | `.claude/skills/` | Agent 适配或生成结果，不是实现 source of truth |
 | `motor/`、`vllm/`、`vllm-ascend/` | 被开发和部署的源码子模块 |
 
-实际物理重组尚未执行。后续 Agent 必须先阅读
-[TEMP-directory-reorganization-agent-guide.md](TEMP-directory-reorganization-agent-guide.md)。
+实际物理重组和三步迁移尚未执行，目标与缺口统一记录在
+[technical-debt.md](technical-debt.md)。

@@ -13,7 +13,7 @@ not rebuilding an image for every code change.
 ```text
 sources/          motor, vllm, vllm-ascend submodules
 scaffold/         skills, lib, remote-dev, profiles, tools, tests, docs
-.motor-workspace-local/   untracked machine/parity/deploy state (repo root)
+.motor-workspace-local/   untracked machine and workflow run evidence (repo root)
 ```
 
 ## Remote development model
@@ -58,9 +58,11 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | `machine-management` | Add / verify / repair / remove remote NPU machine + kube context + mount root |
 | `remote-toolbox` | Remote target/probe/exec/job/sync/artifact/cleanup backend |
 | `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
-| `motor-k8s-deploy` | Plan / apply / status / stop / restart Motor on Kubernetes via upstream deployer |
-| `motor-benchmark` | Benchmark a successful deploy run (second phase) |
-| `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts (second phase) |
+| `motor-deploy-preflight`（target, not implemented） | Validate only the K8s/MindCluster base environment |
+| `motor-deploy-configure`（target, not implemented） | Generate/reuse and validate an immutable deploy config bundle |
+| `motor-k8s-deploy` | Current legacy Plan / apply / status / stop / restart wrapper; target is apply/Ready/runtime proof only |
+| `motor-benchmark` | Benchmark a successful deploy run (third major part) |
+| `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts |
 
 None of these are gates for normal local coding or unrelated Git tasks.
 For remote endpoint work, prefer `scaffold/.remote-dev` tools first and use
@@ -82,8 +84,9 @@ skills for domain workflows.
   rebuild is an optional bypass for release/delivery, not the default loop.
 - Reuse Motor's current deployer and MindCluster resources. Do not implement a
   competing P/D controller or generic serving engine.
-- Preflight and plan are read-only by default. Apply, scale, delete, restart,
-  and overwriting fixed remote source directories require explicit consent.
+- Environment preflight and deploy configuration must not mutate Kubernetes
+  state. Apply, scale, delete, restart, and overwriting fixed remote source
+  directories require explicit consent.
 - Profiling integration is second-phase work.
 - This repo targets Huawei Ascend NPU. Local machines cannot run
   `torch`/`torch_npu`-dependent code — validate on remote cluster/Pods.
