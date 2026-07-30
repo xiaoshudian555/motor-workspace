@@ -3,6 +3,9 @@
 本文把 `technical-debt.md` 中已经明确的实现偏差拆成可并行工作包。目标不是让
 各 Agent 自行补设计，而是在固定文件边界内迁移、修复和补测试。
 
+六项定义冻结后的可执行工作单见
+[`agent-work-orders.md`](agent-work-orders.md)。
+
 ## 开工前基线
 
 并行修改前先建立同一个 Git 基线：
@@ -154,96 +157,88 @@ scaffold/tests/test_parity*.py
 1. 按文件所有权合并，拒绝越界修改；
 2. 运行 `.remote-dev` 和 `scaffold/tests` 全量测试；
 3. 收敛 `.remote-dev` 与 `mws_transport.py` 的分层，不创建第三套 transport；
-4. 汇总各工作包提出的公共 schema 需求，但在六项定义冻结前不实现猜测；
+4. 按下文已经冻结的六项定义实现公共 schema，不再自行扩展状态或配置来源；
 5. 更新第一部分 SKILL、Agent shim 和文档；
 6. 有真实机器时执行 `repo-init → machine-management → remote-code-parity`
    纵向验收；没有真实机器时只声明 fixture 验收。
 
-## 六项待冻结定义
+## 六项已冻结定义
 
-`technical-debt.md` 使用八个小节展开问题；实施时合并为以下六个决策主题。
-其中“配置与代码一致”并入配置 bundle，“日常 restart”分别由 environment
-有效期和 bundle 复用规则决定。
+以下决策已经确认，不再留给实现 Agent 自行选择。
 
 ### 1. 公共结果和状态契约
 
-决定每一步如何表达成功、失败、不可验证、上游引用和证据，以及 CLI 用什么
-退出码。没有统一契约，下游只能猜测上一步的 `warning` 或 `ready` 是否可信。
+每个被执行的检查只有四种结果：`ok`、`warning`、`error`、`unavailable`。
 
-建议：
+- `warning` 记录证据后继续，允许步骤最终 ready。
+- `error` 或 `unavailable` 立即中断当前步骤，进程非零退出，不执行后续检查或
+  下游步骤，也不得发布 ready。
+- 人修复问题后重新运行，产生新的 run；不实现自动修复或断点续跑。
+- 不适用的检查不执行，不用 `skipped` 或 `not_applicable` 冒充成功。
+- 结果必须保存已完成检查、warnings、停止位置、错误和上游 run 引用。
 
-- 单项检查只使用 `pass`、`fail`、`not_applicable`；
-- 运行期才能检查的项目单独记录为 `deferred_to_deploy`，不伪装成已验证；
-- 步骤完成结果使用 `ready` 或 `failed`；
-- apply 生命周期另设 `planned/applied/ready/code_verified/failed/stopped`；
-- 任一 required check 失败或无法完成时，不得发布 ready。
+### 2. 部署配置只来自 Motor 原生配置
 
-### 2. 配置输入优先级和冲突规则
+Workspace 不提供 namespace、job-id、镜像、模型、NPU、scheduler、queue、
+affinity 等字段的第二套 CLI override 或 deploy profile。
 
-决定 namespace、job-id、镜像、模型角色、NPU、scheduler、queue、affinity 等
-字段由 CLI、Motor user config、deploy profile 或其他文件中的哪一层拥有。
-如果不固定，同一输入会因 Agent 的合并顺序不同生成不同 manifest。
-
-建议优先级：
-
-```text
-显式 CLI override
-  > Motor user config
-  > deploy profile
-  > 代码内明确默认值
-```
-
-`workspace.lock.yaml` 只提供诊断/兼容性断言，不静默成为部署配置。所有 override
-必须进入 normalized effective config 和证据；同一优先级来源冲突直接失败。
+- 配置输入是 Motor upstream deployer 原生支持的 `user_config.json` 和
+  `env.json`，通过其原生 `deploy.py --config_dir ...` 或等价的原生路径参数
+  调用。
+- Workspace 的命令参数只允许选择 machine/run/config 文件路径和操作，
+  不得成为 Motor 字段的第二配置源。
+- 第二步在 run-scoped staging 中复制原生配置，调用 upstream `--dry-run`，
+  再对生成 manifest 做共享 hostPath、volumeMount 和 `PYTHONPATH` 注入。
+- `workspace.lock.yaml` 只提供诊断信息，不覆盖 Motor 原生配置。
 
 ### 3. Namespace 策略
 
-决定目标 namespace 必须提前存在，还是由第三步 apply 时创建。第二步不修改
-Kubernetes，所以 create-on-apply 会使 namespace RBAC 和 server-side dry-run
-更复杂。
+namespace 固定使用 `user_config.json` 中
+`motor_deploy_config.job_id` 的 Motor 原生语义，并且必须预先存在。
 
-建议 MVP 使用 `require-existing`：第二步验证 namespace 和必要权限；不存在就
-fail closed。后续再把 `create-on-apply` 作为显式模式加入。
+- 第一步不读取 namespace。
+- 第二步检查 namespace 存在，并验证本次 manifest 所需权限。
+- 第三步不创建 namespace。
+- 不实现 `create-on-apply`。
 
 ### 4. Environment-ready 的有效期
 
-决定一次 K8s/MindCluster 前置验证能否复用，以及 cluster、context、CRD、
-controller 或 device plugin 变化后何时失效。它同时决定日常 restart 是否要
-重跑 preflight。
+第一版不跨工作流复用 environment-ready。
 
-建议第一版不跨工作流复用：每次新的 configure 工作流都要求一个新
-environment run；同一工作流内可引用它。结果仍记录 cluster UID、API server、
-context、environment profile digest 和组件版本，后续再安全加入 TTL。
+- 每个新的 3+3 deploy/configure 工作流必须运行一次 preflight。
+- 同一工作流内的后续步骤显式引用该 environment run。
+- 不读取 `last_verified_at`，不实现 TTL、`expires_at` 或跨工作流命中。
+- 结果仍记录 cluster identity、API server、kube context、组件版本和检查
+  时间，供审计与未来扩展使用。
 
 ### 5. Config fingerprint、不可变 bundle 和代码绑定
 
-决定怎样证明“配置和上一次相同”，以及复用旧 YAML 时怎样绑定本次 parity。
-结构配置和代码内容必须分开，否则每次改 Python 都会无意义地重新 render。
+结构配置和代码内容完全分开。
 
-建议：
-
-- fingerprint 覆盖 normalized effective config、machine 固定路径、deployer
-  版本、注入器版本和规范化 manifest；
-- parity 内容摘要不进入结构 fingerprint；
-- bundle 以内容摘要命名，原子创建后只读，包含 manifest、effective config、
-  输入/工具版本和验证证据；
-- 代码变化但路径兼容时，创建新的 config run 引用旧 bundle 和新 parity run；
-- bundle 清理只删除没有任何 run 引用且超过保留期的对象。
+- fingerprint 覆盖 Motor 原生 `user_config.json`、`env.json`、machine 固定路径
+  映射、upstream deployer 版本和 workspace manifest 注入器版本。
+- parity 的代码内容摘要不进入 config fingerprint。
+- 第二步只校验最终 manifest 使用当前 machine/parity 声明的固定路径，不重新
+  判断或管理代码内容。
+- bundle 另有覆盖最终 manifest 和证据的 `bundle_digest`，原子创建后不可
+  修改。
+- 配置结构未变化时复用旧 bundle；新的 config run 只重新绑定当前 parity
+  路径引用。
+- 第一版不自动清理 bundle。
 
 ### 6. Apply 前只读验证边界
 
-决定第二步是否允许创建临时 Pod/Job 来证明镜像能拉取、模型可读和 hostPath
-真实可见。如果允许，它就不再是纯配置步骤；如果不允许，这些运行期事实只能在
-第三步证明。
+apply 前不创建临时 Pod/Job，也不尝试证明镜像可拉取、模型在容器内可读或
+候选节点 hostPath 实际可见。
 
-建议保持前两步零 Kubernetes 写入：
-
-- 第二步负责 schema、引用存在性、RBAC、admission/server-side dry-run、
-  manifest 路径映射等只读/结构证明；
-- 无法在只读条件下证明的 image pull、容器内模型读取和实际 import 路径，
-  明确标记 `deferred_to_deploy`；
-- 第三步 apply 后必须验证这些项目，失败则不得发布 deploy-complete；
-- 不引入隐式诊断 Pod。未来如有需要，另设带明确 consent 的诊断操作。
+- 第二步只做原生 deployer dry-run、manifest 结构/替换检查、namespace/RBAC
+  检查和 Kubernetes server-side dry-run。
+- 不把上述运行期条件登记为第二步的 `deferred` 检查；它们不属于
+  deploy-config-ready 的完成条件。
+- 第三步 apply 并等待 Ready。拉取、挂载、模型或调度问题导致无法 Ready 时，
+  当前步骤报错并保留现场。
+- 深入验证镜像、模型、hostPath 等属于失败后的 diagnosis，不是正常 apply
+  之前的门禁。
 
 ## 第二阶段：六项定义冻结后的实现顺序
 

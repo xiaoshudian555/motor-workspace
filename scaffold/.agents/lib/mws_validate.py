@@ -112,3 +112,19 @@ def validate_remote_posix_path(value: str, *, label: str = "path") -> str:
     if ".." in parts:
         raise ValidationError(f"{label} must not contain '..'")
     return value.rstrip("/") or "/"
+
+
+def validate_remote_workspace_in_mount(
+    mount_root: str | None,
+    remote_workspace_root: str,
+    *,
+    label: str = "remote_workspace_root",
+) -> str:
+    """Ensure remote workspace stays under the configured shared mount root."""
+    mount = normalize_mount_root(mount_root)
+    remote = validate_remote_posix_path(remote_workspace_root, label=label)
+    if remote != mount and not remote.startswith(f"{mount}/"):
+        raise ValidationError(
+            f"{label} must be {mount!r} or a subdirectory of it; got {remote!r}"
+        )
+    return remote

@@ -10,6 +10,7 @@ import re
 import secrets
 import string
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,22 @@ SESSIONS_DIRNAME = "sessions"
 CONSENT_DIRNAME = "consent"
 PROFILE_SCHEMA_VERSION = 1
 INVENTORY_SCHEMA_VERSION = 1
+PARITY_BACKEND_CHOICES = ("shared-hostpath", "node-local-hostpath")
 WORKSPACE_ID_PREFIX = "mws-"
 USERNAME_PATTERN = re.compile(r"^[a-z0-9]{3,32}$")
 RANDOM_ALPHABET = string.digits
 DEFAULT_RANDOM_PREFIX = "agent"
 DEFAULT_RANDOM_SUFFIX_LENGTH = 5
+INVENTORY_LOCK_TIMEOUT_SECONDS = 15.0
+INVENTORY_LOCK_POLL_SECONDS = 0.05
 
+from mws_validate import (
+    ValidationError,
+    normalize_mount_root,
+    require_hostname,
+    require_safe_id,
+    validate_remote_workspace_in_mount,
+)
 from repo_paths import REPO_ROOT, SCAFFOLD_ROOT
 
 ROOT = REPO_ROOT
@@ -35,6 +46,7 @@ STATE_DIR = ROOT / STATE_DIRNAME
 LOCAL_ROOT = STATE_DIR
 PROFILE_PATH = STATE_DIR / PROFILE_FILENAME
 INVENTORY_PATH = STATE_DIR / INVENTORY_FILENAME
+INVENTORY_LOCK_PATH = STATE_DIR / f"{INVENTORY_FILENAME}.lock"
 SESSIONS_DIR = STATE_DIR / SESSIONS_DIRNAME
 CONSENT_DIR = STATE_DIR / CONSENT_DIRNAME
 
@@ -155,33 +167,216 @@ def save_profile(data: dict[str, Any]) -> None:
     _save_json(PROFILE_PATH, data)
 
 
-def load_inventory() -> dict[str, Any]:
-    if not INVENTORY_PATH.exists():
-        return {"schema_version": INVENTORY_SCHEMA_VERSION, "machines": {}}
-    data = _load_json(INVENTORY_PATH)
+def _empty_inventory() -> dict[str, Any]:
+    return {"schema_version": INVENTORY_SCHEMA_VERSION, "machines": {}}
+
+
+def validate_machine_record(record: Any, *, where: str = "machine") -> dict[str, Any]:
+    if not isinstance(record, dict):
+        raise WorkspaceStateError(f"{where} must be an object")
+
+    alias = require_safe_id(str(record.get("alias", "")), label=f"{where}.alias")
+    host = require_hostname(str(record.get("host", "")), label=f"{where}.host")
+    user = str(record.get("user", "root")).strip()
+    if not user:
+        raise WorkspaceStateError(f"{where}.user must be non-empty")
+
+    port = record.get("port", 22)
+    if not isinstance(port, int) or port <= 0:
+        raise WorkspaceStateError(f"{where}.port must be a positive integer")
+
+    mount_root = normalize_mount_root(record.get("mount_root"))
+    remote_workspace_root = record.get("remote_workspace_root")
+    if remote_workspace_root:
+        remote_workspace_root = validate_remote_workspace_in_mount(
+            mount_root,
+            str(remote_workspace_root),
+        )
+    else:
+        remote_workspace_root = f"{mount_root}/motor-workspace"
+
+    parity_backend = record.get("parity_backend", "shared-hostpath")
+    if parity_backend not in PARITY_BACKEND_CHOICES:
+        raise WorkspaceStateError(
+            f"{where}.parity_backend must be one of: {', '.join(PARITY_BACKEND_CHOICES)}"
+        )
+
+    candidate_nodes = record.get("candidate_nodes", [])
+    if candidate_nodes is None:
+        candidate_nodes = []
+    if not isinstance(candidate_nodes, list) or not all(
+        isinstance(item, str) and item.strip() for item in candidate_nodes
+    ):
+        raise WorkspaceStateError(f"{where}.candidate_nodes must be a list of non-empty strings")
+
+    kube_context = record.get("kube_context")
+    if kube_context is not None and not isinstance(kube_context, str):
+        raise WorkspaceStateError(f"{where}.kube_context must be a string when present")
+    if isinstance(kube_context, str):
+        kube_context = kube_context.strip()
+
+    normalized = {
+        "alias": alias,
+        "host": host,
+        "port": port,
+        "user": user,
+        "mount_root": mount_root,
+        "remote_workspace_root": remote_workspace_root,
+        "kube_context": kube_context or "",
+        "parity_backend": parity_backend,
+        "candidate_nodes": [item.strip() for item in candidate_nodes],
+    }
+    for optional_key in ("created_at", "last_verified_at", "last_verify_errors", "last_repaired_at"):
+        if optional_key in record:
+            normalized[optional_key] = record[optional_key]
+    return normalized
+
+
+def _validate_inventory_payload(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise WorkspaceStateError(f"{INVENTORY_PATH} must contain a JSON object")
-    data.setdefault("machines", {})
+    if data.get("schema_version") != INVENTORY_SCHEMA_VERSION:
+        raise WorkspaceStateError(
+            f"unsupported inventory schema_version: {data.get('schema_version')!r}"
+        )
+    machines = data.get("machines")
+    if not isinstance(machines, dict):
+        raise WorkspaceStateError("inventory machines must be an object keyed by alias")
+    validated: dict[str, dict[str, Any]] = {}
+    for alias, record in machines.items():
+        normalized = validate_machine_record(record, where=f"machines[{alias!r}]")
+        if normalized["alias"] != alias:
+            raise WorkspaceStateError(
+                f"machines[{alias!r}] alias field {normalized['alias']!r} does not match key"
+            )
+        validated[alias] = normalized
+    data["machines"] = validated
     return data
 
 
-def save_inventory(data: dict[str, Any]) -> None:
-    data = dict(data)
-    data["schema_version"] = INVENTORY_SCHEMA_VERSION
-    data["updated_at"] = utc_now_iso()
-    _save_json(INVENTORY_PATH, data)
+def load_inventory(*, path: Path | None = None) -> dict[str, Any]:
+    target = path or INVENTORY_PATH
+    if not target.exists():
+        return _empty_inventory()
+    data = _load_json(target)
+    return _validate_inventory_payload(data)
 
 
-def get_machine(alias: str) -> dict[str, Any]:
-    inventory = load_inventory()
+def save_inventory(data: dict[str, Any], *, path: Path | None = None) -> None:
+    payload = dict(data)
+    payload["schema_version"] = INVENTORY_SCHEMA_VERSION
+    payload["updated_at"] = utc_now_iso()
+    payload = _validate_inventory_payload(payload)
+    _save_json(path or INVENTORY_PATH, payload)
+
+
+@contextlib.contextmanager
+def inventory_lock(*, path: Path | None = None):
+    target = path or INVENTORY_PATH
+    ensure_state_dir(target.parent)
+    lock_path = target.with_name(target.name + ".lock")
+    deadline = time.monotonic() + INVENTORY_LOCK_TIMEOUT_SECONDS
+    fd: int | None = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise WorkspaceStateError(f"timed out waiting for inventory lock {lock_path}")
+            time.sleep(INVENTORY_LOCK_POLL_SECONDS)
+    try:
+        yield lock_path
+    finally:
+        if fd is not None:
+            os.close(fd)
+        with contextlib.suppress(FileNotFoundError):
+            lock_path.unlink()
+
+
+def find_machines(
+    inventory: dict[str, Any],
+    *,
+    alias: str | None = None,
+    host: str | None = None,
+    identifier: str | None = None,
+) -> list[dict[str, Any]]:
     machines = inventory.get("machines", {})
-    if alias not in machines:
-        raise WorkspaceStateError(f"machine not found: {alias}")
-    return machines[alias]
+    matches: list[dict[str, Any]] = []
+    for record in machines.values():
+        if identifier is not None and (
+            record["alias"] == identifier or record["host"] == identifier
+        ):
+            matches.append(record)
+            continue
+        if alias is not None and record["alias"] == alias:
+            matches.append(record)
+            continue
+        if host is not None and record["host"] == host:
+            matches.append(record)
+    return matches
 
 
-def list_machines() -> dict[str, dict[str, Any]]:
-    return dict(load_inventory().get("machines", {}))
+def upsert_machine(record: dict[str, Any], *, path: Path | None = None) -> tuple[str, dict[str, Any]]:
+    normalized = validate_machine_record(record)
+    alias = normalized["alias"]
+    host = normalized["host"]
+    with inventory_lock(path=path):
+        inventory = load_inventory(path=path)
+        machines = inventory.setdefault("machines", {})
+        existing = machines.get(alias)
+        host_matches = find_machines(inventory, host=host)
+        if existing:
+            if host_matches and host_matches[0]["alias"] != alias:
+                raise WorkspaceStateError(
+                    "host already registered under a different alias; resolve the conflict manually"
+                )
+            action = "updated"
+        else:
+            if host_matches:
+                raise WorkspaceStateError(
+                    "host already registered under a different alias; resolve the conflict manually"
+                )
+            action = "inserted"
+            if "created_at" not in normalized:
+                normalized["created_at"] = utc_now_iso()
+        machines[alias] = normalized
+        save_inventory(inventory, path=path)
+    return action, normalized
+
+
+def remove_machine(identifier: str, *, path: Path | None = None) -> dict[str, Any]:
+    with inventory_lock(path=path):
+        inventory = load_inventory(path=path)
+        matches = find_machines(inventory, identifier=identifier)
+        if not matches:
+            raise WorkspaceStateError(f"no machine found for identifier: {identifier}")
+        if len(matches) > 1:
+            raise WorkspaceStateError(
+                f"multiple machines matched {identifier!r}; use a unique alias or host IP"
+            )
+        target = matches[0]
+        inventory["machines"] = {
+            alias: record
+            for alias, record in inventory["machines"].items()
+            if record is not target
+        }
+        save_inventory(inventory, path=path)
+    return target
+
+
+def get_machine(alias: str, *, path: Path | None = None) -> dict[str, Any]:
+    inventory = load_inventory(path=path)
+    machines = inventory.get("machines", {})
+    normalized_alias = require_safe_id(alias, label="alias")
+    if normalized_alias not in machines:
+        raise WorkspaceStateError(f"machine not found: {normalized_alias}")
+    return machines[normalized_alias]
+
+
+def list_machines(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
+    return dict(load_inventory(path=path).get("machines", {}))
 
 
 def redact_secrets(payload: Any) -> Any:

@@ -70,10 +70,11 @@ remote-code-parity` 三个阶段。详细功能归属见
 
 负责：
 
-- 消费成功的 `machine-ready`、kube context 和环境 profile。
+- 消费成功的 `machine-ready`、kube context 和 workspace 固定的环境契约。
 - 检查 Kubernetes API、基础读取权限、MindCluster/Volcano 组件、CRD、
   scheduler、device plugin 和集群报告的 NPU resource 类型。
-- 记录集群身份、组件版本、检查时间和环境输入摘要。
+- 记录集群身份、组件版本、检查时间和环境契约版本。
+- `warning` 记录后继续；`error` 或 `unavailable` 立即中断。
 
 明确不负责：
 
@@ -90,7 +91,8 @@ remote-code-parity` 三个阶段。详细功能归属见
 交付：
 
 - 独立的 `deploy-environment-ready` 和环境检查证据。
-- machine、kube context、环境 profile 和集群身份引用。
+- machine、kube context、环境契约版本和集群身份引用。
+- 本结果只允许同一工作流后续步骤引用，不跨工作流复用。
 
 ### 2.2 Motor 部署配置准备与验证
 
@@ -101,11 +103,13 @@ remote-code-parity` 三个阶段。详细功能归属见
 
 负责：
 
-- 消费 `deploy-environment-ready`、machine、parity、deploy profile、
-  Motor user config、模型和镜像输入。
+- 消费同一工作流的 `deploy-environment-ready`、machine、parity，以及 Motor
+  原生 `user_config.json` 和 `env.json`。
 - 调用 Motor upstream deployer dry-run，在 staging 中生成本次配置。
-- 完成 namespace、hostPath、`PYTHONPATH`、镜像等替换和注入。
-- 验证最终 manifest、精确 RBAC、调度、候选节点、路径和代码映射。
+- namespace 只取 `motor_deploy_config.job_id`，要求已经存在；workspace 不
+  提供 deploy profile 或字段级 CLI override。
+- 完成共享 hostPath、volumeMount 和 `PYTHONPATH` 注入。
+- 验证最终 manifest、精确 RBAC、结构路径和代码路径映射。
 - 执行 manifest 校验和 Kubernetes server-side dry-run。
 - 通过明确的 fingerprint 判断历史配置包能否复用。
 - 交付不可变配置包、diff、dry-run 和配置—parity 对应证据。
@@ -116,6 +120,8 @@ remote-code-parity` 三个阶段。详细功能归属见
 - apply、restart、stop 或删除 Kubernetes 资源。
 - 等待 Pod Ready 或证明 Pod 实际加载目标代码。
 - 重新同步或制造 parity 结果。
+- apply 前验证镜像实际拉取、模型容器内可读或候选节点 hostPath 可见。
+- 创建临时诊断 Pod/Job。
 
 完成标志：
 
@@ -171,8 +177,8 @@ remote-code-parity` 三个阶段。详细功能归属见
 
 - `machine-ready` 只证明机器可连接、固定远端目录可写、可以执行 parity。
 - `deploy-environment-ready` 证明目标 K8s 与 MindCluster 基础环境可用。
-- `deploy-config-ready` 才结合 parity、deploy profile、Motor user config、
-  模型和镜像证明本次配置可以交给 apply。
+- `deploy-config-ready` 才结合 parity 固定路径和 Motor 原生配置证明本次配置
+  可以交给 apply。
 
 前两步不修改 Kubernetes 状态。第三步取得 consent 后才 apply，并承担 Pod、
 服务和运行代码验证。

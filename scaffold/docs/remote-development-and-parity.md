@@ -195,18 +195,19 @@ session ID、deploy run ID 或 validation run ID。
 - 检查基础读取权限。
 - 检查 MindCluster、Volcano、AscendJob、PodGroup、device plugin 等基础
   组件、controller、scheduler 和 CRD。
-- 检查集群是否报告环境 profile 要求的 NPU resource 类型。
+- 检查集群是否报告 workspace 环境契约要求的 NPU resource 类型。
 
 不属于 `machine-management`，而属于第二部分第二步
 `motor-deploy-configure`：
 
-- 读取和验证本次 Motor user config。
+- 读取 Motor 原生 `user_config.json` 和 `env.json`，不引入第二套部署字段。
 - 检查本次 namespace 和资源操作所需的精确 RBAC。
-- 检查本次配置所需的 NPU 数量、节点标签、affinity 和可调度条件。
-- 根据本次部署的候选节点验证相同 `mount_root` 和内容可见。
-- 检查本次模型路径、`base_image_ref`、registry 和 imagePullSecret。
+- 对 upstream 生成的 manifest 注入共享 hostPath、volumeMount 和
+  `PYTHONPATH`，并验证其固定路径映射。
 - 运行 upstream deployer dry-run、manifest 校验和 Kubernetes
   server-side dry-run。
+- 不在 apply 前验证候选节点 hostPath、实际 image pull 或模型容器内可读性；
+  拉起失败后由 diagnosis 处理。
 
 Pod Ready、容器内模型/挂载可用以及实际代码加载证明属于第二部分第三步
 `motor-k8s-deploy`。
@@ -286,9 +287,9 @@ parity 不创建 session，也不生成新的远端源码路径。
 这里证明“共享目录中的文件已经同步正确”。Pod 是否实际看到并导入这些文件，
 由 `motor-k8s-deploy` 证明。
 
-本次 Motor 候选节点是否都能在相同路径看到这些内容，依赖最终 deploy
-profile、manifest、调度和节点选择，属于第二部分第二步配置准备与验证，
-不属于 parity。
+本次 Motor Pod 是否实际能在相同路径看到这些内容，依赖最终 manifest、调度
+和节点选择，不属于 parity。第二步只验证 manifest 的固定路径映射；实际挂载
+在第三步 apply/Ready 过程中体现，失败后由 diagnosis 深入排查。
 
 ### 3.5 manifest 和下游交接
 
@@ -368,9 +369,10 @@ content consistency evidence
 
 第二部分第一步 `motor-deploy-preflight` 先独立证明 K8s 与 MindCluster
 基础环境可用，不读取本次 Motor 配置。第二步 `motor-deploy-configure` 再结合
-deploy profile、Motor user config 和 parity manifest 生成或复用不可变
-配置包并交付 `deploy-config-ready`。第三步 `motor-k8s-deploy` 只消费成功的
-配置结果，执行实际部署和运行验收。
+Motor 原生 `user_config.json`、`env.json` 和 parity 固定路径生成或复用不可变
+配置包并交付 `deploy-config-ready`；workspace 不增加 deploy profile 或字段级
+CLI override。第三步 `motor-k8s-deploy` 只消费成功的配置结果，执行实际部署
+和运行验收。
 
 该边界对应的当前实现缺口见
 [technical-debt.md](technical-debt.md#第一部分远程开发准备与代码同步)。

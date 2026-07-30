@@ -37,7 +37,7 @@ Ready 状态并证明 Pod 使用目标代码结束。
 
 - 成功的 `machine-ready` 结果和 machine-ref。
 - kube context 引用。
-- 描述 K8s、MindCluster、Volcano 和 Ascend NPU 基线要求的环境 profile。
+- workspace 固定版本的 K8s、MindCluster、Volcano 和 Ascend NPU 环境契约。
 
 本步骤不消费 parity manifest、Motor user config、namespace、模型路径、
 镜像引用或最终 Kubernetes manifest。这些都属于第二步。
@@ -48,10 +48,11 @@ Ready 状态并证明 Pod 使用目标代码结束。
 - 验证当前身份具备读取环境状态所需的基础权限。
 - 检查 MindCluster、Volcano、AscendJob、PodGroup、NPU device plugin 等
   基础组件、controller、scheduler 和 CRD 是否存在并处于可判断状态。
-- 检查集群是否报告目标环境 profile 要求的 NPU resource 类型和基础节点
+- 检查集群是否报告环境契约要求的 NPU resource 类型和基础节点
   信息。
 - 记录集群身份、组件版本、检查时间和环境输入摘要，形成可追溯的环境证据。
-- 对关键环境条件失败或无法验证的情况 fail closed。
+- 检查结果为 `warning` 时记录后继续；为 `error` 或 `unavailable` 时立即
+  中断并报错。
 
 ### 明确不负责
 
@@ -66,7 +67,7 @@ Ready 状态并证明 Pod 使用目标代码结束。
 
 交付独立的 `deploy-environment-ready` 结果，包括：
 
-- machine-ref、kube context 和环境 profile 引用；
+- machine-ref、kube context 和环境契约版本；
 - 集群身份与环境输入摘要；
 - 逐项检查状态和证据；
 - 明确的 ready 判定与失效信息。
@@ -76,6 +77,8 @@ Ready 状态并证明 Pod 使用目标代码结束。
 > K8s 与 MindCluster 基础环境可用，可以进入 Motor 部署配置准备。
 
 它不代表任何一份 Motor 配置已经正确，也不代表本次部署一定可以 apply。
+第一版结果只允许同一 workflow 的后续步骤引用；新的 configure/deploy
+workflow 必须重新执行本步骤，不使用 TTL 或历史 `last_verified_at` 复用。
 
 ### 失败停止位置
 
@@ -96,28 +99,29 @@ Kubernetes 状态。
 - 成功且仍有效的 `deploy-environment-ready`。
 - 成功的 `machine-ready` 和 machine-ref。
 - 成功的 parity manifest、固定远端源码目录和内容一致性证据。
-- 本次 deploy profile。
-- Motor upstream deployer 的 user config。
-- 本次模型、镜像和必要的 registry/imagePullSecret 引用。
+- Motor upstream deployer 原生的 `user_config.json` 和 `env.json`。
 - 可选的历史 `deploy-config-ready`，用于判断是否可以复用已有配置包。
 
 ### 负责
 
-- 解析并固定本次 namespace、job-id、模型、镜像、NPU、调度和挂载输入。
+- 原样读取 Motor 原生配置，不创建 workspace 自有 deploy profile 或字段级
+  CLI override。
+- 从 `user_config.json` 的 `motor_deploy_config.job_id` 取得 namespace，并
+  要求该 namespace 已经存在。
 - 验证本次操作需要的精确 namespace/RBAC 和配置依赖。
 - 复制到 run-scoped staging 目录，不直接修改用户原始配置。
 - 调用 Motor upstream deployer dry-run 生成本次新增的 YAML。
-- 对最终 YAML 完成 namespace、hostPath、`PYTHONPATH`、镜像等替换或注入。
+- 对最终 YAML 完成共享 hostPath、volumeMount 和 `PYTHONPATH` 注入；业务
+  镜像、模型、NPU 和调度配置继续由 Motor 原生配置和 deployer 决定。
 - 只处理并保存本次生成的 manifest，展示最终配置和相对上一次的 diff。
 - 校验 manifest 结构并执行 Kubernetes server-side dry-run。
-- 根据最终 manifest 检查 NPU resource、节点标签、affinity、候选节点和
-  可调度条件。
 - 验证最终配置引用的固定远端目录与当前 parity manifest 完全对应；证明
   “配置将目标代码路径提供给 Pod”，但不声称 Pod 已经实际加载。
-- 检查可在 apply 前静态或只读验证的 hostPath、模型路径、镜像引用、
-  registry 和 imagePullSecret 条件。
 - 生成不可变的配置包、`config_fingerprint` 和独立
   `deploy-config-ready` 结果。
+
+本步骤不检查候选节点 hostPath 实际可见、镜像实际可拉取或模型在容器内可读，
+也不创建临时诊断 Pod/Job。这些不是 `deploy-config-ready` 的门禁。
 
 ### 配置复用
 
@@ -126,14 +130,16 @@ dry-run，但不能仅凭“上次部署成功”猜测相同。
 
 复用必须：
 
-- 对比明确的 `config_fingerprint`；
-- 确认 machine 的固定路径映射、环境要求和配置生成器版本仍兼容；
-- 确认不可变配置包仍完整；
+- 对比由 Motor 原生配置、machine 固定路径、upstream deployer 版本和
+  workspace 注入器版本计算的 `config_fingerprint`；
+- 确认 machine 的固定路径映射和配置生成器版本仍兼容；
+- 通过独立 `bundle_digest` 确认包括最终 manifest 在内的不可变配置包仍完整；
 - 将当前成功 parity manifest 重新绑定到本次 `deploy-config-ready`；
 - 记录 `reused_config_bundle_id` 和本次复用证据。
 
-代码内容变化但固定路径和部署配置未变化时，可以复用配置包；仍需使用当前
-parity manifest，并在第三步重新验证 Pod 实际加载路径。
+代码内容不属于 config fingerprint。代码变化但固定路径和 Motor 原生配置未
+变化时，可以复用配置包；第二步只重新绑定当前 parity 的固定路径引用，第三步
+再验证 Pod 实际加载路径。
 
 ### 明确不负责
 
@@ -141,7 +147,8 @@ parity manifest，并在第三步重新验证 Pod 实际加载路径。
 - 创建、修改或删除 Kubernetes 资源。
 - apply、restart、scale、stop 或 cleanup。
 - 等待 Pod Ready。
-- 声明镜像实际拉取成功、模型在容器内实际可读或 Pod 已加载目标代码。
+- 在 apply 前验证镜像实际拉取、模型在容器内实际可读、候选节点 hostPath
+  可见，或声明 Pod 已加载目标代码。
 - 重新同步本地源码或制造 parity 结果。
 - 修改 Motor upstream P/D 控制器语义。
 
@@ -153,15 +160,15 @@ parity manifest，并在第三步重新验证 Pod 实际加载路径。
 - config run/config bundle ID 和 `config_fingerprint`；
 - 输入引用及其摘要；
 - staging config、最终 manifest、diff 和 dry-run 证据；
-- namespace、job-id、模型、镜像、资源和候选节点解析结果；
+- Motor 原生配置副本、namespace/job-id 和最终资源摘要；
 - 当前 parity manifest 与最终 hostPath/`PYTHONPATH` 的对应证据；
 - 是否复用历史配置包及复用依据。
 
 完成必须同时满足：
 
 ```text
-环境证据仍有效
-+ 所有配置输入已解析且无冲突
+当前工作流的环境证据成功
++ Motor 原生配置可被 upstream deployer 接受
 + 最终 manifest 已生成或经 fingerprint 确认可复用
 + 替换、挂载、PYTHONPATH 和 parity 路径对应正确
 + 必需的 manifest 校验与 dry-run 通过
@@ -172,9 +179,10 @@ render 后再 apply。
 
 ### 失败停止位置
 
-- 输入缺失或冲突：停在输入解析。
+- Motor 原生配置缺失或无效：停在输入解析。
 - upstream deployer 或替换失败：停在 staging/render。
-- manifest、dry-run、精确 RBAC、调度或路径检查失败：停在配置验证。
+- namespace 不存在、manifest、dry-run、精确 RBAC 或结构路径检查失败：
+  停在配置验证。
 - 历史配置无法证明相同：不得错误复用，转为重新生成；重新生成仍失败则停止。
 
 任何失败都不得进入实际 apply。
@@ -203,7 +211,8 @@ render 后再 apply。
 - 验证服务最小可访问性。
 - 在 Pod 内验证 `motor`、`vllm`、`vllm_ascend` 的实际加载路径，并与当前
   parity manifest 和固定远端目录对应。
-- 验证只有运行时才能确定的镜像拉取、模型可读和挂载结果。
+- 拉取、调度、挂载或模型问题导致无法 Ready 时停止并保留现场，交给
+  diagnosis；正常部署流程不额外创建诊断 workload。
 - 支持与本次 deploy run 关联的 status、restart、stop 和诊断入口。
 - 保存完整部署状态转换和运行证据。
 

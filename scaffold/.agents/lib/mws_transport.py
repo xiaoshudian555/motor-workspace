@@ -43,6 +43,77 @@ class RemoteTransport(ABC):
                 f"remote mkdir failed for {path}: {result.stderr.strip() or result.stdout.strip()}"
             )
 
+    def acquire_parity_lock(
+        self,
+        lock_path: str,
+        *,
+        stale_seconds: int = 3600,
+    ) -> None:
+        script = "\n".join(
+            [
+                "set -eo pipefail",
+                f"lock={shell_quote(validate_remote_posix_path(lock_path, label='lock_path'))}",
+                f"stale_seconds={int(stale_seconds)}",
+                'mkdir -p "$(dirname "$lock")"',
+                'if mkdir "$lock" 2>/dev/null; then',
+                '  printf "pid=%s\\n" "$$" >"$lock/owner"',
+                "  exit 0",
+                "fi",
+                'if [ -d "$lock" ]; then',
+                '  now="$(date +%s 2>/dev/null || echo 0)"',
+                '  mtime="$(stat -c %Y "$lock" 2>/dev/null || echo 0)"',
+                '  age="$((now - mtime))"',
+                '  if [ "$age" -ge "$stale_seconds" ]; then',
+                '    rm -rf "$lock"',
+                '    if mkdir "$lock" 2>/dev/null; then',
+                '      printf "pid=%s\\n" "$$" >"$lock/owner"',
+                "      exit 0",
+                "    fi",
+                "  fi",
+                "fi",
+                'echo "lock exists: $lock" >&2',
+                "exit 1",
+            ]
+        )
+        result = self.run(script)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "lock busy"
+            raise WorkspaceStateError(
+                f"could not acquire remote parity lock {lock_path}: {detail}"
+            )
+
+    def release_parity_lock(self, lock_path: str) -> None:
+        path = validate_remote_posix_path(lock_path, label="lock_path")
+        self.run(f"rm -rf {shell_quote(path)} >/dev/null 2>&1 || true")
+
+    def directory_file_hashes(self, remote_dir: str) -> dict[str, str]:
+        path = validate_remote_posix_path(remote_dir, label="remote_dir")
+        script = "\n".join(
+            [
+                "set -eo pipefail",
+                f"root={shell_quote(path.rstrip('/'))}",
+                'if [ ! -d "$root" ]; then exit 0; fi',
+                'find "$root" -type f -print0 | sort -z | while IFS= read -r -d "" file; do',
+                '  rel="${file#"$root"/}"',
+                '  hash="$(sha256sum "$file" | awk \'{print $1}\')"',
+                '  printf "%s\\t%s\\n" "$rel" "$hash"',
+                "done",
+            ]
+        )
+        result = self.run(script)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"remote digest scan failed for {path}: "
+                f"{result.stderr.strip() or result.stdout.strip()}"
+            )
+        hashes: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if not line.strip() or "\t" not in line:
+                continue
+            rel, digest = line.split("\t", 1)
+            hashes[rel] = digest.strip()
+        return hashes
+
 
 class SshScpTransport(RemoteTransport):
     def __init__(self, machine: dict[str, Any]) -> None:
@@ -122,6 +193,8 @@ class SshScpTransport(RemoteTransport):
 
 class FakeRemoteTransport(RemoteTransport):
     """In-memory fake remote filesystem for unit tests."""
+
+    _shared_parity_locks: set[str] = set()
 
     def __init__(self, root: Path, *, node: str = "fake-node") -> None:
         self.root = root
@@ -224,6 +297,43 @@ class FakeRemoteTransport(RemoteTransport):
 
     def read_bytes(self, remote_path: str) -> bytes:
         return self._local(remote_path).read_bytes()
+
+    def acquire_parity_lock(
+        self,
+        lock_path: str,
+        *,
+        stale_seconds: int = 3600,
+    ) -> None:
+        del stale_seconds
+        path = validate_remote_posix_path(lock_path, label="lock_path")
+        if path in self._shared_parity_locks:
+            raise WorkspaceStateError(f"could not acquire remote parity lock {path}: lock busy")
+        self._shared_parity_locks.add(path)
+        lock_dir = self._local(path)
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        (lock_dir / "owner").write_text("pid=fake\n", encoding="utf-8")
+
+    def release_parity_lock(self, lock_path: str) -> None:
+        path = validate_remote_posix_path(lock_path, label="lock_path")
+        self._shared_parity_locks.discard(path)
+        local = self._local(path)
+        if local.is_dir():
+            import shutil
+
+            shutil.rmtree(local)
+        elif local.exists():
+            local.unlink()
+
+    def directory_file_hashes(self, remote_dir: str) -> dict[str, str]:
+        local_root = self._local(remote_dir.rstrip("/"))
+        if not local_root.exists():
+            return {}
+        hashes: dict[str, str] = {}
+        for path in sorted(local_root.rglob("*")):
+            if path.is_file():
+                rel = str(path.relative_to(local_root))
+                hashes[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashes
 
 
 def transport_for_machine(

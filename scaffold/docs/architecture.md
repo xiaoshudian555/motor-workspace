@@ -99,17 +99,23 @@ and required file-transfer tools. A recorded kube context or hardware profile
 is a reference, not proof that a Motor deployment is ready.
 
 `motor-deploy-preflight` owns the environment-level check. It combines the
-machine reference, kube context, and environment profile to check Kubernetes
+machine reference, kube context, and the workspace-versioned environment
+contract to check Kubernetes
 API access, baseline read permissions, MindCluster/Volcano/CRDs/controllers,
 device plugins, and the NPU resource types reported by the cluster. It does not
 consume parity, a Motor user config, namespace, model, image, or final
-manifests.
+manifests. Warnings are recorded and may continue; errors or unavailable
+requirements stop immediately. The result is not reused across workflows.
 
 `motor-deploy-configure` owns every check that depends on the concrete deploy
-inputs or final manifests: exact namespace/RBAC, scheduling constraints,
-candidate-node path visibility, model/image references, hostPath/PYTHONPATH
-substitution, upstream deployer dry-run, manifest validation, and Kubernetes
-server-side dry-run.
+inputs or final manifests. Its only business configuration sources are Motor's
+native `user_config.json` and `env.json`; it does not add a deploy profile or
+field-level CLI overrides. It requires the namespace from
+`motor_deploy_config.job_id` to exist, then owns exact namespace/RBAC,
+hostPath/volumeMount/PYTHONPATH injection, upstream deployer dry-run, manifest
+validation, and Kubernetes server-side dry-run. It does not perform pre-apply
+image-pull, model-readability, candidate-node hostPath, or diagnostic workload
+checks.
 
 The results are deliberately different:
 

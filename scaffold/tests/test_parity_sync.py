@@ -45,6 +45,17 @@ def _machine() -> dict:
     }
 
 
+def _machine_ready() -> dict:
+    return {
+        "machine_run_id": "machine-test-1",
+        "alias": "dev1",
+        "machine_ref": {"alias": "dev1", "host": "dev1"},
+        "endpoint": {"host": "dev1"},
+        "checks": [{"name": "ssh", "status": "pass"}],
+        "verified_at": "2026-01-01T00:00:00Z",
+    }
+
+
 def test_fixed_paths_use_machine_workspace_root() -> None:
     paths = build_fixed_source_paths(_machine())
     root = "/mnt/motor-workspace"
@@ -63,11 +74,33 @@ def test_pythonpath_uses_fixed_paths() -> None:
     assert "/current/" not in value
 
 
-def test_build_source_manifest_schema_v2() -> None:
+def test_build_source_manifest_schema_v2(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "a.py").write_text("a\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", repo)
+    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", repo)
+    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm_ascend", repo)
+
+    def fake_git(args: list[str], path: Path):
+        if args[:2] == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args, 0, "deadbeef\n", "")
+        if args[:1] == ["status"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:1] == ["diff"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[:1] == ["ls-files"]:
+            return subprocess.CompletedProcess(args, 0, "a.py\0", "")
+        if args[:2] == ["ls-files", "--error-unmatch"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr("mws_parity._git", fake_git)
     manifest = build_source_manifest(_machine())
     assert manifest["schema_version"] == 2
+    assert manifest["local_content_digest"]
     assert "snapshot_sha256" not in manifest
-    assert "runtime_snapshot_id" not in manifest
     assert manifest["machine"]["alias"] == "dev1"
 
 
@@ -92,6 +125,12 @@ def test_create_repo_tarball_includes_tracked_and_untracked(tmp_path: Path, monk
 
 
 def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
+    FakeRemoteTransport._shared_parity_locks.clear()
+
     motor = tmp_path / "motor"
     motor.mkdir()
     (motor / ".git").mkdir()
@@ -108,27 +147,30 @@ def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) 
         if args[:1] == ["ls-files"]:
             names = sorted(p.name for p in path.iterdir() if p.is_file())
             return subprocess.CompletedProcess(args, 0, "\0".join(names) + ("\0" if names else ""), "")
+        if args[:2] == ["ls-files", "--error-unmatch"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr("mws_parity._git", fake_git)
-    monkeypatch.setattr(
-        "mws_parity.build_source_manifest",
-        lambda machine: {"schema_version": 2, "machine": machine.get("alias")},
-    )
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", motor)
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", motor)
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm_ascend", motor)
 
     machine = _machine()
+    ready = _machine_ready()
     fake_root = tmp_path / "remote"
-    sync_workspace_to_remote(machine, fake_root=fake_root)
+    sync_workspace_to_remote(
+        machine, fake_root=fake_root, machine_ready=ready, skip_fast_path=True
+    )
     motor_dir = fake_root / "mnt/motor-workspace/motor"
     assert (motor_dir / "keep.py").exists()
     assert (motor_dir / "drop.py").exists()
 
     (motor / "drop.py").unlink()
     (motor / "new.py").write_text("new\n", encoding="utf-8")
-    sync_workspace_to_remote(machine, fake_root=fake_root)
+    sync_workspace_to_remote(
+        machine, fake_root=fake_root, machine_ready=ready, skip_fast_path=True
+    )
     assert (motor_dir / "keep.py").exists()
     assert (motor_dir / "new.py").exists()
     assert not (motor_dir / "drop.py").exists()
@@ -157,6 +199,12 @@ def test_ssh_command_is_quoted() -> None:
 
 
 def test_sync_failure_does_not_report_ok(tmp_path: Path, monkeypatch) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
+    FakeRemoteTransport._shared_parity_locks.clear()
+
     motor = tmp_path / "motor"
     motor.mkdir()
     (motor / ".git").mkdir()
@@ -182,7 +230,11 @@ def test_sync_failure_does_not_report_ok(tmp_path: Path, monkeypatch) -> None:
 
     machine = _machine()
     with pytest.raises(Exception):
-        sync_workspace_to_remote(machine, transport=BrokenTransport(tmp_path / "remote"))
+        sync_workspace_to_remote(
+            machine,
+            transport=BrokenTransport(tmp_path / "remote"),
+            machine_ready=_machine_ready(),
+        )
 
 
 def test_node_local_fanout_is_unsupported() -> None:
