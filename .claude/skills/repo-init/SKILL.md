@@ -1,4 +1,4 @@
-<!-- Generated Claude Code shim from .agents/skills/repo-init/SKILL.md. Do not edit. -->
+<!-- Generated Claude Code shim from scaffold/.agents/skills/repo-init/SKILL.md. Do not edit. -->
 ---
 name: repo-init
 description: Initialize motor-workspace after clone — submodules, lock verify, fork topology hints. Use for "初始化仓库", "配置 workspace", first-time setup.
@@ -8,7 +8,7 @@ description: Initialize motor-workspace after clone — submodules, lock verify,
 
 Canonical skill source:
 
-`.agents/skills/repo-init/SKILL.md`
+`scaffold/.agents/skills/repo-init/SKILL.md`
 
 Before using this skill:
 

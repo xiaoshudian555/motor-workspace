@@ -1,4 +1,4 @@
-<!-- Generated Claude Code shim from .agents/skills/remote-code-parity/SKILL.md. Do not edit. -->
+<!-- Generated Claude Code shim from scaffold/.agents/skills/remote-code-parity/SKILL.md. Do not edit. -->
 ---
 name: remote-code-parity
 description: Sync local dirty tree to fixed remote directories under the shared mount root before deploy or verification. Not a build context or image step.
@@ -8,7 +8,7 @@ description: Sync local dirty tree to fixed remote directories under the shared 
 
 Canonical skill source:
 
-`.agents/skills/remote-code-parity/SKILL.md`
+`scaffold/.agents/skills/remote-code-parity/SKILL.md`
 
 Before using this skill:
 

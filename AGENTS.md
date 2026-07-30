@@ -1,17 +1,27 @@
 # Repository instructions
 
-Local `motor` + `vllm` + `vllm-ascend` development scaffold. All three are Git submodules.
+Local `sources/motor` + `sources/vllm` + `sources/vllm-ascend` development
+scaffold. All three are Git submodules under `sources/`.
 
-This repository provides a remote development substrate first, then Motor domain
-skills on top. The primary development path is **remote-code-parity + shared
-mount root hostPath into Pods**, not rebuilding an image for every code change.
+Workflow code lives under `scaffold/`. This repository provides a remote
+development substrate first, then Motor domain skills on top. The primary
+development path is **remote-code-parity + shared mount root hostPath into Pods**,
+not rebuilding an image for every code change.
+
+## Repository layout
+
+```text
+sources/          motor, vllm, vllm-ascend submodules
+scaffold/         skills, lib, remote-dev, profiles, tools, tests, docs
+.motor-workspace-local/   untracked machine/parity/deploy state (repo root)
+```
 
 ## Remote development model
 
 Use native client tools for local files and local shell work.
 
-Use `.remote-dev` remote companion tools for remote endpoints on the shared mount
-root (default `/mnt`, configurable via profile `mount_root`):
+Use `scaffold/.remote-dev` remote companion tools for remote endpoints on the
+shared mount root (default `/mnt`, configurable via profile `mount_root`):
 
 | Local tool | Remote tool |
 |------------|-------------|
@@ -34,13 +44,13 @@ Default endpoint fields:
 - `cwd`, default fixed remote workspace directory
 
 Prefer `host + port` direct endpoints for ordinary remote development.
-Machine inventory is resolved in `.agents/lib` and passed as direct endpoints to
-`.remote-dev` tools.
+Machine inventory is resolved in `scaffold/.agents/lib` and passed as direct
+endpoints to `scaffold/.remote-dev` tools.
 
 ## Skills
 
-Repo-local skills live under `.agents/skills/`. Each has its own `SKILL.md` —
-read that before invoking.
+Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
+`SKILL.md` — read that before invoking.
 
 | Skill | Purpose |
 |-------|---------|
@@ -53,16 +63,16 @@ read that before invoking.
 | `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts (second phase) |
 
 None of these are gates for normal local coding or unrelated Git tasks.
-For remote endpoint work, prefer `.remote-dev` tools first and use skills for
-domain workflows.
+For remote endpoint work, prefer `scaffold/.remote-dev` tools first and use
+skills for domain workflows.
 
 ## Repo-wide rules
 
 - Never write secrets, passwords, or tokens into tracked files.
 - Keep runtime state under `.motor-workspace-local/` and remote-dev state under
-  `.remote-dev/state/`. Both are untracked.
+  `scaffold/.remote-dev/state/`. Both are untracked.
 - Keep `.gitmodules` on community upstream URLs.
-- Prefer `.remote-dev` or skill wrapper scripts over raw SSH for remote work.
+- Prefer `scaffold/.remote-dev` or skill wrapper scripts over raw SSH for remote work.
 - Skill wrappers: progress on `stderr`, final JSON on `stdout`.
 - Development binds one local workspace to one machine and one fixed
   `remote_workspace_root` under the shared mount root.
@@ -82,6 +92,6 @@ domain workflows.
 
 When changing a skill, update the whole package together: `SKILL.md`, `scripts/`,
 `references/`, and supporting files. When the change affects shared state, also
-update `.agents/lib/mws_*.py` and `.agents/scripts/` as applicable.
+update `scaffold/.agents/lib/mws_*.py` and `scaffold/.agents/scripts/` as applicable.
 
-`bin/motorws` is an internal skill backend only — not the product entry point.
+`scaffold/bin/motorws` is an internal skill backend only — not the product entry point.

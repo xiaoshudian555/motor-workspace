@@ -1,4 +1,4 @@
-<!-- Generated Claude Code shim from .agents/skills/machine-management/SKILL.md. Do not edit. -->
+<!-- Generated Claude Code shim from scaffold/.agents/skills/machine-management/SKILL.md. Do not edit. -->
 ---
 name: machine-management
 description: Add, verify, repair, or remove remote NPU machines and kube context references. Use for "添加服务器", "登记机器", machine inventory.
@@ -8,7 +8,7 @@ description: Add, verify, repair, or remove remote NPU machines and kube context
 
 Canonical skill source:
 
-`.agents/skills/machine-management/SKILL.md`
+`scaffold/.agents/skills/machine-management/SKILL.md`
 
 Before using this skill:
 

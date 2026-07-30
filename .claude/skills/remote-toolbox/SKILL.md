@@ -1,4 +1,4 @@
-<!-- Generated Claude Code shim from .agents/skills/remote-toolbox/SKILL.md. Do not edit. -->
+<!-- Generated Claude Code shim from scaffold/.agents/skills/remote-toolbox/SKILL.md. Do not edit. -->
 ---
 name: remote-toolbox
 description: Remote target/probe/exec/job/sync/artifact/cleanup backend. Prefer .remote-dev for ad hoc remote work.
@@ -8,7 +8,7 @@ description: Remote target/probe/exec/job/sync/artifact/cleanup backend. Prefer 
 
 Canonical skill source:
 
-`.agents/skills/remote-toolbox/SKILL.md`
+`scaffold/.agents/skills/remote-toolbox/SKILL.md`
 
 Before using this skill:
 

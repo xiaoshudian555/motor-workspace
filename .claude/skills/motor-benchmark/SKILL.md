@@ -1,4 +1,4 @@
-<!-- Generated Claude Code shim from .agents/skills/motor-benchmark/SKILL.md. Do not edit. -->
+<!-- Generated Claude Code shim from scaffold/.agents/skills/motor-benchmark/SKILL.md. Do not edit. -->
 ---
 name: motor-benchmark
 description: Run benchmarks against a successful motor-k8s-deploy run (second phase).
@@ -8,7 +8,7 @@ description: Run benchmarks against a successful motor-k8s-deploy run (second ph
 
 Canonical skill source:
 
-`.agents/skills/motor-benchmark/SKILL.md`
+`scaffold/.agents/skills/motor-benchmark/SKILL.md`
 
 Before using this skill:
 

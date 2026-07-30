@@ -13,7 +13,7 @@ motor-workspace 按用户工作流划分为三个主要部分：
    和诊断。
 
 三部分的详细职责、完成标志和交接物见
-[docs/functional-boundaries.md](docs/functional-boundaries.md)。
+[scaffold/docs/functional-boundaries.md](scaffold/docs/functional-boundaries.md)。
 
 ```text
 本地 dirty tree
@@ -35,7 +35,8 @@ repo-init
 Development uses **parity sync to fixed remote directories** under the shared
 mount root (profile `mount_root`, default `/mnt`). No snapshot, no `current`
 symlink, no plan digest, and no Git commit is required for daily Python edits.
-Image build under `tools/build/` remains an optional bypass for release/delivery.
+Image build under `scaffold/tools/build/` remains an optional bypass for
+release/delivery.
 
 ## Fixed remote workspace layout
 
@@ -55,23 +56,26 @@ Image build under `tools/build/` remains an optional bypass for release/delivery
 ## Repository layout
 
 ```text
-motor/                         Motor submodule
-vllm/                          vLLM submodule
-vllm-ascend/                   vLLM Ascend submodule
-.agents/skills/                Agent-facing workflows (primary entry)
-.agents/lib/                   Shared workflow implementation
-.remote-dev/                   Generic remote operation substrate
-profiles/                      Shared machine and deploy inputs
-workspace.lock.yaml            diagnostic lock (dirty tree allowed)
-.motor-workspace-local/        ignored state and run evidence
-bin/motorws                    internal skill backend (not the product CLI)
-tools/build/                   optional image bypass (non-default)
+sources/                       Upstream source submodules
+  motor/                       MindIE Motor
+  vllm/                        vLLM
+  vllm-ascend/                 vLLM Ascend
+scaffold/                      Workflow and remote-dev substrate
+  .agents/skills/              Agent-facing workflows (primary entry)
+  .agents/lib/                 Shared workflow implementation
+  .remote-dev/                 Generic remote operation substrate
+  profiles/                    Shared machine and deploy inputs
+  workspace.lock.yaml          diagnostic lock (dirty tree allowed)
+  bin/motorws                  internal skill backend (not the product CLI)
+  tools/build/                 optional image bypass (non-default)
+  docs/                        architecture and boundary docs
+.motor-workspace-local/        ignored state and run evidence (repo root)
 ```
 
-The three functional boundaries do not map one-to-one to three directories.
-Skills are user-facing workflows; `.agents/lib/` and `.remote-dev/` are shared
-implementation layers. Directory ownership is defined in
-[docs/directory-ownership.md](docs/directory-ownership.md).
+The three functional boundaries do not map one-to-one to directories.
+Skills are user-facing workflows; `scaffold/.agents/lib/` and
+`scaffold/.remote-dev/` are shared implementation layers. Directory ownership
+is defined in [scaffold/docs/directory-ownership.md](scaffold/docs/directory-ownership.md).
 
 ## Quick start
 
@@ -80,18 +84,18 @@ git submodule update --init --recursive
 ```
 
 ```bash
-python3 .agents/skills/repo-init/scripts/repo_init_probe.py --compact
-python3 .agents/skills/machine-management/scripts/inventory.py list
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_probe.py --compact
+python3 scaffold/.agents/skills/machine-management/scripts/inventory.py list
 ```
 
 Every skill script writes progress to stderr and one JSON object to stdout.
 
 ## Version locking
 
-Three submodule gitlinks record source commits. `workspace.lock.yaml` is
-diagnostic only: dirty working trees are allowed, and HEAD/lock mismatch is a
-warning—not a deploy blocker. Base image comes from deploy `user_config.json`
-first.
+Three submodule gitlinks under `sources/` record source commits.
+`scaffold/workspace.lock.yaml` is diagnostic only: dirty working trees are
+allowed, and HEAD/lock mismatch is a warning—not a deploy blocker. Base image
+comes from deploy `user_config.json` first.
 
 ## Safety
 
@@ -99,6 +103,7 @@ first.
 - Apply, stop, restart and remote directory overwrite require explicit consent flags.
 - Deployment adapters invoke Motor's existing deployer/config semantics.
 
-See [docs/functional-boundaries.md](docs/functional-boundaries.md) for the
-three user-workflow boundaries and [docs/architecture.md](docs/architecture.md)
-for implementation layers and runtime constraints.
+See [scaffold/docs/functional-boundaries.md](scaffold/docs/functional-boundaries.md)
+for the three user-workflow boundaries and
+[scaffold/docs/architecture.md](scaffold/docs/architecture.md) for implementation
+layers and runtime constraints.

@@ -1,4 +1,4 @@
-<!-- Generated Claude Code shim from .agents/skills/motor-k8s-deploy/SKILL.md. Do not edit. -->
+<!-- Generated Claude Code shim from scaffold/.agents/skills/motor-k8s-deploy/SKILL.md. Do not edit. -->
 ---
 name: motor-k8s-deploy
 description: Plan, apply, status, stop, and restart Motor on Kubernetes via upstream deployer. Auto-runs parity before first plan.
@@ -8,7 +8,7 @@ description: Plan, apply, status, stop, and restart Motor on Kubernetes via upst
 
 Canonical skill source:
 
-`.agents/skills/motor-k8s-deploy/SKILL.md`
+`scaffold/.agents/skills/motor-k8s-deploy/SKILL.md`
 
 Before using this skill:
 

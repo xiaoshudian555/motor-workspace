@@ -1,12 +1,12 @@
 [submodule "motor"]
-	path = motor
+	path = sources/motor
 	url = https://gitcode.com/Ascend/MindIE-Motor.git
 	branch = master
 [submodule "vllm-ascend"]
-	path = vllm-ascend
+	path = sources/vllm-ascend
 	url = git@github.com:vllm-project/vllm-ascend.git
 	branch = main
 [submodule "vllm"]
-	path = vllm
+	path = sources/vllm
 	url = git@github.com:vllm-project/vllm.git
 	branch = main
