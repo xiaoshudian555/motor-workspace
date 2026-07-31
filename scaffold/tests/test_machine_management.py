@@ -26,6 +26,11 @@ from mws_local_state import (  # noqa: E402
     validate_machine_record,
 )
 from mws_machine_target import run_machine_ready_checks  # noqa: E402
+from mws_ssh_setup import (  # noqa: E402
+    batchmode_ready,
+    read_public_key,
+    setup_passwordless_ssh,
+)
 from mws_transport import RemoteTransport  # noqa: E402
 from mws_validate import ValidationError, validate_remote_workspace_in_mount  # noqa: E402
 
@@ -436,3 +441,66 @@ def test_inventory_script_list_and_remove(inventory_paths) -> None:
     exit_code, payload = _capture_script_main(module, ["remove", "dev1"])
     assert exit_code == 0
     assert load_inventory()["machines"] == {}
+
+
+def test_ssh_setup_skips_bootstrap_when_batchmode_ready(tmp_path, monkeypatch) -> None:
+    pub = tmp_path / "id_test.pub"
+    priv = tmp_path / "id_test"
+    pub.write_text("ssh-ed25519 AAAATEST test@example\n", encoding="utf-8")
+    priv.write_text("fake-private-key\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "mws_ssh_setup.batchmode_ready",
+        lambda **kwargs: True,
+    )
+
+    result = setup_passwordless_ssh(
+        host="1.2.3.4",
+        public_key_path=pub,
+        private_key_path=priv,
+    )
+    assert result["bootstrap_method"] == "existing"
+    assert any(item["name"] == "batchmode_before" for item in result["checks"])
+
+
+def test_ssh_setup_requires_password_when_batchmode_missing(tmp_path) -> None:
+    pub = tmp_path / "id_test.pub"
+    priv = tmp_path / "id_test"
+    pub.write_text("ssh-ed25519 AAAATEST test@example\n", encoding="utf-8")
+    priv.write_text("fake-private-key\n", encoding="utf-8")
+
+    with pytest.raises(WorkspaceStateError, match="passwordless SSH is not configured"):
+        setup_passwordless_ssh(
+            host="1.2.3.4",
+            public_key_path=pub,
+            private_key_path=priv,
+        )
+
+
+def test_ssh_setup_script_uses_inventory_alias(inventory_paths, monkeypatch) -> None:
+    upsert_machine(_machine(host="9.9.9.9"))
+    monkeypatch.setattr(
+        "machine_ssh_setup.setup_passwordless_ssh",
+        lambda **kwargs: {
+            "host": kwargs["host"],
+            "port": kwargs["port"],
+            "user": kwargs["user"],
+            "public_key": "/tmp/id_test.pub",
+            "private_key": "/tmp/id_test",
+            "bootstrap_method": "existing",
+            "checks": [],
+        },
+    )
+    module = _load_script_module("machine_ssh_setup")
+    exit_code, payload = _capture_script_main(module, ["--alias", "dev1"])
+    assert exit_code == 0
+    assert payload["host"] == "9.9.9.9"
+    assert payload["bootstrap_method"] == "existing"
+
+
+def test_read_public_key_rejects_empty_file(tmp_path) -> None:
+    path = tmp_path / "empty.pub"
+    path.write_text("\n", encoding="utf-8")
+    with pytest.raises(WorkspaceStateError, match="empty or invalid"):
+        read_public_key(path)
+

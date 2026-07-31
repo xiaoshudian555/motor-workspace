@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import tarfile
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -116,6 +117,10 @@ class RemoteTransport(ABC):
 
 
 class SshScpTransport(RemoteTransport):
+    SSH_COMMAND_TIMEOUT_SECONDS = 60
+    SSH_STDIN_CHUNK_BYTES = 2048
+    SSH_CHUNK_UPLOAD_WORKERS = 16
+
     def __init__(self, machine: dict[str, Any]) -> None:
         host = require_hostname(str(machine["host"]), label="host")
         self.user = str(machine.get("user", "root"))
@@ -128,6 +133,10 @@ class SshScpTransport(RemoteTransport):
             "ssh",
             "-o",
             "BatchMode=yes",
+            "-o",
+            "GSSAPIAuthentication=no",
+            "-o",
+            "PreferredAuthentications=publickey",
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
@@ -143,27 +152,63 @@ class SshScpTransport(RemoteTransport):
         ]
 
     def run(self, remote_command: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            self._ssh(remote_command),
-            check=False,
-            text=True,
-            capture_output=True,
-        )
+        command = self._ssh(remote_command)
+        try:
+            return subprocess.run(
+                command,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=self.SSH_COMMAND_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=124,
+                stdout=exc.stdout or "",
+                stderr=(
+                    f"SSH command timed out after {self.SSH_COMMAND_TIMEOUT_SECONDS}s"
+                ),
+            )
 
     def upload_file(self, local_path: str, remote_path: str) -> None:
+        data = Path(local_path).read_bytes()
+        self.upload_bytes(remote_path, data)
+
+    def upload_bytes(self, remote_path: str, data: bytes) -> None:
         path = validate_remote_posix_path(remote_path, label="remote_path")
         remote_tmp = f"/tmp/mws-upload-{hashlib.sha256(path.encode()).hexdigest()[:12]}.bin"
-        scp = [
-            "scp",
-            "-P",
-            str(self.port),
-            local_path,
-            f"{self.target}:{remote_tmp}",
-        ]
-        result = subprocess.run(scp, check=False, text=True, capture_output=True)
+        upload_timeout = max(
+            self.SSH_COMMAND_TIMEOUT_SECONDS,
+            self.SSH_COMMAND_TIMEOUT_SECONDS + len(data) // (256 * 1024),
+        )
+        if len(data) > self.SSH_STDIN_CHUNK_BYTES:
+            self._upload_chunked(
+                remote_tmp=remote_tmp,
+                data=data,
+                timeout=upload_timeout,
+            )
+            move = self.run(
+                f"mkdir -p {shell_quote(str(PurePosixPath(path).parent))} && "
+                f"mv {shell_quote(remote_tmp)} {shell_quote(path)}"
+            )
+            if move.returncode:
+                raise WorkspaceStateError(
+                    f"remote mv failed: {move.stderr.strip() or move.stdout.strip()}"
+                )
+            return
+        result = subprocess.run(
+            self._ssh(f"head -c {len(data)} > {shell_quote(remote_tmp)}"),
+            input=data,
+            check=False,
+            capture_output=True,
+            timeout=upload_timeout,
+        )
         if result.returncode:
+            stderr = (result.stderr or b"").decode(errors="replace")
+            stdout = (result.stdout or b"").decode(errors="replace")
             raise WorkspaceStateError(
-                f"scp upload failed: {result.stderr.strip() or result.stdout.strip()}"
+                f"SSH streaming upload failed: {stderr.strip() or stdout.strip()}"
             )
         move = self.run(
             f"mkdir -p {shell_quote(str(PurePosixPath(path).parent))} && "
@@ -174,14 +219,52 @@ class SshScpTransport(RemoteTransport):
                 f"remote mv failed: {move.stderr.strip() or move.stdout.strip()}"
             )
 
-    def upload_bytes(self, remote_path: str, data: bytes) -> None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as handle:
-            handle.write(data)
-            local_path = handle.name
+    def _upload_chunked(self, *, remote_tmp: str, data: bytes, timeout: float) -> None:
+        chunk_size = self.SSH_STDIN_CHUNK_BYTES
+        chunks = [
+            (index, data[offset : offset + chunk_size])
+            for index, offset in enumerate(range(0, len(data), chunk_size))
+        ]
+
+        def upload_chunk(item: tuple[int, bytes]) -> None:
+            index, chunk = item
+            part_path = f"{remote_tmp}.part-{index:08d}"
+            result = subprocess.run(
+                self._ssh(f"head -c {len(chunk)} > {shell_quote(part_path)}"),
+                input=chunk,
+                check=False,
+                capture_output=True,
+                timeout=timeout,
+            )
+            if result.returncode:
+                stderr = (result.stderr or b"").decode(errors="replace")
+                stdout = (result.stdout or b"").decode(errors="replace")
+                raise WorkspaceStateError(
+                    f"SSH chunk upload failed for chunk {index}: "
+                    f"{stderr.strip() or stdout.strip()}"
+                )
+
         try:
-            self.upload_file(local_path, remote_path)
-        finally:
-            os.unlink(local_path)
+            with ThreadPoolExecutor(
+                max_workers=min(self.SSH_CHUNK_UPLOAD_WORKERS, len(chunks))
+            ) as executor:
+                futures = [executor.submit(upload_chunk, item) for item in chunks]
+                for future in as_completed(futures):
+                    future.result()
+        except Exception:
+            self.run(f"rm -f {shell_quote(remote_tmp)}.part-* {shell_quote(remote_tmp)}")
+            raise
+
+        assemble = self.run(
+            f"cat {shell_quote(remote_tmp)}.part-* > {shell_quote(remote_tmp)} && "
+            f"rm -f {shell_quote(remote_tmp)}.part-*"
+        )
+        if assemble.returncode:
+            self.run(f"rm -f {shell_quote(remote_tmp)}.part-* {shell_quote(remote_tmp)}")
+            raise WorkspaceStateError(
+                f"remote chunk assembly failed: "
+                f"{assemble.stderr.strip() or assemble.stdout.strip()}"
+            )
 
     def read_bytes(self, remote_path: str) -> bytes:
         path = validate_remote_posix_path(remote_path, label="remote_path")

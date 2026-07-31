@@ -41,14 +41,15 @@ Machine username/profile and vLLM CI pin alignment are out of scope for repo-ini
 
 `repo_init_apply.py`:
 
-- `--submodules` — sync + init recursive submodules
+- `--submodules` — sync + init direct workspace submodules
+- `--recursive-submodules` — also initialize nested third-party submodules
 - `--configure-remotes --repo <role> [--origin-url …] [--upstream-url …]` — conservative origin/upstream updates
 
 `repo_topology.py` provides lower-level compare/configure/ensure-main helpers.
 
 Apply order for broad init:
 
-1. recursive submodule init
+1. direct workspace submodule init
 2. remote rewiring for workspace (if approved)
 3. remote rewiring for motor / vllm / vllm-ascend (only after submodule init)
 

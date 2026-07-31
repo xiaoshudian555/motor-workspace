@@ -320,6 +320,37 @@ def test_init_submodules_noop_without_gitmodules(bare_repo: Path, monkeypatch: p
     assert second["status"] == "ok"
 
 
+def test_init_submodules_defaults_to_direct_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import repo_init_apply
+
+    calls: list[list[str]] = []
+
+    def fake_git_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(repo_init_apply, "_git_run", fake_git_run)
+    assert repo_init_apply.init_submodules()["status"] == "ok"
+    assert calls == [["submodule", "sync"], ["submodule", "update", "--init"]]
+
+
+def test_init_submodules_can_include_nested_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    import repo_init_apply
+
+    calls: list[list[str]] = []
+
+    def fake_git_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(repo_init_apply, "_git_run", fake_git_run)
+    assert repo_init_apply.init_submodules(recursive=True)["status"] == "ok"
+    assert calls == [
+        ["submodule", "sync", "--recursive"],
+        ["submodule", "update", "--init", "--recursive"],
+    ]
+
+
 def test_apply_configure_remotes_preserves_extra(bare_repo: Path) -> None:
     _add_remote(bare_repo, "origin", "git@github.com:old/repo.git")
     _add_remote(bare_repo, "extra", "git@github.com:other/extra.git")

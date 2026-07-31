@@ -192,19 +192,39 @@ def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) 
     assert not (motor_dir / "drop.py").exists()
 
 
-def test_scp_uses_local_temp_file_not_stdin(monkeypatch) -> None:
-    calls: list[list[str]] = []
+def test_ssh_upload_streams_bytes_over_stdin(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict]] = []
 
     def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr("mws_transport.subprocess.run", fake_run)
     transport = SshScpTransport({"host": "dev1", "user": "root", "port": 22})
     transport.upload_bytes("/tmp/demo.bin", b"payload")
-    scp_cmds = [cmd for cmd in calls if cmd and cmd[0] == "scp"]
-    assert scp_cmds
-    assert scp_cmds[0][3] != "-"
+    assert all(cmd[0] != "scp" for cmd, _ in calls)
+    upload_cmd, upload_kwargs = calls[0]
+    assert upload_cmd[0] == "ssh"
+    assert "head -c 7" in upload_cmd[-1]
+    assert upload_kwargs["input"] == b"payload"
+
+
+def test_ssh_large_upload_chunks_bytes_over_stdin(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr("mws_transport.subprocess.run", fake_run)
+    monkeypatch.setattr(SshScpTransport, "SSH_STDIN_CHUNK_BYTES", 2)
+    transport = SshScpTransport({"host": "dev1", "user": "root", "port": 22})
+    transport.upload_bytes("/tmp/demo.bin", b"payload")
+    upload_calls = [call for call in calls if "head -c" in call[0][-1]]
+    assert len(upload_calls) == 4
+    assert all(len(call[1]["input"]) <= 2 for call in upload_calls)
+    assert any("cat" in cmd[-1] for cmd, _ in calls)
+    assert all(cmd[0] != "scp" for cmd, _ in calls)
 
 
 def test_ssh_command_is_quoted() -> None:

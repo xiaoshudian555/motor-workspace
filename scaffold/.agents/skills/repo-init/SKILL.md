@@ -14,6 +14,8 @@ Machine inventory, remote NPU attach, and parity sync belong to later skills.
 ```bash
 python3 scaffold/.agents/skills/repo-init/scripts/repo_init_probe.py --compact
 python3 scaffold/.agents/skills/repo-init/scripts/repo_init_apply.py --submodules
+# Optional: also fetch nested third-party submodules such as vllm-ascend/catlass.
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_apply.py --submodules --recursive-submodules
 python3 scaffold/.agents/skills/repo-init/scripts/repo_topology.py configure --repo <path> [--origin-url URL] [--upstream-url URL]
 ```
 
@@ -35,7 +37,9 @@ Progress on stderr as `__MWS_PROGRESS__=<json>`, final JSON on stdout.
 - Preserve extra remotes such as `upstream2`; never delete unknown remotes.
 - Keep secrets out of tracked files.
 - State lives under `.motor-workspace-local/`; `workspace.lock.yaml` is diagnostic only.
-- Submodule init must complete before configuring submodule remotes.
+- Direct workspace submodule init must complete before configuring submodule remotes.
+- Nested third-party submodules are optional for the runtime parity/deploy path and
+  require the explicit `--recursive-submodules` flag.
 - Machine username/profile setup belongs to `machine-management`, not repo-init.
 
 ## Workflow

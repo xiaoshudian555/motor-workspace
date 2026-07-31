@@ -203,9 +203,9 @@ def test_immutable_run_rejected_on_second_write(machine_chain_env, monkeypatch) 
             module.main()
 
 
-def test_consumer_requires_explicit_machine_run_id(machine_chain_env) -> None:
+def test_consumer_rejects_missing_machine_ready_run(machine_chain_env) -> None:
     upsert_machine(_machine())
-    with pytest.raises(WorkspaceStateError, match="machine_run_id is required"):
+    with pytest.raises(WorkspaceStateError, match="no successful machine-ready run found"):
         load_machine_ready_evidence("dev1")
 
 

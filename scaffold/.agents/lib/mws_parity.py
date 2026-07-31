@@ -233,11 +233,30 @@ def load_machine_ready_evidence(
     *,
     machine_run_id: str | None = None,
 ) -> dict[str, Any]:
-    if not machine_run_id or not str(machine_run_id).strip():
-        raise WorkspaceStateError(
-            f"machine_run_id is required to load machine-ready evidence for {machine_alias!r}"
-        )
-    run_id = str(machine_run_id).strip()
+    run_id = str(machine_run_id or "").strip()
+    if not run_id:
+        candidates = []
+        if MACHINE_RUNS_DIR.exists():
+            candidates = sorted(
+                MACHINE_RUNS_DIR.glob("*/run.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        for candidate in candidates:
+            record = load_json(candidate, default={})
+            if not isinstance(record, dict):
+                continue
+            if (
+                record.get("kind") == "machine-ready"
+                and record.get("status") == "ready"
+                and str(record.get("alias") or record.get("machine") or "") == machine_alias
+            ):
+                run_id = candidate.parent.name
+                break
+        if not run_id:
+            raise WorkspaceStateError(
+                f"no successful machine-ready run found for {machine_alias!r}"
+            )
     run_path = MACHINE_RUNS_DIR / run_id / "run.json"
     if not run_path.exists():
         raise WorkspaceStateError(

@@ -18,10 +18,40 @@ deploy readiness.
 python3 .agents/skills/machine-management/scripts/inventory.py list
 python3 .agents/skills/machine-management/scripts/inventory.py get dev1
 python3 .agents/skills/machine-management/scripts/machine_add.py --alias dev1 --host 1.2.3.4 --mount-root /mnt
+python3 .agents/skills/machine-management/scripts/machine_ssh_setup.py --host 1.2.3.4 --password-stdin
 python3 .agents/skills/machine-management/scripts/machine_verify.py --alias dev1
 python3 .agents/skills/machine-management/scripts/machine_repair.py --alias dev1 --mount-root /mnt
 python3 .agents/skills/machine-management/scripts/machine_remove.py --alias dev1
 ```
+
+## SSH bootstrap (one-time)
+
+Downstream transport uses `BatchMode=yes` and **requires key-based login**. Password
+auth is only for the one-time bootstrap step below.
+
+Preferred order:
+
+1. If key login already works, `machine_ssh_setup.py` exits immediately as ok.
+2. Otherwise pass the login password once via **stdin** or an env var — never
+   write it into inventory, profiles, or tracked files.
+
+```bash
+# before machine_add, or after add using inventory alias
+printf '%s' "$MWS_SSH_PASSWORD" | \
+  python3 .agents/skills/machine-management/scripts/machine_ssh_setup.py \
+    --host 1.2.3.4 --password-stdin
+
+python3 .agents/skills/machine-management/scripts/machine_ssh_setup.py \
+  --alias dev1 --password-env MWS_SSH_PASSWORD
+```
+
+Bootstrap backends (automatic):
+
+- `sshpass` when available on PATH
+- otherwise `paramiko` (`python3 -m pip install paramiko`)
+
+The script appends the local public key to remote `~/.ssh/authorized_keys` if
+missing, fixes permissions, then verifies `ssh -o BatchMode=yes ... echo ok`.
 
 ## machine-ready boundary
 

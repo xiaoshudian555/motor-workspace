@@ -11,6 +11,10 @@ python3 scaffold/.agents/skills/repo-init/scripts/repo_init_probe.py
 
 ```bash
 python3 scaffold/.agents/skills/repo-init/scripts/repo_init_apply.py --submodules
+
+# Optional native-build dependency initialization:
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_apply.py \
+  --submodules --recursive-submodules
 ```
 
 ## Apply remote topology (after user consent)

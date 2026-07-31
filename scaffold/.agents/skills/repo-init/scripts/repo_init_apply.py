@@ -40,16 +40,22 @@ def _git_run(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def init_submodules() -> dict[str, Any]:
+def init_submodules(*, recursive: bool = False) -> dict[str, Any]:
     progress("initializing submodules")
-    result = _git_run(["submodule", "sync", "--recursive"])
+    sync_args = ["submodule", "sync"]
+    update_args = ["submodule", "update", "--init"]
+    if recursive:
+        sync_args.append("--recursive")
+        update_args.append("--recursive")
+
+    result = _git_run(sync_args)
     if result.returncode:
         return {
             "status": "error",
             "errors": [result.stderr.strip() or result.stdout.strip()],
         }
 
-    result = _git_run(["submodule", "update", "--init", "--recursive"])
+    result = _git_run(update_args)
     if result.returncode:
         return {
             "status": "error",
@@ -98,7 +104,12 @@ def main() -> int:
     parser.add_argument(
         "--submodules",
         action="store_true",
-        help="initialize recursive submodules (requires explicit consent flag)",
+        help="initialize direct workspace submodules (requires explicit consent flag)",
+    )
+    parser.add_argument(
+        "--recursive-submodules",
+        action="store_true",
+        help="also initialize nested third-party submodules",
     )
     parser.add_argument(
         "--configure-remotes",
@@ -123,7 +134,7 @@ def main() -> int:
     actions: list[dict[str, Any]] = []
 
     if args.submodules:
-        sub_result = init_submodules()
+        sub_result = init_submodules(recursive=args.recursive_submodules)
         actions.append(sub_result)
         if sub_result.get("status") == "error":
             envelope = build_result_envelope(

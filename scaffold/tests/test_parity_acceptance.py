@@ -321,8 +321,8 @@ def test_mid_failure_manifest_not_ok(
         )
 
 
-def test_machine_ready_required(parity_env: Path) -> None:
-    with pytest.raises(Exception, match="machine_run_id is required"):
+def test_machine_ready_missing(parity_env: Path) -> None:
+    with pytest.raises(Exception, match="no successful machine-ready run found"):
         load_machine_ready_evidence("dev1")
 
 
