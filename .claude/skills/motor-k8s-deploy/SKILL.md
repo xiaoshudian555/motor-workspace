@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/motor-k8s-deploy/SKILL.md. Do not edit. -->
 ---
 name: motor-k8s-deploy
-description: Plan, apply, status, stop, and restart Motor on Kubernetes via upstream deployer. Auto-runs parity before first plan.
+description: Apply, status, stop, and restart Motor using an immutable deploy-config-ready bundle.
 ---
 
 # motor-k8s-deploy

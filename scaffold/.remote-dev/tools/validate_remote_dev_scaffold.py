@@ -200,7 +200,7 @@ def live_endpoint_checks(args: argparse.Namespace) -> dict[str, Any]:
         return {"status": "skipped", "reason": "no endpoint selector was provided"}
     timeout_ms = args.timeout_ms
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    scratch_root = (endpoint.get("cwd") or "/vllm-workspace").rstrip("/")
+    scratch_root = (endpoint.get("cwd") or "/mnt/motor-workspace").rstrip("/")
     scratch = f"{scratch_root}/.remote-dev/validation/{stamp}"
     narrow_endpoint = {**endpoint, "root": scratch_root, "cwd": scratch_root}
     checks: list[dict[str, Any]] = []

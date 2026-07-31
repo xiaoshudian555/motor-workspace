@@ -239,6 +239,8 @@ def test_probe_read_only_no_profile_write(tmp_path: Path, monkeypatch: pytest.Mo
         "verify_lock",
         lambda **_: {"status": "ok", "errors": [], "warnings": []},
     )
+    monkeypatch.setattr("mws_local_state.LOCAL_ROOT", tmp_path / "state", raising=False)
+    monkeypatch.setattr("mws_run_state.LOCAL_ROOT", tmp_path / "state", raising=False)
     monkeypatch.setattr(sys, "argv", ["repo_init_probe.py"])
 
     rc = repo_init_probe.main()
@@ -305,7 +307,7 @@ def test_inspect_repo_uninitialized_submodule(workspace_with_submodule: Path) ->
 def test_apply_no_action_error() -> None:
     result, payload = _run_json(APPLY)
     assert result.returncode == 1
-    assert payload["status"] == "error"
+    assert payload["status"] == "failed"
 
 
 def test_init_submodules_noop_without_gitmodules(bare_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

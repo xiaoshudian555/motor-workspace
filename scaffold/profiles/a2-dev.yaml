@@ -8,10 +8,7 @@
   "mount_root": "/mnt",
   "parity_backend": "shared-hostpath",
   "kubernetes": {
-    "context": "",
-    "namespace": "motor-workspace-dev",
-    "volcano_queue": "default",
-    "scheduler_name": "volcano"
+    "context": ""
   },
   "mindcluster": {
     "component_patterns": [

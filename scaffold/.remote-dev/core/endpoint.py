@@ -11,8 +11,8 @@ from typing import Any
 from .errors import EndpointError
 
 DEFAULT_USER = os.environ.get("REMOTE_DEV_DEFAULT_USER", "root")
-DEFAULT_ROOT = os.environ.get("REMOTE_DEV_DEFAULT_ROOT", "/")
-DEFAULT_CWD = os.environ.get("REMOTE_DEV_DEFAULT_CWD", "/vllm-workspace")
+DEFAULT_ROOT = os.environ.get("REMOTE_DEV_DEFAULT_ROOT", "/mnt")
+DEFAULT_CWD = os.environ.get("REMOTE_DEV_DEFAULT_CWD", "/mnt/motor-workspace")
 
 
 @dataclass(frozen=True)

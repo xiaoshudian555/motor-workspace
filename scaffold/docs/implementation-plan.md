@@ -1,4 +1,7 @@
-# Motor Workspace 3+3 实施计划
+# Motor Workspace 3+3 实施计划（历史材料）
+
+> **状态：历史参考。** 当前待办以 [`technical-debt.md`](technical-debt.md) 为准。
+> 本文保留并行工作包与 VAWS 迁移记录，**不要**再作为 Agent 执行入口。
 
 本文把 `technical-debt.md` 中已经明确的实现偏差拆成可并行工作包。目标不是让
 各 Agent 自行补设计，而是在固定文件边界内迁移、修复和补测试。

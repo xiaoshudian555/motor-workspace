@@ -54,13 +54,13 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 
 | Skill | Purpose |
 |-------|---------|
-| `repo-init` | Initialize workspace: gh, GitHub auth, submodules, fork topology, lock |
+| `repo-init` | Initialize workspace: gh, GitHub auth, submodules, fork topology, lock; produces `workspace-ready` (audit only, not a downstream gate) |
 | `machine-management` | Add / verify / repair / remove remote NPU machine + kube context + mount root |
 | `remote-toolbox` | Remote target/probe/exec/job/sync/artifact/cleanup backend |
 | `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
-| `motor-deploy-preflight`（target, not implemented） | Validate only the K8s/MindCluster base environment |
-| `motor-deploy-configure`（target, not implemented） | Generate/reuse and validate an immutable deploy config bundle |
-| `motor-k8s-deploy` | Current legacy Plan / apply / status / stop / restart wrapper; target is apply/Ready/runtime proof only |
+| `motor-deploy-preflight` | K8s/MindCluster environment preflight (read-only); produces `deploy-environment-ready` |
+| `motor-deploy-configure` | Motor native config → immutable bundle + dry-run; produces `deploy-config-ready` |
+| `motor-k8s-deploy` | Apply immutable config bundle, Ready/runtime source proof; produces `deploy-complete` |
 | `motor-benchmark` | Benchmark a successful deploy run (third major part) |
 | `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts |
 

@@ -17,9 +17,11 @@ sys.path.insert(0, str(SCRIPTS))
 
 from repo_paths import REPO_ROOT  # noqa: E402
 
-from mws_result import emit, progress  # noqa: E402
+from mws_result import build_result_envelope, emit_result, progress, utc_now_iso  # noqa: E402
+from mws_run_state import new_run_id, new_workflow_run_id  # noqa: E402
 
 from _repo_init_common import REPO_PATHS, REPO_ROLES  # noqa: E402
+from repo_init_probe import build_probe_payload, write_workspace_ready_from_probe  # noqa: E402
 from repo_topology import (  # noqa: E402
     RepoTopologyError,
     configure_remotes,
@@ -124,21 +126,44 @@ def main() -> int:
         sub_result = init_submodules()
         actions.append(sub_result)
         if sub_result.get("status") == "error":
-            return emit({"status": "error", "errors": sub_result.get("errors", []), "actions": actions})
+            envelope = build_result_envelope(
+                kind="repo-init-apply",
+                run_id=new_run_id("repo-init"),
+                workflow_run_id=new_workflow_run_id(),
+                checks=[],
+                started_at=utc_now_iso(),
+                errors=sub_result.get("errors", []),
+                status="failed",
+                extra={"actions": actions},
+            )
+            return emit_result(envelope)
 
     if args.configure_remotes:
         if not args.repo:
-            return emit({"status": "error", "errors": ["--configure-remotes requires --repo"]})
-        if not args.origin_url and not args.upstream_url and args.gh_default == "none":
-            return emit(
-                {
-                    "status": "error",
-                    "errors": [
-                        "--configure-remotes requires at least one of "
-                        "--origin-url, --upstream-url, or --gh-default"
-                    ],
-                }
+            envelope = build_result_envelope(
+                kind="repo-init-apply",
+                run_id=new_run_id("repo-init"),
+                workflow_run_id=new_workflow_run_id(),
+                checks=[],
+                started_at=utc_now_iso(),
+                errors=["--configure-remotes requires --repo"],
+                status="failed",
             )
+            return emit_result(envelope)
+        if not args.origin_url and not args.upstream_url and args.gh_default == "none":
+            envelope = build_result_envelope(
+                kind="repo-init-apply",
+                run_id=new_run_id("repo-init"),
+                workflow_run_id=new_workflow_run_id(),
+                checks=[],
+                started_at=utc_now_iso(),
+                errors=[
+                    "--configure-remotes requires at least one of "
+                    "--origin-url, --upstream-url, or --gh-default"
+                ],
+                status="failed",
+            )
+            return emit_result(envelope)
         topo_result = apply_topology(
             repo_role=args.repo,
             origin_url=args.origin_url,
@@ -147,12 +172,59 @@ def main() -> int:
         )
         actions.append(topo_result)
         if topo_result.get("status") == "error":
-            return emit({"status": "error", "errors": topo_result.get("errors", []), "actions": actions})
+            envelope = build_result_envelope(
+                kind="repo-init-apply",
+                run_id=new_run_id("repo-init"),
+                workflow_run_id=new_workflow_run_id(),
+                checks=[],
+                started_at=utc_now_iso(),
+                errors=topo_result.get("errors", []),
+                status="failed",
+                extra={"actions": actions},
+            )
+            return emit_result(envelope)
 
     if not actions:
-        return emit({"status": "error", "errors": ["no apply action selected"]})
+        envelope = build_result_envelope(
+            kind="repo-init-apply",
+            run_id=new_run_id("repo-init"),
+            workflow_run_id=new_workflow_run_id(),
+            checks=[],
+            started_at=utc_now_iso(),
+            errors=["no apply action selected"],
+            status="failed",
+        )
+        return emit_result(envelope)
 
-    return emit({"status": "ok", "actions": actions})
+    errors: list[str] = []
+    for item in actions:
+        if item.get("status") == "error":
+            errors.extend(item.get("errors") or [])
+    if errors:
+        envelope = build_result_envelope(
+            kind="repo-init-apply",
+            run_id=new_run_id("repo-init"),
+            workflow_run_id=new_workflow_run_id(),
+            checks=[],
+            started_at=utc_now_iso(),
+            errors=errors,
+            status="failed",
+            extra={"actions": actions},
+        )
+        return emit_result(envelope)
+
+    progress("recording workspace-ready evidence after apply")
+    workspace_envelope = write_workspace_ready_from_probe(build_probe_payload())
+    apply_envelope = build_result_envelope(
+        kind="repo-init-apply",
+        run_id=new_run_id("repo-init"),
+        workflow_run_id=str(workspace_envelope.get("workflow_run_id")),
+        checks=[{"name": "apply", "status": "ok", "message": "apply actions completed"}],
+        started_at=utc_now_iso(),
+        upstream_refs=[{"kind": "workspace-ready", "run_id": workspace_envelope["run_id"]}],
+        extra={"actions": actions, "workspace_run_id": workspace_envelope["run_id"]},
+    )
+    return emit_result(apply_envelope)
 
 
 if __name__ == "__main__":

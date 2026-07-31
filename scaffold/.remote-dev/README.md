@@ -10,8 +10,8 @@ Default endpoint fields:
 - `host`
 - `port`
 - `user`, default `root`
-- `root`, default `/` (full remote path permissions by default)
-- `cwd`, default `/vllm-workspace`
+- `root`, default `/mnt` (shared mount root)
+- `cwd`, default `/mnt/motor-workspace` (under shared mount root)
 
 Primary tools:
 
@@ -82,7 +82,7 @@ Scaffold validation is available as one JSON-reporting entry point:
 
 ```bash
 python3 .remote-dev/tools/validate_remote_dev_scaffold.py --local-only
-python3 .remote-dev/tools/validate_remote_dev_scaffold.py --host 173.131.1.2 --port 46000 --root /vllm-workspace --cwd /vllm-workspace
+python3 .remote-dev/tools/validate_remote_dev_scaffold.py --host 173.131.1.2 --port 46000 --root /mnt/motor-workspace --cwd /mnt/motor-workspace
 ```
 
 The validator runs local contract gates, reports MCP/CLI burden metrics, and can

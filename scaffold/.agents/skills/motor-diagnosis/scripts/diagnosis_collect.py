@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 import uuid
@@ -12,11 +11,13 @@ SCAFFOLD = Path(__file__).resolve().parents[4]
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
-from repo_paths import REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
+from repo_paths import REPO_ROOT  # noqa: E402
 
-from mws_deploy import kubectl_base, load_profile, load_plan_from_dir  # noqa: E402
-from mws_result import emit, progress  # noqa: E402
-from mws_run_state import load_deploy_run, validation_run_dir  # noqa: E402
+from mws_deploy import kubectl_base_from_context  # noqa: E402
+from mws_diagnosis import resolve_diagnosis_context  # noqa: E402
+from mws_local_state import WorkspaceStateError, utc_now_iso  # noqa: E402
+from mws_result import build_result_envelope, emit_result, progress, utc_now_iso as result_now  # noqa: E402
+from mws_run_state import validation_run_dir  # noqa: E402
 from mws_state import atomic_write_json  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 
@@ -25,40 +26,91 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machine", required=True)
     parser.add_argument("--deploy-run-id", required=True)
-    parser.add_argument("--profile", default="profiles/a2-dev.yaml")
+    parser.add_argument("--diagnosis-run-id", default="")
     args = parser.parse_args()
     alias = require_safe_id(args.machine, label="machine")
-    run_record = load_deploy_run(args.deploy_run_id)
-    if run_record.get("machine") != alias:
-        return emit({"status": "error", "errors": ["deploy run machine mismatch"]})
-    plan_dir = run_record.get("plan_dir")
-    if not plan_dir:
-        return emit({"status": "error", "errors": ["plan_dir missing"]})
-    plan = load_plan_from_dir(REPO_ROOT / plan_dir)
-    namespace = plan.get("namespace", "")
-    profile = load_profile(SCAFFOLD_ROOT / args.profile)
-    kubectl = kubectl_base(profile)
-    run_id = f"diag-{uuid.uuid4().hex[:8]}"
-    out_dir = validation_run_dir(run_id)
+    started_at = result_now()
+    diagnosis_run_id = args.diagnosis_run_id.strip() or f"diag-{uuid.uuid4().hex[:8]}"
+
+    try:
+        context = resolve_diagnosis_context(
+            machine_alias=alias,
+            deploy_run_id=args.deploy_run_id,
+        )
+    except WorkspaceStateError as exc:
+        envelope = build_result_envelope(
+            kind="deploy-diagnosis",
+            run_id=diagnosis_run_id,
+            workflow_run_id="workflow-unset",
+            checks=[],
+            started_at=started_at,
+            errors=[str(exc)],
+            status="failed",
+            extra={"machine": alias, "deploy_run_id": args.deploy_run_id},
+        )
+        return emit_result(envelope)
+
+    kubectl = kubectl_base_from_context(context["kube_context"])
+    namespace = context["namespace"]
+    out_dir = validation_run_dir(diagnosis_run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     progress("collecting pod and event evidence")
+    artifacts: list[str] = []
     for name, cmd in {
         "pods": [*kubectl, "get", "pods", "-n", namespace, "-o", "json"],
         "events": [*kubectl, "get", "events", "-n", namespace, "--sort-by=.lastTimestamp", "-o", "json"],
     }.items():
         result = subprocess.run(cmd, check=False, text=True, capture_output=True)
-        (out_dir / f"{name}.json").write_text(result.stdout or result.stderr, encoding="utf-8")
-    payload = {
-        "status": "ok",
+        path = out_dir / f"{name}.json"
+        path.write_text(result.stdout or result.stderr, encoding="utf-8")
+        artifacts.append(str(path.relative_to(REPO_ROOT)))
+
+    context_path = out_dir / "context.json"
+    atomic_write_json(context_path, context)
+    artifacts.append(str(context_path.relative_to(REPO_ROOT)))
+
+    manifest = {
+        "schema_version": 1,
         "machine": alias,
         "deploy_run_id": args.deploy_run_id,
-        "validation_run_id": run_id,
-        "artifacts": [str(p.relative_to(REPO_ROOT)) for p in out_dir.iterdir()],
-        "collected_at": __import__("mws_local_state").utc_now_iso(),
-        "phase": "P3",
+        "config_run_id": context["config_run_id"],
+        "bundle_dir": context["bundle_dir"],
+        "bundle_digest": context["bundle_digest"],
+        "namespace": namespace,
+        "kube_context": context["kube_context"],
+        "workload_names": context["workload_names"],
+        "validation_run_id": diagnosis_run_id,
+        "artifacts": artifacts,
+        "collected_at": utc_now_iso(),
     }
-    atomic_write_json(out_dir / "manifest.json", payload)
-    return emit(payload)
+    manifest_path = out_dir / "manifest.json"
+    atomic_write_json(manifest_path, manifest)
+    artifacts.append(str(manifest_path.relative_to(REPO_ROOT)))
+
+    envelope = build_result_envelope(
+        kind="deploy-diagnosis",
+        run_id=diagnosis_run_id,
+        workflow_run_id="workflow-unset",
+        checks=[
+            {
+                "name": "diagnosis_context",
+                "status": "ok",
+                "message": "deploy/config/bundle context resolved",
+            }
+        ],
+        started_at=started_at,
+        upstream_refs=[{"kind": "deploy-complete", "run_id": args.deploy_run_id}],
+        artifacts=[{"path": item} for item in artifacts],
+        extra={
+            "machine": alias,
+            "deploy_run_id": args.deploy_run_id,
+            "config_run_id": context["config_run_id"],
+            "bundle_dir": context["bundle_dir"],
+            "namespace": namespace,
+            "validation_run_dir": str(out_dir.relative_to(REPO_ROOT)),
+        },
+    )
+    return emit_result(envelope)
 
 
 if __name__ == "__main__":
