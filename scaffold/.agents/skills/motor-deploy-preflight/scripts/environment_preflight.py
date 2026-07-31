@@ -11,59 +11,86 @@ SCAFFOLD = Path(__file__).resolve().parents[4]
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
-from mws_environment import load_profile_from_path, run_environment_preflight_checks  # noqa: E402
+from mws_environment import (  # noqa: E402
+    build_environment_result_envelope,
+    load_environment_contract,
+    run_environment_preflight_checks,
+)
 from mws_local_state import WorkspaceStateError, get_machine  # noqa: E402
-from mws_result import emit, progress  # noqa: E402
+from mws_parity import load_machine_ready_evidence  # noqa: E402
+from mws_result import emit, progress, utc_now_iso  # noqa: E402
+from mws_run_state import new_run_id, new_workflow_run_id, write_run  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--alias", required=True, help="machine alias from inventory")
-    parser.add_argument("--profile", default="profiles/a2-dev.yaml")
+    parser.add_argument("--machine-run-id", default="", help="pin machine-ready run id")
     parser.add_argument(
-        "--skip-pod-readiness",
-        action="store_true",
-        help="skip namespace pod readiness probe",
+        "--environment-contract",
+        default="",
+        help="optional environment contract path (defaults to skill reference)",
     )
+    parser.add_argument("--workflow-run-id", default="", help="workflow run id for this 3+3 flow")
+    parser.add_argument("--environment-run-id", default="", help="optional explicit environment run id")
     args = parser.parse_args()
 
     alias = require_safe_id(args.alias, label="alias")
+    started_at = utc_now_iso()
+    workflow_run_id = args.workflow_run_id.strip() or new_workflow_run_id()
+    environment_run_id = args.environment_run_id.strip() or new_run_id("environment")
+
     try:
         machine = get_machine(alias)
+        machine_ready = load_machine_ready_evidence(
+            alias,
+            machine_run_id=args.machine_run_id.strip() or None,
+        )
+        contract_path = Path(args.environment_contract) if args.environment_contract else None
+        contract = load_environment_contract(contract_path)
     except WorkspaceStateError as exc:
-        return emit({"status": "error", "alias": alias, "ready": False, "errors": [str(exc)]})
-
-    profile = load_profile_from_path(args.profile)
-    if not profile:
         return emit(
             {
-                "status": "error",
-                "alias": alias,
-                "ready": False,
-                "errors": [f"deploy profile not found: {args.profile}"],
+                "schema_version": "mws.result.v1",
+                "kind": "deploy-environment-ready",
+                "run_id": environment_run_id,
+                "workflow_run_id": workflow_run_id,
+                "status": "failed",
+                "started_at": started_at,
+                "finished_at": utc_now_iso(),
+                "upstream_refs": [],
+                "checks": [],
+                "warnings": [],
+                "errors": [str(exc)],
+                "artifacts": [],
             }
         )
 
     progress("checking Kubernetes and MindCluster base environment")
-    result = run_environment_preflight_checks(
+    payload = run_environment_preflight_checks(
         machine=machine,
-        profile=profile,
-        include_pod_readiness=not args.skip_pod_readiness,
+        machine_ready=machine_ready,
+        contract=contract,
     )
-
-    return emit(
-        {
-            "status": "ok" if result["ready"] else "error",
-            "alias": alias,
-            "ready": result["ready"],
-            "result": "deploy-environment-ready" if result["ready"] else "failed",
-            "checks": result["checks"],
-            "errors": result["errors"],
-            "namespace": result.get("namespace"),
-            "kube_context": result.get("kube_context"),
-        }
+    envelope = build_environment_result_envelope(
+        run_id=environment_run_id,
+        workflow_run_id=workflow_run_id,
+        machine_run_id=str(machine_ready["machine_run_id"]),
+        payload=payload,
+        started_at=started_at,
     )
+    if envelope["status"] == "ready":
+        write_run(
+            "deploy-environment-ready",
+            environment_run_id,
+            {
+                **envelope,
+                "alias": alias,
+                "machine_run_id": machine_ready["machine_run_id"],
+            },
+        )
+    return emit(envelope)
 
 
 if __name__ == "__main__":

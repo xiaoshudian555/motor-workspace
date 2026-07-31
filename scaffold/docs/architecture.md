@@ -27,11 +27,12 @@ ad hoc remote development.
    - `motor-deploy-preflight` proves that the K8s/MindCluster base environment
      is usable without reading or validating a concrete Motor deploy config;
    - `motor-deploy-configure` consumes environment and parity evidence,
-     generates or reuses the immutable deploy bundle, performs all
-     substitutions and dry-runs, and proves that the bundle points at the
-     intended code paths;
+     generates or reuses the immutable deploy bundle (optional `--reuse`),
+     performs all substitutions and dry-runs, and proves that the bundle points
+     at the intended code paths;
    - `motor-k8s-deploy` applies that exact bundle after approval, waits for
-     Ready, and proves which code Pods actually load.
+     Ready, verifies minimal service access, and proves which code Pods actually
+     load via runtime `__file__` paths.
 3. Validation consumes a successful deploy run for formal smoke, benchmark,
    profiling, and diagnosis.
 

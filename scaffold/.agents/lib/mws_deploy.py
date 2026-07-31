@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -16,11 +17,17 @@ from mws_local_state import WorkspaceStateError
 from repo_paths import MOTOR_ROOT, REPO_ROOT
 from mws_lock import resolve_base_image_ref
 from mws_machine_target import build_fixed_source_paths, machine_ref, pythonpath_for_machine
-from mws_run_state import relative_repo
+from mws_run_state import (
+    bundle_digest_for_files,
+    create_config_bundle,
+    digest_json,
+    relative_repo,
+)
 
 DEPLOYER_ROOT = MOTOR_ROOT / "examples" / "deployer"
 DEPLOY_PY = DEPLOYER_ROOT / "deploy.py"
 OUTPUT_YAMLS = DEPLOYER_ROOT / "output_yamls"
+MANIFEST_INJECTOR_VERSION = "mws-injector-v1"
 
 CLUSTER_SCOPED_KINDS = frozenset(
     {
@@ -685,3 +692,533 @@ def resolve_deploy_base_image(config_dir: Path, lock: dict[str, Any] | None = No
             if locked and locked != "UNRESOLVED":
                 return str(locked)
         raise
+
+
+def kubectl_base_from_context(kube_context: str = "") -> list[str]:
+    args = ["kubectl"]
+    context = str(kube_context or "").strip()
+    if context:
+        args.extend(["--context", context])
+    return args
+
+
+def deployer_version_token() -> str:
+    if DEPLOY_PY.exists():
+        return digest_json(
+            {"deploy_py": DEPLOY_PY.read_bytes().decode("utf-8", errors="replace")[:4096]}
+        )
+    return "missing-deployer"
+
+
+def normalize_native_config(config_dir: Path) -> dict[str, Any]:
+    user_config_path = config_dir / "user_config.json"
+    env_path = config_dir / "env.json"
+    user_config = json.loads(user_config_path.read_text(encoding="utf-8"))
+    env_config = json.loads(env_path.read_text(encoding="utf-8")) if env_path.exists() else {}
+    return {"user_config.json": user_config, "env.json": env_config}
+
+
+def compute_config_fingerprint(
+    *,
+    native_config: dict[str, Any],
+    machine_paths: dict[str, str],
+    deployer_version: str,
+    injector_version: str = MANIFEST_INJECTOR_VERSION,
+) -> str:
+    payload = {
+        "native_config": native_config,
+        "machine_paths": machine_paths,
+        "deployer_version": deployer_version,
+        "injector_version": injector_version,
+    }
+    return digest_json(payload)
+
+
+def verify_namespace_exists(*, kube_context: str, namespace: str) -> dict[str, Any]:
+    kubectl = kubectl_base_from_context(kube_context)
+    cmd = [*kubectl, "get", "namespace", namespace, "-o", "name"]
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    ok = result.returncode == 0 and namespace in result.stdout
+    return {
+        "name": "namespace_exists",
+        "status": "ok" if ok else "error",
+        "message": f"namespace {namespace!r} exists" if ok else f"namespace {namespace!r} not found",
+        "evidence": result.stdout.strip() or result.stderr.strip(),
+    }
+
+
+def verify_manifest_rbac(
+    *,
+    kube_context: str,
+    namespace: str,
+    manifest_paths: list[Path],
+) -> list[dict[str, Any]]:
+    kubectl = kubectl_base_from_context(kube_context)
+    checks: list[dict[str, Any]] = []
+    verbs = [
+        ("create", "deployments"),
+        ("create", "services"),
+        ("create", "configmaps"),
+    ]
+    for verb, resource in verbs:
+        cmd = [*kubectl, "auth", "can-i", verb, resource, "-n", namespace]
+        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        ok = result.stdout.strip().lower() == "yes"
+        checks.append(
+            {
+                "name": f"rbac:{verb}:{resource}",
+                "status": "ok" if ok else "error",
+                "message": result.stdout.strip() or result.stderr.strip(),
+            }
+        )
+    if manifest_paths:
+        checks.append(
+            {
+                "name": "manifest_files_present",
+                "status": "ok",
+                "message": f"{len(manifest_paths)} manifest(s) staged",
+            }
+        )
+    return checks
+
+
+def kubectl_server_side_dry_run(
+    *,
+    kube_context: str,
+    manifest_paths: list[Path],
+    namespace: str,
+) -> list[dict[str, Any]]:
+    if not shutil.which("kubectl"):
+        return [
+            {
+                "name": "server_side_dry_run",
+                "status": "unavailable",
+                "message": "kubectl not found in PATH",
+            }
+        ]
+    kubectl = kubectl_base_from_context(kube_context)
+    checks: list[dict[str, Any]] = []
+    for manifest in manifest_paths:
+        cmd = [*kubectl, "apply", "--dry-run=server", "-f", str(manifest), "-n", namespace]
+        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        checks.append(
+            {
+                "name": f"server_side_dry_run:{manifest.name}",
+                "status": "ok" if result.returncode == 0 else "error",
+                "message": result.stderr.strip() or result.stdout.strip() or manifest.name,
+            }
+        )
+    return checks
+
+
+def _configure_failed(
+    runner: Any,
+    *,
+    namespace: str,
+    deploy_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ready": False,
+        "checks": runner.checks,
+        "warnings": runner.warnings,
+        "errors": runner.errors,
+        "stopped_at": runner.stopped_at,
+        "namespace": namespace,
+    }
+    if deploy_result is not None:
+        payload["deploy_dry_run"] = deploy_result
+    return payload
+
+
+def configure_deploy_bundle(
+    *,
+    machine: dict[str, Any],
+    config_dir: Path,
+    run_dir: Path,
+    kube_context: str,
+    base_image_ref: str,
+    parity_path_refs: dict[str, str],
+    reuse_bundle_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Render or reuse an immutable deploy config bundle."""
+    from mws_result import CheckRunner
+
+    runner = CheckRunner()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    native_config = normalize_native_config(config_dir)
+    deploy_config = load_motor_deploy_config(config_dir)
+    namespace = deploy_config["namespace"]
+    machine_paths = build_fixed_source_paths(machine)
+    fingerprint = compute_config_fingerprint(
+        native_config=native_config,
+        machine_paths=machine_paths,
+        deployer_version=deployer_version_token(),
+    )
+
+    if reuse_bundle_dir and reuse_bundle_dir.exists():
+        bundle_json = reuse_bundle_dir / "bundle.json"
+        if not bundle_json.exists():
+            raise WorkspaceStateError(f"reuse bundle missing manifest: {bundle_json}")
+        bundle_meta = json.loads(bundle_json.read_text(encoding="utf-8"))
+        stored_paths = bundle_meta.get("machine_paths", {})
+        if stored_paths != machine_paths:
+            raise WorkspaceStateError("bundle machine path mapping does not match current parity/machine")
+        staged_paths = {
+            name: reuse_bundle_dir / name
+            for name in sorted(p.name for p in reuse_bundle_dir.rglob("*") if p.is_file() and p.name != "bundle.json")
+        }
+        manifest_dir = reuse_bundle_dir / "manifests"
+        if manifest_dir.exists():
+            staged_paths = {
+                f"manifests/{path.name}": path for path in sorted(manifest_dir.glob("*.yaml"))
+            }
+            for extra in ("user_config.json", "env.json"):
+                extra_path = reuse_bundle_dir / extra
+                if extra_path.exists():
+                    staged_paths[extra] = extra_path
+        expected_digest = str(bundle_meta.get("bundle_digest", ""))
+        if staged_paths and expected_digest:
+            current_digest = bundle_digest_for_files(staged_paths)
+            if current_digest != expected_digest:
+                raise WorkspaceStateError("config bundle content was modified or fingerprint collision detected")
+        runner.append({"name": "reuse_bundle", "status": "ok", "message": str(reuse_bundle_dir)})
+        return {
+            "ready": True,
+            "checks": runner.checks,
+            "config_fingerprint": fingerprint,
+            "bundle_digest": bundle_meta.get("bundle_digest"),
+            "bundle_dir": str(reuse_bundle_dir),
+            "namespace": namespace,
+            "job_id": deploy_config["job_id"],
+            "manifest_files": bundle_meta.get("manifest_files", []),
+            "reused": True,
+        }
+
+    ns_check = verify_namespace_exists(kube_context=kube_context, namespace=namespace)
+    if not runner.append(ns_check):
+        return _configure_failed(runner, namespace=namespace)
+
+    staged_config = run_dir / "config"
+    patch_user_config_copy(
+        source_config_dir=config_dir,
+        dest_config_dir=staged_config,
+        base_image_ref=base_image_ref,
+    )
+    runner.append({"name": "stage_native_config", "status": "ok", "message": str(staged_config)})
+
+    deploy_result = run_deploy_dry_run(staged_config)
+    if deploy_result.get("status") != "ok":
+        runner.append(
+            {
+                "name": "upstream_dry_run",
+                "status": "error",
+                "message": deploy_result.get("stderr_tail") or "upstream dry-run failed",
+            }
+        )
+        return _configure_failed(runner, namespace=namespace, deploy_result=deploy_result)
+
+    runner.append({"name": "upstream_dry_run", "status": "ok", "message": "manifests generated"})
+    manifests_dir = run_dir / "manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    pythonpath = pythonpath_for_machine(machine)
+    mount_root = machine_paths["mount_root"]
+    manifest_paths: list[Path] = []
+    manifest_files: list[str] = []
+    workload_names: list[str] = []
+    for name in deploy_result.get("generated_files") or []:
+        src = OUTPUT_YAMLS / name
+        if not src.exists():
+            runner.append(
+                {
+                    "name": f"manifest:{name}",
+                    "status": "error",
+                    "message": f"expected generated manifest missing: {src}",
+                }
+            )
+            return _configure_failed(runner, namespace=namespace)
+        text = src.read_text(encoding="utf-8")
+        docs = load_yaml_documents(text)
+        workload_names.extend(extract_workload_names(docs))
+        out = process_manifest_file(
+            src,
+            pythonpath=pythonpath,
+            namespace=namespace,
+            base_image_ref=base_image_ref,
+            mount_root=str(mount_root),
+            dest_dir=manifests_dir,
+        )
+        manifest_paths.append(out)
+        manifest_files.append(relative_repo(out))
+
+    for check in verify_manifest_rbac(
+        kube_context=kube_context,
+        namespace=namespace,
+        manifest_paths=manifest_paths,
+    ):
+        if not runner.append(check):
+            return _configure_failed(runner, namespace=namespace)
+
+    for check in kubectl_server_side_dry_run(
+        kube_context=kube_context,
+        manifest_paths=manifest_paths,
+        namespace=namespace,
+    ):
+        if not runner.append(check):
+            return _configure_failed(runner, namespace=namespace)
+
+    bundle_files = {f"manifests/{path.name}": path for path in manifest_paths}
+    bundle_files["user_config.json"] = staged_config / "user_config.json"
+    env_path = staged_config / "env.json"
+    if env_path.exists():
+        bundle_files["env.json"] = env_path
+    bundle_meta = create_config_bundle(
+        config_fingerprint=fingerprint,
+        bundle_files=bundle_files,
+        metadata={
+            "namespace": namespace,
+            "job_id": deploy_config["job_id"],
+            "manifest_files": manifest_files,
+            "workload_names": workload_names,
+            "machine_paths": machine_paths,
+            "parity_path_refs": parity_path_refs,
+            "injector_version": MANIFEST_INJECTOR_VERSION,
+            "deployer_version": deployer_version_token(),
+        },
+    )
+    return {
+        "ready": True,
+        "checks": runner.checks,
+        "warnings": runner.warnings,
+        "errors": runner.errors,
+        "config_fingerprint": fingerprint,
+        "bundle_digest": bundle_meta["bundle_digest"],
+        "bundle_dir": bundle_meta["bundle_dir"],
+        "namespace": namespace,
+        "job_id": deploy_config["job_id"],
+        "manifest_files": manifest_files,
+        "reused": False,
+    }
+
+
+def load_config_bundle(bundle_dir: Path) -> dict[str, Any]:
+    bundle_json = bundle_dir / "bundle.json"
+    if not bundle_json.exists():
+        raise WorkspaceStateError(f"bundle.json missing in {bundle_dir}")
+    data = json.loads(bundle_json.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise WorkspaceStateError(f"{bundle_json} must contain an object")
+    return data
+
+
+def apply_config_bundle(
+    *,
+    bundle_dir: Path,
+    kube_context: str,
+    namespace: str,
+) -> dict[str, Any]:
+    kubectl = kubectl_base_from_context(kube_context)
+    manifest_dir = bundle_dir / "manifests"
+    if not manifest_dir.exists():
+        raise WorkspaceStateError(f"bundle manifests missing: {manifest_dir}")
+    results: list[dict[str, Any]] = []
+    for manifest in sorted(manifest_dir.glob("*.yaml")):
+        cmd = [*kubectl, "apply", "-f", str(manifest), "-n", namespace]
+        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        results.append(
+            {
+                "manifest": manifest.name,
+                "bytes_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "returncode": result.returncode,
+                "stdout": result.stdout[-2000:],
+                "stderr": result.stderr[-2000:],
+            }
+        )
+    ok = all(item["returncode"] == 0 for item in results) if results else False
+    return {"status": "ok" if ok else "error", "apply_results": results}
+
+
+RUNTIME_MODULES = (
+    ("motor", "motor_source"),
+    ("vllm", "vllm_source"),
+    ("vllm_ascend", "vllm_ascend_source"),
+)
+
+
+def bundle_to_plan(bundle_dir: Path, bundle_meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Convert an immutable config bundle into a deploy plan dict for restart/stop."""
+    meta = bundle_meta if bundle_meta is not None else load_config_bundle(bundle_dir)
+    manifest_files = [
+        relative_repo(path)
+        for path in sorted((bundle_dir / "manifests").glob("*.yaml"))
+    ]
+    return {
+        "namespace": str(meta.get("namespace", "")),
+        "job_id": meta.get("job_id", ""),
+        "manifest_files": manifest_files or list(meta.get("manifest_files", [])),
+        "workload_names": list(meta.get("workload_names", [])),
+        "machine_paths": dict(meta.get("machine_paths", {})),
+        "bundle_dir": relative_repo(bundle_dir),
+    }
+
+
+def verify_bundle_digest(bundle_dir: Path, expected_digest: str) -> None:
+    bundle_meta = load_config_bundle(bundle_dir)
+    stored = str(bundle_meta.get("bundle_digest", ""))
+    if expected_digest and stored != expected_digest:
+        raise WorkspaceStateError("bundle_digest mismatch for config run")
+    staged_paths: dict[str, Path] = {}
+    manifest_dir = bundle_dir / "manifests"
+    if manifest_dir.exists():
+        staged_paths.update({f"manifests/{p.name}": p for p in sorted(manifest_dir.glob("*.yaml"))})
+    for extra in ("user_config.json", "env.json"):
+        extra_path = bundle_dir / extra
+        if extra_path.exists():
+            staged_paths[extra] = extra_path
+    if staged_paths and stored:
+        current = bundle_digest_for_files(staged_paths)
+        if current != stored:
+            raise WorkspaceStateError("config bundle content was modified or fingerprint collision detected")
+
+
+def _pick_runtime_pod(kubectl: list[str], namespace: str) -> str | None:
+    cmd = [*kubectl, "get", "pods", "-n", namespace, "-o", "json"]
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    for pod in data.get("items", []):
+        phase = pod.get("status", {}).get("phase")
+        conditions = pod.get("status", {}).get("conditions", [])
+        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+        if phase == "Running" and ready:
+            return str(pod.get("metadata", {}).get("name", "")) or None
+    return None
+
+
+def verify_min_service_access(*, kube_context: str, namespace: str) -> dict[str, Any]:
+    kubectl = kubectl_base_from_context(kube_context)
+    if not shutil.which("kubectl"):
+        return {"name": "min_service_access", "status": "unavailable", "message": "kubectl not found"}
+    cmd = [*kubectl, "get", "endpoints", "-n", namespace, "-o", "json"]
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode:
+        return {
+            "name": "min_service_access",
+            "status": "error",
+            "message": result.stderr.strip() or "endpoints lookup failed",
+        }
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"name": "min_service_access", "status": "error", "message": "invalid endpoints json"}
+    items = data.get("items", [])
+    ready_endpoints = [
+        item.get("metadata", {}).get("name", "")
+        for item in items
+        if item.get("subsets")
+    ]
+    if not ready_endpoints:
+        return {
+            "name": "min_service_access",
+            "status": "error",
+            "message": f"no ready endpoints in namespace {namespace!r}",
+        }
+    return {
+        "name": "min_service_access",
+        "status": "ok",
+        "message": f"endpoints ready: {', '.join(ready_endpoints)}",
+    }
+
+
+def collect_runtime_code_paths(
+    *,
+    kube_context: str,
+    namespace: str,
+    pod_name: str | None = None,
+) -> dict[str, Any]:
+    kubectl = kubectl_base_from_context(kube_context)
+    if not shutil.which("kubectl"):
+        return {"status": "unavailable", "reason": "kubectl not found", "paths": {}}
+    target_pod = pod_name or _pick_runtime_pod(kubectl, namespace)
+    if not target_pod:
+        return {"status": "error", "reason": "no ready pod found", "paths": {}}
+    paths: dict[str, str] = {}
+    errors: list[str] = []
+    for module, _ in RUNTIME_MODULES:
+        cmd = [
+            *kubectl,
+            "exec",
+            "-n",
+            namespace,
+            target_pod,
+            "--",
+            "python3",
+            "-c",
+            f"import {module}; print(getattr({module}, '__file__', ''))",
+        ]
+        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        value = result.stdout.strip()
+        if result.returncode or not value:
+            errors.append(f"{module}: {result.stderr.strip() or 'missing __file__'}")
+            continue
+        paths[module] = value
+    status = "ok" if paths and not errors else "error"
+    return {"status": status, "pod": target_pod, "paths": paths, "errors": errors}
+
+
+def verify_runtime_code_paths(
+    collected: dict[str, Any],
+    machine_paths: dict[str, str],
+) -> dict[str, Any]:
+    paths = collected.get("paths", {})
+    mismatches: list[str] = []
+    for module, path_key in RUNTIME_MODULES:
+        actual = str(paths.get(module, ""))
+        expected_root = str(machine_paths.get(path_key, ""))
+        if not actual:
+            mismatches.append(f"{module}: missing runtime path")
+            continue
+        if expected_root and not actual.startswith(expected_root):
+            mismatches.append(f"{module}: {actual!r} does not start with {expected_root!r}")
+    if mismatches:
+        return {
+            "name": "runtime_code_paths",
+            "status": "error",
+            "message": "; ".join(mismatches),
+            "paths": paths,
+        }
+    return {
+        "name": "runtime_code_paths",
+        "status": "ok",
+        "message": "runtime modules load from fixed shared paths",
+        "paths": paths,
+    }
+
+
+def restart_deploy_workloads_from_context(
+    plan: dict[str, Any],
+    *,
+    kube_context: str,
+) -> dict[str, Any]:
+    profile = {"kubernetes": {"context": kube_context}}
+    return restart_deploy_workloads(plan, profile)
+
+
+def stop_from_bundle(
+    bundle_dir: Path,
+    *,
+    kube_context: str,
+    namespace: str,
+) -> dict[str, Any]:
+    plan = bundle_to_plan(bundle_dir)
+    plan["namespace"] = namespace or plan.get("namespace", "")
+    profile = {"kubernetes": {"context": kube_context}}
+    return stop_from_plan(plan, profile)
+
+
+def pod_readiness_from_context(kube_context: str, namespace: str) -> dict[str, Any]:
+    profile = {"kubernetes": {"context": kube_context}}
+    return pod_readiness_probe(profile, namespace)

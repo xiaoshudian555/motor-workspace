@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+SCAFFOLD = Path(__file__).resolve().parents[1]
+REPO_ROOT = SCAFFOLD.parent
 
 
 def test_motorws_status_json() -> None:

@@ -16,14 +16,15 @@ sys.path.insert(0, str(LIB))
 from repo_paths import REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
 
 from mws_deploy import (  # noqa: E402
-    collect_component_status,
-    load_plan_from_dir,
-    load_profile,
-    openai_smoke,
-    pod_readiness_probe,
-    restart_deploy_workloads,
+    bundle_to_plan,
+    collect_runtime_code_paths,
+    load_config_bundle,
+    pod_readiness_from_context,
+    restart_deploy_workloads_from_context,
+    verify_runtime_code_paths,
 )
-from mws_machine_target import pythonpath_for_machine, resolve_machine  # noqa: E402
+from mws_local_state import get_machine  # noqa: E402
+from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine, resolve_machine  # noqa: E402
 from mws_result import emit, progress  # noqa: E402
 from mws_run_state import deploy_run_dir, load_deploy_run, new_run_id  # noqa: E402
 from mws_state import atomic_write_json  # noqa: E402
@@ -56,31 +57,35 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machine", required=True)
     parser.add_argument("--deploy-run-id", required=True)
-    parser.add_argument("--profile", default="profiles/a2-dev.yaml")
     parser.add_argument("--skip-parity", action="store_true")
     parser.add_argument("--skip-restart", action="store_true")
-    parser.add_argument("--openai-smoke", action="store_true")
     parser.add_argument("--approved-by-user", action="store_true")
     args = parser.parse_args()
     if not args.approved_by_user:
         return emit({"status": "error", "errors": ["restart requires --approved-by-user"]})
     alias = require_safe_id(args.machine, label="machine")
     machine = resolve_machine(alias)
-    profile = load_profile(SCAFFOLD_ROOT / args.profile)
+    kube_context = str(machine.get("kube_context") or "")
+    machine_paths = build_fixed_source_paths(machine)
     run_record = load_deploy_run(args.deploy_run_id)
     if run_record.get("machine") != alias:
         return emit({"status": "error", "errors": ["deploy run machine mismatch"]})
-    plan_dir = run_record.get("plan_dir")
-    if not plan_dir:
-        return emit({"status": "error", "errors": ["plan_dir missing; deploy once before restart"]})
-    plan = load_plan_from_dir(REPO_ROOT / plan_dir)
-    namespace = plan.get("namespace", "")
+    bundle_rel = run_record.get("bundle_dir")
+    if not bundle_rel:
+        return emit({"status": "error", "errors": ["bundle_dir missing; deploy once before restart"]})
+    bundle_ref = str(bundle_rel)
+    bundle_dir = Path(bundle_ref)
+    if not bundle_dir.is_absolute():
+        bundle_dir = REPO_ROOT / bundle_ref
+    bundle = load_config_bundle(bundle_dir)
+    plan = bundle_to_plan(bundle_dir, bundle)
+    namespace = str(run_record.get("namespace") or plan.get("namespace") or "")
 
     parity = {"status": "skipped", "reason": "--skip-parity"}
     if not args.skip_parity:
         progress("syncing code to remote fixed directories")
         parity = run_parity(alias)
-        if parity.get("status") != "ok":
+        if parity.get("status") not in {"ok", "ready"}:
             return emit(
                 {
                     "status": "error",
@@ -94,7 +99,7 @@ def main() -> int:
     restart = {"status": "skipped", "reason": "--skip-restart"}
     if not args.skip_restart:
         progress("restarting deploy-scoped workloads")
-        restart = restart_deploy_workloads(plan, profile)
+        restart = restart_deploy_workloads_from_context(plan, kube_context=kube_context)
         if restart.get("status") != "ok":
             return emit(
                 {
@@ -107,10 +112,10 @@ def main() -> int:
                 }
             )
 
-    pods = pod_readiness_probe(profile, namespace)
-    components = collect_component_status(profile, namespace)
-    smoke = openai_smoke(profile, namespace) if args.openai_smoke else {"status": "skipped"}
-    ready = pods.get("ready") is True
+    pods = pod_readiness_from_context(kube_context, namespace)
+    runtime_paths = collect_runtime_code_paths(kube_context=kube_context, namespace=namespace)
+    code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
+    ready = pods.get("ready") is True and code_paths.get("status") == "ok"
     overall = "ok" if ready else "error"
     restart_run_id = new_run_id("restart")
     payload = {
@@ -123,8 +128,8 @@ def main() -> int:
         "parity": parity,
         "restart": restart,
         "pods": pods,
-        "components": components,
-        "openai_smoke": smoke,
+        "runtime_paths": runtime_paths,
+        "code_paths": code_paths,
     }
     atomic_write_json(deploy_run_dir(args.deploy_run_id) / f"{restart_run_id}.json", payload)
     return emit(payload)

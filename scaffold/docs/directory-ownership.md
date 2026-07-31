@@ -22,8 +22,8 @@
 | `machine-management` | 登记并验证远程 Motor 目标 | 第一部分 |
 | `remote-code-parity` | 同步本地 dirty workspace 并证明远端目录内容 | 第一部分 |
 | `remote-toolbox` | 尚未迁移能力的兼容入口 | 兼容层 |
-| `motor-deploy-preflight`（目标） | 验证 K8s 与 MindCluster 基础环境 | 第二部分第一步 |
-| `motor-deploy-configure`（目标） | 生成或复用不可变配置包并完成配置验证 | 第二部分第二步 |
+| `motor-deploy-preflight` | 验证 K8s 与 MindCluster 基础环境 | 第二部分第一步 |
+| `motor-deploy-configure` | 生成或复用不可变配置包并完成配置验证 | 第二部分第二步 |
 | `motor-k8s-deploy` | 原样 apply 配置包并证明 Ready 和 Pod 加载目标代码 | 第二部分第三步 |
 | `motor-benchmark` | 对成功 deploy run 执行正式 benchmark | 第三部分 |
 | `motor-diagnosis` | 收集 run-scoped 失败证据 | 跨闭环失败处理 |
@@ -43,7 +43,7 @@ Kubernetes 生命周期属于对应业务 skill。
 | parity/deploy run 记录 | `mws_run_state.py` |
 | 通用 JSON/lock 工具 | `mws_state.py` |
 | 代码 parity | `mws_parity.py` |
-| Motor 环境、配置和 deploy 公共能力 | 当前集中在 `mws_deploy.py`，目标按三步拆分 |
+| Motor 环境、配置和 deploy 公共能力 | `mws_environment.py`（环境 preflight）、`mws_deploy.py`（configure/apply） |
 | 结果输出 | `mws_result.py` |
 | 输入和边界校验 | `mws_validate.py` |
 | 历史 lock 诊断 | `mws_lock.py` |

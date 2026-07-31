@@ -34,11 +34,12 @@ repo-init
   -> OpenAI smoke
 ```
 
-The two middle Motor skills are target workflow units and are not implemented
-yet. The target 3+3 contract is defined in
-[scaffold/docs/motor-deploy.md](scaffold/docs/motor-deploy.md); implementation
-gaps and unresolved contracts are tracked in
-[scaffold/docs/technical-debt.md](scaffold/docs/technical-debt.md).
+The middle Motor deploy skills (`motor-deploy-preflight`, `motor-deploy-configure`)
+are implemented with fixture coverage; `motor-k8s-deploy` consumes immutable
+config bundles. The 3+3 contract is defined in
+[scaffold/docs/motor-deploy.md](scaffold/docs/motor-deploy.md); remaining gaps
+are tracked in [scaffold/docs/technical-debt.md](scaffold/docs/technical-debt.md).
+Agent execution order: [scaffold/docs/agent-work-orders.md](scaffold/docs/agent-work-orders.md).
 
 Development uses **parity sync to fixed remote directories** under the shared
 mount root (profile `mount_root`, default `/mnt`). No snapshot, no `current`

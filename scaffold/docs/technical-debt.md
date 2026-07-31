@@ -388,20 +388,20 @@ remote-code-parity
   诊断 Pod/Job。
 - [ ] server-side dry-run 失败、本地缺 kubectl 或必要检查不可用时立即报错；
   `warning` 保存后允许继续。
-- [ ] 生成最终 manifest、diff、bundle digest、config fingerprint、
-  `deploy-config-ready` 和复用证据。
+- [x] 生成最终 manifest、diff、bundle digest、config fingerprint、
+  `deploy-config-ready` 和复用证据（含 `--reuse` CLI）。
 
 #### 第三步：实际部署与运行验收
 
-- [ ] 将 `motor-k8s-deploy` 收敛为消费 `deploy-config-ready` 和不可变配置包；
+- [x] 将 `motor-k8s-deploy` 收敛为消费 `deploy-config-ready` 和不可变配置包；
   不再自动 parity、render、替换或 dry-run。
-- [ ] apply 前校验 config run、bundle digest、fingerprint、machine 和当前
+- [x] apply 前校验 config run、bundle digest、fingerprint、machine 和当前
   parity 绑定；缺失或不匹配时 fail closed。
-- [ ] 修复 `deploy_apply.py` 引用未定义 `args.plan_dir` 的运行错误。
-- [ ] apply 后保存资源级结果，等待关键组件和 Pod Ready，并验证最小服务。
-- [ ] 在 Pod 内采集 `motor`、`vllm`、`vllm_ascend` 实际加载路径，不能仅以
+- [x] 修复 `deploy_apply.py` 引用未定义 `args.plan_dir` 的运行错误。
+- [x] apply 后保存资源级结果，等待关键组件和 Pod Ready，并验证最小服务。
+- [x] 在 Pod 内采集 `motor`、`vllm`、`vllm_ascend` 实际加载路径，不能仅以
   Pod Ready 声明部署完成。
-- [ ] restart/stop/status 关联明确 deploy run 和状态机；restart 后重新采集
+- [x] restart/stop/status 关联明确 deploy run 和状态机；restart 后重新采集
   Ready 和当前 parity 的运行代码证据。
 
 #### 公共交接、文档和测试
@@ -411,10 +411,10 @@ remote-code-parity
   deploy 独立 run 和显式引用。
 - [ ] 更新根 README、`AGENTS.md`、`directory-ownership.md`、三个第二部分
   skill、machine-management skill、Agent shim、CLI help 和测试。
-- [ ] 删除旧的字母子步骤表述和 `deploy-preflight-ready` 旧结果名。
+- [x] 删除旧的字母子步骤表述和 `deploy-preflight-ready` 旧结果名。
 - [ ] 修复当前测试重构遗留的 `SCAFFOLD`、`REPO_ROOT` 和
   `SCAFFOLD_SCAFFOLD_ROOT` 未定义问题，恢复完整测试收集。
-- [ ] 增加 3+3 纵向契约测试：缺上游结果、结果过期、fingerprint 不匹配、
+- [x] 增加 3+3 纵向契约测试：缺上游结果、结果过期、fingerprint 不匹配、
   bundle 被修改、dry-run 失败、apply 失败、Ready 失败、代码路径不匹配。
 
 ## 当前验收口径

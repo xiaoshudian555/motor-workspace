@@ -1,150 +1,312 @@
 #!/usr/bin/env python3
-"""K8s / MindCluster environment preflight checks (3+3 part-2 step 1).
-
-Migrated from legacy ``machine_verify.py`` so machine-management stays limited
-to SSH / shared-mount / parity substrate readiness.
-"""
+"""K8s / MindCluster environment preflight checks (3+3 part-2 step 1)."""
 
 from __future__ import annotations
 
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
-from mws_deploy import kubectl_base, load_profile, pod_readiness_probe
-from mws_machine_target import check_item
+from mws_local_state import WorkspaceStateError
+from mws_result import CheckRunner, build_result_envelope, utc_now_iso
+from repo_paths import SCAFFOLD_ROOT
 
-API_RESOURCE_GROUPS = {
-    "ascendjobs": "mindx.huawei.com",
-    "podgroups": "scheduling.volcano.sh",
-}
+
+def load_environment_contract(path: Path | None = None) -> dict[str, Any]:
+    contract_path = path or (
+        SCAFFOLD_ROOT
+        / ".agents/skills/motor-deploy-preflight/references/environment-contract.yaml"
+    )
+    if not contract_path.exists():
+        raise WorkspaceStateError(f"environment contract not found: {contract_path}")
+    text = contract_path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import yaml  # type: ignore
+        except ImportError as exc:
+            raise WorkspaceStateError(
+                f"{contract_path} is YAML; install PyYAML"
+            ) from exc
+        data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise WorkspaceStateError(f"{contract_path} must contain an object")
+    return data
+
+
+def kubectl_base(*, kube_context: str = "") -> list[str]:
+    args = ["kubectl"]
+    context = str(kube_context or "").strip()
+    if context:
+        args.extend(["--context", context])
+    return args
+
+
+def _run_kubectl(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, check=False, text=True, capture_output=True)
 
 
 def run_environment_preflight_checks(
     *,
     machine: dict[str, Any],
-    profile: dict[str, Any],
-    include_pod_readiness: bool = True,
+    machine_ready: dict[str, Any],
+    contract: dict[str, Any],
 ) -> dict[str, Any]:
-    """Read-only K8s/MindCluster environment checks for ``motor-deploy-preflight``."""
-    checks: list[dict[str, Any]] = []
-    errors: list[str] = []
-
+    """Read-only cluster environment checks; no namespace or deploy inputs."""
+    runner = CheckRunner()
     machine_context = str(machine.get("kube_context") or "").strip()
-    profile_context = str(profile.get("kubernetes", {}).get("context", "") or "").strip()
-    effective_context = machine_context or profile_context
-
-    if machine_context and profile_context and machine_context != profile_context:
-        checks.append(
-            check_item(
-                "kube_context_consistency",
-                status="fail",
-                error=(
-                    f"machine kube_context={machine_context!r} != profile context={profile_context!r}"
-                ),
-            )
-        )
-        errors.append("kube context mismatch between machine inventory and profile")
-    else:
-        checks.append(
-            check_item(
-                "kube_context_consistency",
-                status="pass" if effective_context else "not_applicable",
-                evidence=effective_context or "default context",
-            )
-        )
-
-    namespace = str(profile.get("kubernetes", {}).get("namespace", "") or "").strip()
-    if not namespace:
-        checks.append(
-            check_item(
-                "namespace_configured",
-                status="fail",
-                error="deploy profile missing kubernetes.namespace",
-            )
-        )
-        errors.append("deploy profile missing kubernetes.namespace")
-        return {"ready": False, "checks": checks, "errors": errors}
+    inventory_alias = str(machine.get("alias") or machine_ready.get("alias") or "")
 
     if not shutil.which("kubectl"):
-        checks.append(
-            check_item("kubectl", status="fail", error="kubectl not found in PATH")
+        runner.append(
+            {
+                "name": "kubectl",
+                "status": "error",
+                "message": "kubectl not found in PATH",
+            }
         )
-        errors.append("kubectl not found in PATH")
-        return {"ready": False, "checks": checks, "errors": errors}
+        return _finalize(runner, machine_context, contract, inventory_alias)
 
-    checks.append(check_item("kubectl", status="pass", evidence=shutil.which("kubectl") or ""))
-
-    kubectl = kubectl_base(profile)
-    auth_cmd = [*kubectl, "auth", "can-i", "get", "pods", "-n", namespace]
-    auth = subprocess.run(auth_cmd, check=False, text=True, capture_output=True)
-    auth_ok = auth.stdout.strip().lower() == "yes"
-    checks.append(
-        check_item(
-            "namespace_auth",
-            status="pass" if auth_ok else "fail",
-            evidence=auth.stdout.strip(),
-            error="" if auth_ok else f"cannot get pods in namespace {namespace}",
-        )
+    runner.append(
+        {
+            "name": "kubectl",
+            "status": "ok",
+            "message": "kubectl available",
+            "evidence": shutil.which("kubectl"),
+        }
     )
-    if not auth_ok:
-        errors.append(f"cannot get pods in namespace {namespace}")
 
-    for resource in profile.get("mindcluster", {}).get("required_api_resources", []):
-        api_group = API_RESOURCE_GROUPS.get(resource)
-        if not api_group:
-            checks.append(
-                check_item(
-                    f"api_resource:{resource}",
-                    status="not_applicable",
-                    error=f"unknown api group mapping for {resource}",
-                )
-            )
+    if not machine_context:
+        runner.append(
+            {
+                "name": "kube_context",
+                "status": "error",
+                "message": "machine inventory missing kube_context",
+            }
+        )
+        return _finalize(runner, machine_context, contract, inventory_alias)
+
+    runner.append(
+        {
+            "name": "kube_context",
+            "status": "ok",
+            "message": "kube context resolved from machine inventory",
+            "evidence": machine_context,
+        }
+    )
+
+    kubectl = kubectl_base(kube_context=machine_context)
+    cluster_info = _run_kubectl([*kubectl, "cluster-info"])
+    if cluster_info.returncode != 0:
+        runner.append(
+            {
+                "name": "kubernetes_api",
+                "status": "unavailable",
+                "message": cluster_info.stderr.strip() or "Kubernetes API unreachable",
+            }
+        )
+        return _finalize(runner, machine_context, contract, inventory_alias)
+
+    runner.append(
+        {
+            "name": "kubernetes_api",
+            "status": "ok",
+            "message": "Kubernetes API reachable",
+            "evidence": cluster_info.stdout.strip().splitlines()[0][:200],
+        }
+    )
+
+    version = _run_kubectl([*kubectl, "version", "--output=json"])
+    if version.returncode != 0:
+        runner.append(
+            {
+                "name": "cluster_version",
+                "status": "warning",
+                "message": "could not read cluster version",
+                "evidence": version.stderr.strip(),
+            }
+        )
+    else:
+        runner.append(
+            {
+                "name": "cluster_version",
+                "status": "ok",
+                "message": "cluster version available",
+                "evidence": version.stdout.strip()[:400],
+            }
+        )
+
+    auth = _run_kubectl([*kubectl, "auth", "can-i", "list", "customresourcedefinitions"])
+    auth_ok = auth.stdout.strip().lower() == "yes"
+    if not auth_ok:
+        runner.append(
+            {
+                "name": "cluster_read_permissions",
+                "status": "error",
+                "message": "insufficient permissions to list cluster CRDs",
+                "evidence": auth.stdout.strip() or auth.stderr.strip(),
+            }
+        )
+        return _finalize(runner, machine_context, contract, inventory_alias)
+    runner.append(
+        {
+            "name": "cluster_read_permissions",
+            "status": "ok",
+            "message": "can list cluster CRDs",
+        }
+    )
+
+    for resource in contract.get("required_api_resources", []):
+        if not isinstance(resource, dict):
+            continue
+        name = str(resource.get("name", "")).strip()
+        api_group = str(resource.get("api_group", "")).strip()
+        if not name or not api_group:
+            if not runner.append(
+                {
+                    "name": f"api_resource:{name or 'unknown'}",
+                    "status": "error",
+                    "message": "invalid environment contract api resource entry",
+                }
+            ):
+                break
             continue
         cmd = [*kubectl, "api-resources", f"--api-group={api_group}", "-o", "name"]
-        api = subprocess.run(cmd, check=False, text=True, capture_output=True)
-        found = resource in api.stdout
-        checks.append(
-            check_item(
-                f"api_resource:{resource}",
-                status="pass" if found else "fail",
-                evidence=api.stdout.strip()[:200],
-                error="" if found else f"{resource} not found in api-group {api_group}",
-            )
-        )
-        if not found:
-            errors.append(f"{resource} not found in api-group {api_group}")
+        api = _run_kubectl(cmd)
+        found = name in api.stdout
+        if not runner.append(
+            {
+                "name": f"api_resource:{name}",
+                "status": "ok" if found else "error",
+                "message": f"{name} present" if found else f"{name} missing in api-group {api_group}",
+                "evidence": api.stdout.strip()[:200],
+            }
+        ):
+            break
 
-    if include_pod_readiness:
-        pods = pod_readiness_probe(profile, namespace)
-        checks.append(
-            check_item(
-                "pod_readiness",
-                status="pass" if pods.get("ready") else "fail",
-                evidence=json.dumps(pods),
-                error="" if pods.get("ready") else "not all pods ready in namespace",
-            )
-        )
-        if not pods.get("ready"):
-            errors.append("not all pods ready in namespace")
+    if not runner.stopped_at:
+        for pattern in contract.get("component_patterns", []):
+            pattern = str(pattern).strip()
+            if not pattern:
+                continue
+            cmd = [
+                *kubectl,
+                "get",
+                "pods",
+                "-A",
+                "-o",
+                "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
+            ]
+            pods = _run_kubectl(cmd)
+            if pods.returncode != 0:
+                if not runner.append(
+                    {
+                        "name": f"controller:{pattern}",
+                        "status": "unavailable",
+                        "message": "could not list cluster pods for controller probe",
+                        "evidence": pods.stderr.strip(),
+                    }
+                ):
+                    break
+                continue
+            matched = any(pattern in line for line in pods.stdout.splitlines())
+            if not runner.append(
+                {
+                    "name": f"controller:{pattern}",
+                    "status": "ok" if matched else "error",
+                    "message": f"controller pattern {pattern!r} {'found' if matched else 'missing'}",
+                }
+            ):
+                break
 
-    ready = not errors
+    if not runner.stopped_at:
+        resource_name = str(contract.get("npu_resource_name", "")).strip()
+        if resource_name:
+            cmd = [
+                *kubectl,
+                "get",
+                "nodes",
+                "-o",
+                "jsonpath={range .items[*]}{.status.allocatable}{'\\n'}{end}",
+            ]
+            nodes = _run_kubectl(cmd)
+            if nodes.returncode != 0:
+                runner.append(
+                    {
+                        "name": "npu_resource_type",
+                        "status": "unavailable",
+                        "message": "could not read node allocatable resources",
+                        "evidence": nodes.stderr.strip(),
+                    }
+                )
+            elif resource_name in nodes.stdout:
+                runner.append(
+                    {
+                        "name": "npu_resource_type",
+                        "status": "ok",
+                        "message": f"NPU resource {resource_name!r} advertised by cluster",
+                    }
+                )
+            else:
+                runner.append(
+                    {
+                        "name": "npu_resource_type",
+                        "status": "error",
+                        "message": f"NPU resource {resource_name!r} not found on any node",
+                    }
+                )
+
+    return _finalize(runner, machine_context, contract, inventory_alias)
+
+
+def _finalize(
+    runner: CheckRunner,
+    kube_context: str,
+    contract: dict[str, Any],
+    alias: str,
+) -> dict[str, Any]:
+    ready = runner.stopped_at is None and not runner.errors
     return {
         "ready": ready,
-        "checks": checks,
-        "errors": errors,
-        "namespace": namespace,
-        "kube_context": effective_context,
+        "alias": alias,
+        "checks": runner.checks,
+        "warnings": runner.warnings,
+        "errors": runner.errors,
+        "stopped_at": runner.stopped_at,
+        "kube_context": kube_context,
+        "environment_contract": {
+            "schema_version": contract.get("schema_version"),
+            "name": contract.get("name"),
+        },
     }
 
 
-def load_profile_from_path(profile_path: str | None, default: str = "profiles/a2-dev.yaml") -> dict[str, Any]:
-    from pathlib import Path
-
-    from repo_paths import SCAFFOLD_ROOT
-
-    path = SCAFFOLD_ROOT / (profile_path or default)
-    if not path.exists():
-        return {}
-    return load_profile(path)
+def build_environment_result_envelope(
+    *,
+    run_id: str,
+    workflow_run_id: str,
+    machine_run_id: str,
+    payload: dict[str, Any],
+    started_at: str,
+) -> dict[str, Any]:
+    return build_result_envelope(
+        kind="deploy-environment-ready",
+        run_id=run_id,
+        workflow_run_id=workflow_run_id,
+        checks=payload.get("checks", []),
+        started_at=started_at,
+        upstream_refs=[
+            {"kind": "machine-ready", "run_id": machine_run_id},
+        ],
+        warnings=payload.get("warnings", []),
+        errors=payload.get("errors", []),
+        extra={
+            "alias": payload.get("alias"),
+            "kube_context": payload.get("kube_context"),
+            "environment_contract": payload.get("environment_contract"),
+            "stopped_at": payload.get("stopped_at"),
+        },
+    )

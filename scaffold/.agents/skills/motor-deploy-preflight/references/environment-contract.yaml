@@ -1,0 +1,15 @@
+schema_version: 1
+name: motor-workspace-environment
+required_api_resources:
+  - name: ascendjobs
+    api_group: mindx.huawei.com
+  - name: podgroups
+    api_group: scheduling.volcano.sh
+component_patterns:
+  - noded
+  - clusterd
+  - ascend-device-plugin
+  - ascend-operator
+  - volcano
+npu_resource_name: huawei.com/Ascend910
+scheduler_name: volcano

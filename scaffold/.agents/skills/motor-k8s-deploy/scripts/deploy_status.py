@@ -9,10 +9,18 @@ SCAFFOLD = Path(__file__).resolve().parents[4]
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
-from repo_paths import REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
+from repo_paths import REPO_ROOT  # noqa: E402
 
-from mws_deploy import collect_component_status, load_profile, openai_smoke, pod_readiness_probe  # noqa: E402
-from mws_deploy import load_plan_from_dir  # noqa: E402
+from mws_deploy import (  # noqa: E402
+    bundle_to_plan,
+    collect_runtime_code_paths,
+    load_config_bundle,
+    pod_readiness_from_context,
+    verify_min_service_access,
+    verify_runtime_code_paths,
+)
+from mws_local_state import get_machine  # noqa: E402
+from mws_machine_target import build_fixed_source_paths  # noqa: E402
 from mws_result import emit  # noqa: E402
 from mws_run_state import load_deploy_run  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
@@ -22,23 +30,29 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machine", required=True)
     parser.add_argument("--deploy-run-id", required=True)
-    parser.add_argument("--profile", default="profiles/a2-dev.yaml")
-    parser.add_argument("--openai-smoke", action="store_true")
     args = parser.parse_args()
     alias = require_safe_id(args.machine, label="machine")
+    machine = get_machine(alias)
+    kube_context = str(machine.get("kube_context") or "")
+    machine_paths = build_fixed_source_paths(machine)
     run_record = load_deploy_run(args.deploy_run_id)
     if run_record.get("machine") != alias:
         return emit({"status": "error", "errors": ["deploy run machine mismatch"]})
-    plan_dir = run_record.get("plan_dir")
-    if not plan_dir:
-        return emit({"status": "error", "errors": ["plan_dir missing"]})
-    plan = load_plan_from_dir(REPO_ROOT / plan_dir)
-    profile = load_profile(SCAFFOLD_ROOT / args.profile)
-    namespace = plan.get("namespace", "")
-    pods = pod_readiness_probe(profile, namespace)
-    components = collect_component_status(profile, namespace)
-    smoke = openai_smoke(profile, namespace) if args.openai_smoke else {"status": "skipped"}
-    ready = pods.get("ready") is True
+    bundle_rel = run_record.get("bundle_dir")
+    if not bundle_rel:
+        return emit({"status": "error", "errors": ["bundle_dir missing"]})
+    bundle_ref = str(bundle_rel)
+    bundle_dir = Path(bundle_ref)
+    if not bundle_dir.is_absolute():
+        bundle_dir = REPO_ROOT / bundle_ref
+    bundle = load_config_bundle(bundle_dir)
+    plan = bundle_to_plan(bundle_dir, bundle)
+    namespace = str(run_record.get("namespace") or plan.get("namespace") or "")
+    pods = pod_readiness_from_context(kube_context, namespace)
+    min_access = verify_min_service_access(kube_context=kube_context, namespace=namespace)
+    runtime_paths = collect_runtime_code_paths(kube_context=kube_context, namespace=namespace)
+    code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
+    ready = pods.get("ready") is True and code_paths.get("status") == "ok"
     status = "ok" if ready else "warning"
     return emit(
         {
@@ -48,8 +62,9 @@ def main() -> int:
             "namespace": namespace,
             "job_id": plan.get("job_id"),
             "pods": pods,
-            "components": components,
-            "openai_smoke": smoke,
+            "min_service_access": min_access,
+            "runtime_paths": runtime_paths,
+            "code_paths": code_paths,
         }
     )
 

@@ -10,26 +10,37 @@ description: Validate K8s API and MindCluster base environment before deploy con
 
 ## 边界
 
-**消费**：machine-ready（machine alias）、deploy profile、machine inventory 中的
-kube context 元数据。
+**消费**：
 
-**不消费**：parity-complete、user config、render 后的 manifest、镜像/模型选择。
+- 同一 workflow 内成功的 `machine-ready` run（`--machine-run-id` 可选）
+- machine inventory 中的 `kube_context`
+- workspace 版本化的 environment contract（默认
+  `references/environment-contract.yaml`）
 
-**检查项**（从 legacy `machine_verify.py` 平移）：
+**不消费**：parity-complete、Motor `user_config.json` / `env.json`、namespace、
+镜像/模型、render 后的 manifest。
 
-- kubectl 可用
-- kube context 一致性（inventory vs profile）
-- namespace RBAC（`auth can-i get pods`）
-- MindCluster / Volcano CRD（`required_api_resources`）
-- namespace 内 Pod readiness（可选，`--skip-pod-readiness` 关闭）
+**检查项**：
 
-**不做**：apply、创建 namespace、诊断 Pod、配置调度、dry-run manifest。
+- `kubectl` 可用
+- kube context 来自 machine inventory 且可用于 API 访问
+- Kubernetes API 可达并具备读取基础集群环境所需权限
+- environment contract 要求的 CRD/API resource、controller pattern、NPU
+  resource type
+
+可选版本信息读取失败记 `warning` 并继续；API 不可达、权限不足、必需组件缺失
+为 `error`/`unavailable` 并立即中断。
+
+**不做**：namespace RBAC、业务 Pod readiness、apply、创建 namespace、诊断 Pod、
+配置 dry-run manifest、跨 workflow 复用历史 environment-ready。
 
 ## Entry point
 
 ```bash
-python3 .agents/skills/motor-deploy-preflight/scripts/environment_preflight.py \
-  --alias dev1 --profile profiles/a2-dev.yaml
+python3 scaffold/.agents/skills/motor-deploy-preflight/scripts/environment_preflight.py \
+  --alias dev1 \
+  --machine-run-id <machine-run-id> \
+  --workflow-run-id <workflow-run-id>
 ```
 
-Progress 在 stderr，JSON 结果在 stdout。
+Progress 在 stderr，JSON 结果在 stdout（`mws.result.v1` envelope）。
