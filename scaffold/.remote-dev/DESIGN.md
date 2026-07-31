@@ -1,7 +1,10 @@
 # Remote Developer Substrate Design
 
-This package implements the design from
-`/Users/maoxx241/Downloads/remote_dev_substrate_design_for_codex.md`.
+> **Motor workspace 当前模型**：direct SSH endpoint（`host` + `port` + `user`），默认
+> `root=/mnt`、`cwd=/mnt/motor-workspace`。不使用 VAWS managed session/container selector。
+> 历史 VAWS session 语义见 `MIGRATION-NOTES.md`。
+
+This package implements the remote developer substrate for motor-workspace.
 
 ## Architecture
 

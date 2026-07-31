@@ -44,10 +44,6 @@ RUN_DIRS: dict[RunKind, str] = {
 CONFIG_BUNDLES_DIR = LOCAL_ROOT / "config-bundles"
 VALIDATION_RUNS_DIR = LOCAL_ROOT / "validation-runs"
 
-# Legacy aliases kept for existing scripts during migration.
-PARITY_RUNS_DIR = LOCAL_ROOT / RUN_DIRS["parity-complete"]
-DEPLOY_RUNS_DIR = LOCAL_ROOT / RUN_DIRS["deploy-complete"]
-
 
 def new_run_id(prefix: str) -> str:
     stamp = utc_now_iso().replace(":", "").replace("-", "")
@@ -155,15 +151,29 @@ def write_deploy_run(run_id: str, payload: dict[str, Any]) -> Path:
     return write_run("deploy-complete", run_id, record, immutable=True)
 
 
-def load_deploy_run(run_id: str) -> dict[str, Any]:
-    try:
-        return load_run("deploy-complete", run_id)
-    except WorkspaceStateError:
-        path = deploy_run_dir(run_id) / "run.json"
-        data = load_json(path)
-        if not isinstance(data, dict):
-            raise WorkspaceStateError(f"{path} must contain an object") from None
-        return data
+def load_deploy_run(run_id: str, *, allow_failed: bool = True) -> dict[str, Any]:
+    """Load a deploy run record.
+
+    Deploy runs record both ready and failed outcomes; status/restart/stop/diagnosis
+    legitimately need to read failed runs to gather evidence. Unlike ``load_run`` this
+    does not require status == "ready", but still enforces kind/run_id integrity.
+    """
+    path = deploy_run_dir(run_id) / "run.json"
+    if not path.exists():
+        raise WorkspaceStateError(f"missing run record: {path}")
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise WorkspaceStateError(f"{path} must contain an object")
+    record_kind = str(data.get("kind", "deploy-complete"))
+    if record_kind != "deploy-complete":
+        raise WorkspaceStateError(
+            f"run {run_id} kind mismatch: expected deploy-complete, got {record_kind}"
+        )
+    if str(data.get("run_id", run_id)) != run_id:
+        raise WorkspaceStateError(f"run_id mismatch for {path}")
+    if not allow_failed and data.get("status") != "ready":
+        raise WorkspaceStateError(f"run {run_id} is not ready")
+    return data
 
 
 def validate_upstream_refs(

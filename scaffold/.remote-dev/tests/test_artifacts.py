@@ -23,7 +23,7 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(payload["result"]["status"], "path_outside_root")
 
     def test_artifact_manifest_persists_local_manifest_ref(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = artifact_ops.run_remote_python
         try:
@@ -48,7 +48,7 @@ class ArtifactTests(unittest.TestCase):
             artifact_ops.run_remote_python = original_runner  # type: ignore[assignment]
 
     def test_artifact_push_rejects_local_symlink(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target.txt"
             target.write_text("secret\n", encoding="utf-8")
@@ -63,7 +63,7 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(payload["result"]["status"], "symlink_not_allowed")
 
     def test_artifact_push_streams_and_verifies_hash(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         observed_calls = []
         original = artifact_ops.run_bytes
         try:
@@ -90,7 +90,7 @@ class ArtifactTests(unittest.TestCase):
             artifact_ops.run_bytes = original  # type: ignore[assignment]
 
     def test_artifact_pull_blocks_malicious_relpath(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_manifest = artifact_ops.remote_artifact_manifest
         try:
             artifact_ops.remote_artifact_manifest = lambda *_args, **_kwargs: {  # type: ignore[assignment]

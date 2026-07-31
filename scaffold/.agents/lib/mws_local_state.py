@@ -4,12 +4,10 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import secrets
 import string
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,8 +16,6 @@ from typing import Any
 STATE_DIRNAME = ".motor-workspace-local"
 PROFILE_FILENAME = "machine-profile.json"
 INVENTORY_FILENAME = "machine-inventory.json"
-SESSIONS_DIRNAME = "sessions"
-CONSENT_DIRNAME = "consent"
 PROFILE_SCHEMA_VERSION = 1
 INVENTORY_SCHEMA_VERSION = 1
 PARITY_BACKEND_CHOICES = ("shared-hostpath", "node-local-hostpath")
@@ -47,8 +43,6 @@ LOCAL_ROOT = STATE_DIR
 PROFILE_PATH = STATE_DIR / PROFILE_FILENAME
 INVENTORY_PATH = STATE_DIR / INVENTORY_FILENAME
 INVENTORY_LOCK_PATH = STATE_DIR / f"{INVENTORY_FILENAME}.lock"
-SESSIONS_DIR = STATE_DIR / SESSIONS_DIRNAME
-CONSENT_DIR = STATE_DIR / CONSENT_DIRNAME
 
 
 class WorkspaceStateError(RuntimeError):
@@ -106,26 +100,15 @@ def default_workspace_id() -> str:
 
 
 def _load_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise WorkspaceStateError(f"invalid JSON in {path}: {exc}") from exc
+    from mws_state import load_json
+
+    return load_json(path)
 
 
 def _save_json(path: Path, data: Any) -> None:
-    ensure_state_dir(path.parent)
-    handle, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(temp_name, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_name)
+    from mws_state import atomic_write_json
+
+    atomic_write_json(path, data)
 
 
 def ensure_workspace_id(*, persist: bool = True) -> str:

@@ -4,9 +4,9 @@
 	branch = master
 [submodule "vllm-ascend"]
 	path = sources/vllm-ascend
-	url = git@github.com:vllm-project/vllm-ascend.git
+	url = https://github.com/vllm-project/vllm-ascend.git
 	branch = main
 [submodule "vllm"]
 	path = sources/vllm
-	url = git@github.com:vllm-project/vllm.git
+	url = https://github.com/vllm-project/vllm.git
 	branch = main

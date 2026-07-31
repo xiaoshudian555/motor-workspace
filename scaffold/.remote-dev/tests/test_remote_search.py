@@ -29,7 +29,7 @@ class RemoteSearchTests(unittest.TestCase):
         self.assertIn("shutil.which(\"rg\")", search_ops.REMOTE_SEARCH_PY)
 
     def test_remote_grep_clamps_limit_and_text(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_runner = search_ops.run_remote_python
         captured = {}
         try:

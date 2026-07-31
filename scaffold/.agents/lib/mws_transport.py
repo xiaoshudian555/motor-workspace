@@ -132,6 +132,8 @@ class SshScpTransport(RemoteTransport):
             "StrictHostKeyChecking=accept-new",
             "-o",
             "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=10",
             "-p",
             str(self.port),
             self.target,
@@ -226,7 +228,7 @@ class FakeRemoteTransport(RemoteTransport):
             dest_path = self._local(dest)
             dest_path.mkdir(parents=True, exist_ok=True)
             with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as archive_obj:
-                archive_obj.extractall(dest_path)
+                archive_obj.extractall(dest_path, filter="data")
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         if part.startswith("rm -rf "):
             target = shlex.split(part[len("rm -rf ") :])[0]

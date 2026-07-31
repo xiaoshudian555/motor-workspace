@@ -11,6 +11,10 @@ SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,63}$")
 # Kubernetes DNS-1123 label: lowercase alphanumeric, '-' allowed internally, 1-63 chars
 K8S_DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,253}$")
+# POSIX path segment chars that are safe to embed in a shell command after quoting
+# is verified. Reject shell metacharacters at the validation layer so a missed
+# shell_quote() at a call site cannot become a command injection.
+REMOTE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+@%=-]+$")
 
 
 class ValidationError(ValueError):
@@ -111,6 +115,14 @@ def validate_remote_posix_path(value: str, *, label: str = "path") -> str:
     parts = PurePosixPath(value).parts
     if ".." in parts:
         raise ValidationError(f"{label} must not contain '..'")
+    for segment in parts:
+        if segment == "/":
+            continue
+        if not REMOTE_PATH_SEGMENT_RE.fullmatch(segment):
+            raise ValidationError(
+                f"{label} segment {segment!r} contains characters that are unsafe "
+                "for remote shell use (allowed: A-Z a-z 0-9 . _ + @ % = -)"
+            )
     return value.rstrip("/") or "/"
 
 

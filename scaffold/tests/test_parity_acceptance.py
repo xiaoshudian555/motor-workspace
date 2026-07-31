@@ -145,7 +145,8 @@ def test_unauthorized_overwrite_rejected() -> None:
     )
     assert proc.returncode != 0
     payload = json.loads(proc.stdout)
-    assert payload["status"] == "error"
+    assert payload["status"] == "failed"
+    assert payload["schema_version"] == "mws.result.v1"
     assert "approved-overwrite" in payload["errors"][0]
 
 

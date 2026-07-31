@@ -16,7 +16,7 @@ import core.state_store as state_store  # noqa: E402
 
 class RemoteEditTests(unittest.TestCase):
     def test_remote_edit_without_read_ledger_executes_by_default(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         captured = {}
@@ -43,7 +43,7 @@ class RemoteEditTests(unittest.TestCase):
             file_ops.run_remote_python = original_runner  # type: ignore[assignment]
 
     def test_remote_edit_with_ledger_returns_changed_file(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         try:
@@ -65,7 +65,7 @@ class RemoteEditTests(unittest.TestCase):
             file_ops.run_remote_python = original_runner  # type: ignore[assignment]
 
     def test_remote_edit_ignores_read_ledger_from_different_client_context(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         captured = {}

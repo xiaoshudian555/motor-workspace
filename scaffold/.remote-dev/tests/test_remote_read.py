@@ -17,7 +17,7 @@ import core.state_store as state_store  # noqa: E402
 
 class RemoteReadTests(unittest.TestCase):
     def test_remote_read_writes_ledger(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         try:
@@ -53,7 +53,7 @@ class RemoteReadTests(unittest.TestCase):
         self.assertEqual(payload["result"]["status"], "path_outside_root")
 
     def test_remote_read_clamps_excessive_limit_and_text(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         captured = {}

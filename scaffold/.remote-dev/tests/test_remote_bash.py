@@ -30,7 +30,7 @@ class RemoteBashTests(unittest.TestCase):
         self.assertIn("--root /tmp --cwd /tmp", payload["text"])
 
     def test_remote_bash_core_allows_secret_like_argv(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace", cwd="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = shell_ops.run_script
         scripts = []
@@ -58,7 +58,7 @@ class RemoteBashTests(unittest.TestCase):
         self.assertNotIn("endpoint_patch", payload["result"]["next"])
 
     def test_remote_bash_success_writes_log_refs(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace", cwd="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = shell_ops.run_script
         scripts = []
@@ -81,7 +81,7 @@ class RemoteBashTests(unittest.TestCase):
             shell_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_background_remote_bash_missing_cwd_does_not_start_job(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
         calls = []
@@ -109,7 +109,7 @@ class RemoteBashTests(unittest.TestCase):
             job_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_background_remote_bash_duplicate_job_id_is_blocked(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
         try:
@@ -125,7 +125,7 @@ class RemoteBashTests(unittest.TestCase):
             job_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_remote_job_tail_clamps_lines_and_text(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
         scripts = []

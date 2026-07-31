@@ -14,7 +14,7 @@ from repo_paths import REPO_ROOT  # noqa: E402
 
 from mws_machine_target import resolve_machine  # noqa: E402
 from mws_parity import load_machine_ready_evidence, sync_workspace_fanout  # noqa: E402
-from mws_result import emit, progress  # noqa: E402
+from mws_result import build_result_envelope, emit_result, progress, utc_now_iso  # noqa: E402
 from mws_run_state import new_run_id, parity_run_dir, write_parity_run  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 
@@ -27,14 +27,25 @@ def main() -> int:
     parser.add_argument("--parity-run-id", default="")
     parser.add_argument("--skip-fast-path", action="store_true")
     args = parser.parse_args()
+    started_at = utc_now_iso()
+    run_id = args.parity_run_id or new_run_id("parity")
+
+    def _fail(errors: list, *, extra: dict | None = None) -> int:
+        envelope = build_result_envelope(
+            kind="parity-complete",
+            run_id=run_id,
+            workflow_run_id="workflow-unset",
+            checks=[],
+            started_at=started_at,
+            errors=errors,
+            status="failed",
+            extra={"machine": args.machine, **(extra or {})},
+        )
+        return emit_result(envelope)
+
     if not args.approved_overwrite:
-        return emit(
-            {
-                "status": "error",
-                "errors": [
-                    "parity sync overwrites remote fixed directories; re-run with --approved-overwrite"
-                ],
-            }
+        return _fail(
+            ["parity sync overwrites remote fixed directories; re-run with --approved-overwrite"]
         )
     alias = require_safe_id(args.machine, label="machine")
     machine = resolve_machine(alias)
@@ -48,14 +59,13 @@ def main() -> int:
         skip_fast_path=args.skip_fast_path,
     )
     status = manifest.get("status", "error")
-    run_id = args.parity_run_id or new_run_id("parity")
     run_dir = parity_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = run_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     parity_complete = status == "ok" and manifest.get("remote_content_digest")
-    run_status = "ok" if parity_complete else "failed"
+    run_status = "ready" if parity_complete else "failed"
     write_parity_run(
         run_id,
         {
@@ -67,24 +77,25 @@ def main() -> int:
             "manifest": manifest,
         },
     )
-    if not parity_complete:
-        return emit(
-            {
-                "status": "error",
-                "parity_run_id": run_id,
-                "parity_complete": False,
-                "machine": alias,
-                "machine_run_id": machine_ready.get("machine_run_id"),
-                "errors": manifest.get("errors", ["parity sync did not complete"]),
-                "targets": manifest.get("targets", []),
-            }
-        )
     paths = manifest.get("source_dirs", {})
-    return emit(
-        {
-            "status": "ok",
-            "parity_complete": True,
-            "parity_run_id": run_id,
+    envelope = build_result_envelope(
+        kind="parity-complete",
+        run_id=run_id,
+        workflow_run_id=str(machine_ready.get("workflow_run_id") or "workflow-unset"),
+        checks=[
+            {
+                "name": "parity_sync",
+                "status": "ok" if parity_complete else "error",
+                "message": manifest.get("sync_mode") or "; ".join(manifest.get("errors", [])),
+            }
+        ],
+        started_at=started_at,
+        upstream_refs=[{"kind": "machine-ready", "run_id": str(machine_ready.get("machine_run_id"))}],
+        errors=[] if parity_complete else manifest.get("errors", ["parity sync did not complete"]),
+        artifacts=[{"path": str(manifest_path.relative_to(REPO_ROOT))}],
+        status="ready" if parity_complete else "failed",
+        extra={
+            "parity_complete": parity_complete,
             "machine": alias,
             "machine_run_id": machine_ready.get("machine_run_id"),
             "remote_workspace_root": manifest.get("remote_workspace_root"),
@@ -94,10 +105,10 @@ def main() -> int:
             "remote_content_digest": manifest.get("remote_content_digest"),
             "sync_mode": manifest.get("sync_mode"),
             "targets": manifest.get("targets", []),
-            "artifacts": [str(manifest_path.relative_to(REPO_ROOT))],
-            "next": "motor-k8s-deploy plan/apply (first deploy) or deploy_restart (code-only updates)",
-        }
+            "next": "motor-deploy-configure then motor-k8s-deploy apply, or deploy_restart (code-only updates)",
+        },
     )
+    return emit_result(envelope)
 
 
 if __name__ == "__main__":

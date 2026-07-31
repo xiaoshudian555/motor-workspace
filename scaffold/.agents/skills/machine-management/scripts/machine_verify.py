@@ -13,6 +13,7 @@ from mws_deploy import load_profile  # noqa: E402
 from mws_local_state import (  # noqa: E402
     WorkspaceStateError,
     get_machine,
+    inventory_lock,
     load_inventory,
     save_inventory,
     utc_now_iso,
@@ -44,6 +45,16 @@ def _persist_machine_run(
         "endpoint": endpoint,
     }
     write_run("machine-ready", machine_run_id, record, immutable=True)
+
+
+def _record_verify_result(alias: str, errors: list) -> None:
+    with inventory_lock():
+        inventory = load_inventory()
+        machines = inventory.get("machines", {})
+        if alias in machines:
+            machines[alias]["last_verified_at"] = utc_now_iso()
+            machines[alias]["last_verify_errors"] = list(errors)
+            save_inventory(inventory)
 
 
 def main() -> int:
@@ -94,10 +105,7 @@ def main() -> int:
             machine_ref={},
             endpoint={},
         )
-        inventory = load_inventory()
-        inventory["machines"][alias]["last_verified_at"] = utc_now_iso()
-        inventory["machines"][alias]["last_verify_errors"] = [str(exc)]
-        save_inventory(inventory)
+        _record_verify_result(alias, [str(exc)])
         return emit_result(envelope)
 
     envelope = build_machine_result_envelope(
@@ -114,10 +122,7 @@ def main() -> int:
         endpoint=result["endpoint"],
     )
 
-    inventory = load_inventory()
-    inventory["machines"][alias]["last_verified_at"] = utc_now_iso()
-    inventory["machines"][alias]["last_verify_errors"] = result["errors"]
-    save_inventory(inventory)
+    _record_verify_result(alias, result["errors"])
 
     return emit_result(envelope)
 

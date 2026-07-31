@@ -15,7 +15,7 @@ import core.state_store as state_store  # noqa: E402
 
 class ReadLedgerTests(unittest.TestCase):
     def test_read_ledger_round_trip_uses_endpoint_state(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         with tempfile.TemporaryDirectory() as tmp:
             original = state_store.substrate_root
             try:
@@ -39,7 +39,7 @@ class ReadLedgerTests(unittest.TestCase):
                 state_store.substrate_root = original  # type: ignore[assignment]
 
     def test_read_ledger_scope_isolated_by_client_context(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
         with tempfile.TemporaryDirectory() as tmp:
             original = state_store.substrate_root
             try:

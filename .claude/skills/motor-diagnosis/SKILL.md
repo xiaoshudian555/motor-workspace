@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/motor-diagnosis/SKILL.md. Do not edit. -->
 ---
 name: motor-diagnosis
-description: Collect run-scoped Motor deploy diagnostic artifacts (second phase).
+description: Collect run-scoped Motor deploy diagnostic artifacts from deploy/config/bundle runs.
 ---
 
 # motor-diagnosis

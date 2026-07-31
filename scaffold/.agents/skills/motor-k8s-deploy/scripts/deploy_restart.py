@@ -25,22 +25,31 @@ from mws_deploy import (  # noqa: E402
 )
 from mws_local_state import get_machine  # noqa: E402
 from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine, resolve_machine  # noqa: E402
-from mws_result import emit, progress  # noqa: E402
+from mws_result import (  # noqa: E402
+    CheckRunner,
+    build_result_envelope,
+    emit_result,
+    progress,
+    utc_now_iso,
+)
 from mws_run_state import deploy_run_dir, load_deploy_run, new_run_id  # noqa: E402
 from mws_state import atomic_write_json  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 
 
-def run_parity(machine: str) -> dict:
+def run_parity(machine: str, *, machine_run_id: str = "") -> dict:
     script = SCAFFOLD_ROOT / ".agents/skills/remote-code-parity/scripts/parity_sync.py"
+    cmd = [
+        sys.executable,
+        str(script),
+        "--machine",
+        machine,
+        "--approved-overwrite",
+    ]
+    if machine_run_id.strip():
+        cmd.extend(["--machine-run-id", machine_run_id.strip()])
     result = subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            "--machine",
-            machine,
-            "--approved-overwrite",
-        ],
+        cmd,
         check=False,
         text=True,
         capture_output=True,
@@ -61,18 +70,45 @@ def main() -> int:
     parser.add_argument("--skip-restart", action="store_true")
     parser.add_argument("--approved-by-user", action="store_true")
     args = parser.parse_args()
+    started_at = utc_now_iso()
+    restart_run_id = new_run_id("restart")
+
+    def _fail(errors: list, *, extra: dict | None = None) -> int:
+        envelope = build_result_envelope(
+            kind="deploy-restart",
+            run_id=restart_run_id,
+            workflow_run_id=str(run_record.get("workflow_run_id", "workflow-unset")) if run_record else "workflow-unset",
+            checks=[],
+            started_at=started_at,
+            errors=errors,
+            status="failed",
+            extra={"machine": alias, "deploy_run_id": args.deploy_run_id, **(extra or {})},
+        )
+        return emit_result(envelope)
+
+    run_record = None
     if not args.approved_by_user:
-        return emit({"status": "error", "errors": ["restart requires --approved-by-user"]})
+        envelope = build_result_envelope(
+            kind="deploy-restart",
+            run_id=restart_run_id,
+            workflow_run_id="workflow-unset",
+            checks=[],
+            started_at=started_at,
+            errors=["restart requires --approved-by-user"],
+            status="failed",
+            extra={"machine": args.machine, "deploy_run_id": args.deploy_run_id},
+        )
+        return emit_result(envelope)
     alias = require_safe_id(args.machine, label="machine")
     machine = resolve_machine(alias)
     kube_context = str(machine.get("kube_context") or "")
     machine_paths = build_fixed_source_paths(machine)
     run_record = load_deploy_run(args.deploy_run_id)
     if run_record.get("machine") != alias:
-        return emit({"status": "error", "errors": ["deploy run machine mismatch"]})
+        return _fail(["deploy run machine mismatch"])
     bundle_rel = run_record.get("bundle_dir")
     if not bundle_rel:
-        return emit({"status": "error", "errors": ["bundle_dir missing; deploy once before restart"]})
+        return _fail(["bundle_dir missing; deploy once before restart"])
     bundle_ref = str(bundle_rel)
     bundle_dir = Path(bundle_ref)
     if not bundle_dir.is_absolute():
@@ -81,58 +117,85 @@ def main() -> int:
     plan = bundle_to_plan(bundle_dir, bundle)
     namespace = str(run_record.get("namespace") or plan.get("namespace") or "")
 
+    runner = CheckRunner()
     parity = {"status": "skipped", "reason": "--skip-parity"}
     if not args.skip_parity:
-        progress("syncing code to remote fixed directories")
-        parity = run_parity(alias)
-        if parity.get("status") not in {"ok", "ready"}:
-            return emit(
-                {
-                    "status": "error",
-                    "machine": alias,
-                    "deploy_run_id": args.deploy_run_id,
-                    "phase": "parity",
-                    "errors": parity.get("errors", []),
-                }
+        machine_run_id = str(run_record.get("machine_run_id") or "")
+        if not machine_run_id:
+            return _fail(
+                [
+                    "deploy run missing machine_run_id; cannot run parity without "
+                    "machine-ready evidence (re-run deploy_apply or use --skip-parity)"
+                ],
+                extra={"phase": "parity"},
             )
+        progress("syncing code to remote fixed directories")
+        parity = run_parity(alias, machine_run_id=machine_run_id)
+        parity_ok = parity.get("status") in {"ok", "ready"}
+        runner.append(
+            {
+                "name": "parity",
+                "status": "ok" if parity_ok else "error",
+                "message": "; ".join(parity.get("errors", [])) or parity.get("status", ""),
+            }
+        )
+        if not runner.continue_ok:
+            return _fail(runner.errors, extra={"phase": "parity", "parity": parity})
 
     restart = {"status": "skipped", "reason": "--skip-restart"}
     if not args.skip_restart:
         progress("restarting deploy-scoped workloads")
         restart = restart_deploy_workloads_from_context(plan, kube_context=kube_context)
-        if restart.get("status") != "ok":
-            return emit(
-                {
-                    "status": "error",
-                    "machine": alias,
-                    "deploy_run_id": args.deploy_run_id,
-                    "phase": "restart",
-                    "parity": parity,
-                    "restart": restart,
-                }
+        restart_ok = restart.get("status") == "ok"
+        runner.append(
+            {
+                "name": "restart",
+                "status": "ok" if restart_ok else "error",
+                "message": "; ".join(restart.get("errors", [])) or restart.get("status", ""),
+            }
+        )
+        if not runner.continue_ok:
+            return _fail(
+                runner.errors,
+                extra={"phase": "restart", "parity": parity, "restart": restart},
             )
 
     pods = pod_readiness_from_context(kube_context, namespace)
     runtime_paths = collect_runtime_code_paths(kube_context=kube_context, namespace=namespace)
     code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
     ready = pods.get("ready") is True and code_paths.get("status") == "ok"
-    overall = "ok" if ready else "error"
-    restart_run_id = new_run_id("restart")
-    payload = {
-        "status": overall,
-        "restart_run_id": restart_run_id,
-        "machine": alias,
-        "deploy_run_id": args.deploy_run_id,
-        "workflow": "deploy_restart",
-        "pythonpath": pythonpath_for_machine(machine),
-        "parity": parity,
-        "restart": restart,
-        "pods": pods,
-        "runtime_paths": runtime_paths,
-        "code_paths": code_paths,
-    }
-    atomic_write_json(deploy_run_dir(args.deploy_run_id) / f"{restart_run_id}.json", payload)
-    return emit(payload)
+    runner.append(
+        {
+            "name": "pod_readiness",
+            "status": "ok" if pods.get("ready") is True else "error",
+            "message": str(pods),
+        }
+    )
+    runner.append(code_paths)
+    envelope = build_result_envelope(
+        kind="deploy-restart",
+        run_id=restart_run_id,
+        workflow_run_id=str(run_record.get("workflow_run_id", "workflow-unset")),
+        checks=runner.checks,
+        started_at=started_at,
+        warnings=runner.warnings,
+        errors=runner.errors,
+        upstream_refs=[{"kind": "deploy-complete", "run_id": args.deploy_run_id}],
+        status="ready" if ready and runner.continue_ok else "failed",
+        extra={
+            "machine": alias,
+            "deploy_run_id": args.deploy_run_id,
+            "workflow": "deploy_restart",
+            "pythonpath": pythonpath_for_machine(machine),
+            "parity": parity,
+            "restart": restart,
+            "pods": pods,
+            "runtime_paths": runtime_paths,
+            "code_paths": code_paths,
+        },
+    )
+    atomic_write_json(deploy_run_dir(args.deploy_run_id) / f"{restart_run_id}.json", envelope)
+    return emit_result(envelope)
 
 
 if __name__ == "__main__":

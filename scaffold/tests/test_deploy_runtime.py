@@ -372,11 +372,11 @@ def test_restart_recollects_code_paths(local_state_root, monkeypatch) -> None:
     with patch("mws_deploy.restart_deploy_workloads_from_context", return_value={"status": "ok", "actions": []}):
         with patch("mws_deploy.pod_readiness_from_context", side_effect=fake_pods):
             with patch("mws_deploy.collect_runtime_code_paths", side_effect=fake_collect):
-                with patch("mws_result.emit", side_effect=lambda payload: captured.update(payload=payload) or 0):
+                with patch("mws_result.emit_result", side_effect=lambda payload: captured.update(payload=payload) or 0):
                     spec.loader.exec_module(module)
                     module.main()
     payload = captured["payload"]
-    assert payload["status"] == "ok"
+    assert payload["status"] == "ready"
     assert pods_calls == ["ns1"]
     assert code_calls == ["ns1"]
     assert payload["code_paths"]["status"] == "ok"
