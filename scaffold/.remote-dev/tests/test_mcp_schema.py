@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-REPO_ROOT = ROOT.parent.parent
+REPO_ROOT = ROOT.parent
 
 import core.state_store as state_store  # noqa: E402
 import mcp.tools as mcp_tools  # noqa: E402
@@ -62,7 +62,7 @@ class McpSchemaTests(unittest.TestCase):
                 self.assertIn({"anyOf": ENDPOINT_SELECTOR_ANY_OF}, schema.get("allOf", []), name)
         self.assertIn({"required": ["host", "port"]}, ENDPOINT_SELECTOR_ANY_OF)
         self.assertIn({"required": ["alias"]}, ENDPOINT_SELECTOR_ANY_OF)
-        self.assertNotIn({"required": ["session_id"]}, ENDPOINT_SELECTOR_ANY_OF)
+        self.assertIn({"required": ["session_id"]}, ENDPOINT_SELECTOR_ANY_OF)
 
     def test_resources_include_endpoint_index(self) -> None:
         resources = {resource["uri"] for resource in list_resources()}
@@ -77,7 +77,7 @@ class McpSchemaTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 state_store.substrate_root = lambda: Path(tmp)  # type: ignore[assignment]
-                endpoint = Endpoint(host="127.0.0.1", port=46000, root="/vllm-workspace")
+                endpoint = Endpoint(host="127.0.0.1", port=46000, root="/mnt/motor-workspace")
                 state_store.ensure_endpoint_state(endpoint)
                 job_id = "job-abc123"
                 record = {
@@ -110,7 +110,7 @@ class McpSchemaTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 state_store.substrate_root = lambda: Path(tmp)  # type: ignore[assignment]
-                endpoint = Endpoint(host="127.0.0.1", port=46000, root="/vllm-workspace")
+                endpoint = Endpoint(host="127.0.0.1", port=46000, root="/mnt/motor-workspace")
                 state_store.ensure_endpoint_state(endpoint)
                 manifest = {
                     "schema_version": "remote-dev.artifact_manifest.v1",
@@ -140,7 +140,7 @@ class McpSchemaTests(unittest.TestCase):
             {
                 "host": "example.invalid",
                 "port": 22,
-                "root": "/vllm-workspace",
+                "root": "/mnt/motor-workspace",
                 "live_probe": False,
             },
         )
@@ -152,7 +152,7 @@ class McpSchemaTests(unittest.TestCase):
         encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
         framed = b"Content-Length: " + str(len(encoded)).encode("ascii") + b"\r\n\r\n" + encoded
         proc = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "scaffold/.remote-dev" / "mcp" / "server.py")],
+            [sys.executable, str(REPO_ROOT / ".remote-dev" / "mcp" / "server.py")],
             input=framed,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

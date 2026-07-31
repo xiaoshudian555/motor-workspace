@@ -32,6 +32,9 @@ def add_endpoint_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--identity-file")
     parser.add_argument("--connect-timeout-ms", type=int)
     parser.add_argument("--alias")
+    parser.add_argument("--session-id")
+    parser.add_argument("--session-file")
+    parser.add_argument("--machine")
 
 
 def endpoint_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -46,6 +49,9 @@ def endpoint_payload(args: argparse.Namespace) -> dict[str, Any]:
         "identity_file",
         "connect_timeout_ms",
         "alias",
+        "session_id",
+        "session_file",
+        "machine",
     ):
         value = getattr(args, key, None)
         if value is not None:
@@ -169,7 +175,7 @@ def run_tool(tool: str, args: argparse.Namespace) -> dict[str, Any]:
     data = load_input_json(args.input_json) if args.input_json else {}
     data = {**endpoint_payload(args), **data}
     endpoint = None
-    if tool not in {"job_status", "job_tail", "job_stop"} or any(data.get(k) for k in ("host", "port", "alias")):
+    if tool not in {"job_status", "job_tail", "job_stop"} or any(data.get(k) for k in ("host", "port", "alias", "session_id", "session_file", "machine")):
         endpoint = resolve_endpoint(data)
     timeout_ms = int(data.get("timeout_ms") or args.timeout_ms)
     if tool == "bash":

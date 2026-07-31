@@ -31,8 +31,11 @@ def default_identity_paths() -> tuple[Path, Path]:
 def read_public_key(path: Path) -> str:
     if not path.is_file():
         raise WorkspaceStateError(f"public key not found: {path}")
-    line = path.read_text(encoding="utf-8").strip().splitlines()[0].strip()
-    if not line or line.startswith("#"):
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        raise WorkspaceStateError(f"public key file is empty or invalid: {path}")
+    line = lines[0]
+    if line.startswith("#"):
         raise WorkspaceStateError(f"public key file is empty or invalid: {path}")
     return line
 

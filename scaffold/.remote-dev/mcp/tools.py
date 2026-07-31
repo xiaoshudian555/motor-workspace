@@ -209,7 +209,7 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     args = arguments or {}
     name = canonical_name(name)
     endpoint = None
-    if name not in {"remote.job_status", "remote.job_tail", "remote.job_stop"} or any(args.get(k) for k in ("host", "port", "alias")):
+    if name not in {"remote.job_status", "remote.job_tail", "remote.job_stop"} or any(args.get(k) for k in ("host", "port", "alias", "session_id", "session_file", "machine")):
         endpoint = resolve_endpoint(args)
     timeout_ms = int(args.get("timeout_ms") or args.get("timeout") or 120000)
     if name == "remote.bash":

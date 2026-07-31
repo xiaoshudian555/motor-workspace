@@ -453,6 +453,10 @@ def test_ssh_setup_skips_bootstrap_when_batchmode_ready(tmp_path, monkeypatch) -
         "mws_ssh_setup.batchmode_ready",
         lambda **kwargs: True,
     )
+    monkeypatch.setattr(
+        "mws_ssh_setup.verify_batchmode_ssh",
+        lambda **kwargs: subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr=""),
+    )
 
     result = setup_passwordless_ssh(
         host="1.2.3.4",
@@ -479,8 +483,10 @@ def test_ssh_setup_requires_password_when_batchmode_missing(tmp_path) -> None:
 
 def test_ssh_setup_script_uses_inventory_alias(inventory_paths, monkeypatch) -> None:
     upsert_machine(_machine(host="9.9.9.9"))
+    module = _load_script_module("machine_ssh_setup")
     monkeypatch.setattr(
-        "machine_ssh_setup.setup_passwordless_ssh",
+        module,
+        "setup_passwordless_ssh",
         lambda **kwargs: {
             "host": kwargs["host"],
             "port": kwargs["port"],
@@ -491,7 +497,6 @@ def test_ssh_setup_script_uses_inventory_alias(inventory_paths, monkeypatch) -> 
             "checks": [],
         },
     )
-    module = _load_script_module("machine_ssh_setup")
     exit_code, payload = _capture_script_main(module, ["--alias", "dev1"])
     assert exit_code == 0
     assert payload["host"] == "9.9.9.9"

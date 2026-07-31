@@ -17,7 +17,7 @@ import core.state_store as state_store  # noqa: E402
 
 class RemoteReadTests(unittest.TestCase):
     def test_remote_read_writes_ledger(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         try:
@@ -26,7 +26,7 @@ class RemoteReadTests(unittest.TestCase):
                 file_ops.run_remote_python = lambda *_args, **_kwargs: {  # type: ignore[assignment]
                     "status": "ok",
                     "file": {
-                        "path": "/vllm-workspace/foo.py",
+                        "path": "/mnt/motor-workspace/foo.py",
                         "sha256": "abc",
                         "size": 3,
                         "mtime_ns": 1,
@@ -39,7 +39,7 @@ class RemoteReadTests(unittest.TestCase):
                         "content": "1 | abc",
                     },
                 }
-                payload = file_ops.remote_read(endpoint, file_path="/vllm-workspace/foo.py")
+                payload = file_ops.remote_read(endpoint, file_path="/mnt/motor-workspace/foo.py")
                 self.assertEqual(payload["result"]["outcome"], "success")
                 self.assertTrue(Path(payload["result"]["refs"]["read_ledger"]).exists())
         finally:
@@ -47,13 +47,13 @@ class RemoteReadTests(unittest.TestCase):
             file_ops.run_remote_python = original_runner  # type: ignore[assignment]
 
     def test_remote_read_path_escape_returns_blocked_result(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/mnt/motor-workspace")
         payload = file_ops.remote_read(endpoint, file_path="/etc/passwd")
         self.assertEqual(payload["result"]["outcome"], "blocked")
         self.assertEqual(payload["result"]["status"], "path_outside_root")
 
     def test_remote_read_clamps_excessive_limit_and_text(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = file_ops.run_remote_python
         captured = {}
@@ -66,7 +66,7 @@ class RemoteReadTests(unittest.TestCase):
                     return {
                         "status": "partial",
                         "file": {
-                            "path": "/vllm-workspace/big.log",
+                            "path": "/mnt/motor-workspace/big.log",
                             "sha256": "abc",
                             "size": 20000,
                             "mtime_ns": 1,
@@ -81,7 +81,7 @@ class RemoteReadTests(unittest.TestCase):
                     }
 
                 file_ops.run_remote_python = fake_run_remote_python  # type: ignore[assignment]
-                payload = file_ops.remote_read(endpoint, file_path="/vllm-workspace/big.log", limit=100000)
+                payload = file_ops.remote_read(endpoint, file_path="/mnt/motor-workspace/big.log", limit=100000)
                 self.assertEqual(captured["limit"], file_ops.MAX_READ_LINES)
                 self.assertIn("clamped", payload["result"]["warnings"][0])
                 self.assertLessEqual(len(payload["text"]), MAX_TEXT_CHARS)

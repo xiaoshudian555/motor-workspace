@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(HOOKS) not in sys.path:
     sys.path.insert(0, str(HOOKS))
 
@@ -25,7 +25,7 @@ class HookGuardTests(unittest.TestCase):
         self.assertFalse(inspect_command("python3 -m compileall .remote-dev").blocked)
 
     def test_allows_remote_path_apply_patch(self) -> None:
-        decision = inspect_payload({"tool_name": "apply_patch", "command": "*** Update File: /vllm-workspace/foo.py"})
+        decision = inspect_payload({"tool_name": "apply_patch", "command": "*** Update File: /mnt/motor-workspace/foo.py"})
         self.assertFalse(decision.blocked)
 
     def test_allows_remote_mcp_path_escape(self) -> None:
@@ -35,7 +35,7 @@ class HookGuardTests(unittest.TestCase):
                 "tool_input": {
                     "host": "1.2.3.4",
                     "port": 46000,
-                    "root": "/vllm-workspace",
+                    "root": "/mnt/motor-workspace",
                     "file_path": "/etc/passwd",
                 },
             }
@@ -49,7 +49,7 @@ class HookGuardTests(unittest.TestCase):
                 "arguments": {
                     "host": "1.2.3.4",
                     "port": 46000,
-                    "root": "/vllm-workspace",
+                    "root": "/mnt/motor-workspace",
                     "cwd": "/tmp",
                     "command": "pwd",
                 },
@@ -77,8 +77,8 @@ class HookGuardTests(unittest.TestCase):
                 "tool_input": {
                     "host": "1.2.3.4",
                     "port": 46000,
-                    "root": "/vllm-workspace",
-                    "cwd": "/vllm-workspace/vllm-ascend",
+                    "root": "/mnt/motor-workspace",
+                    "cwd": "/mnt/motor-workspace/vllm-ascend",
                     "file_path": "README.md",
                 },
             }

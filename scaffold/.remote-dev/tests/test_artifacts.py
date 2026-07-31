@@ -17,13 +17,13 @@ import core.state_store as state_store  # noqa: E402
 
 class ArtifactTests(unittest.TestCase):
     def test_artifact_manifest_path_escape_returns_blocked_result(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/mnt/motor-workspace")
         payload = artifact_ops.remote_artifact_manifest(endpoint, remote_path="/etc/passwd")
         self.assertEqual(payload["result"]["outcome"], "blocked")
         self.assertEqual(payload["result"]["status"], "path_outside_root")
 
     def test_artifact_manifest_persists_local_manifest_ref(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = artifact_ops.run_remote_python
         try:
@@ -32,13 +32,13 @@ class ArtifactTests(unittest.TestCase):
                 artifact_ops.run_remote_python = lambda *_args, **_kwargs: {  # type: ignore[assignment]
                     "schema_version": "remote-dev.artifact_manifest.v1",
                     "status": "ok",
-                    "root": "/vllm-workspace/out",
+                    "root": "/mnt/motor-workspace/out",
                     "is_dir": False,
                     "file_count": 1,
                     "total_bytes": 7,
                     "files": [],
                 }
-                payload = artifact_ops.remote_artifact_manifest(endpoint, remote_path="/vllm-workspace/out")
+                payload = artifact_ops.remote_artifact_manifest(endpoint, remote_path="/mnt/motor-workspace/out")
                 manifest_ref = payload["result"]["refs"]["local_manifest"]
                 self.assertTrue(Path(manifest_ref).exists())
                 self.assertEqual(payload["result"]["artifacts"][0]["endpoint_id"], endpoint.endpoint_id)
@@ -48,7 +48,7 @@ class ArtifactTests(unittest.TestCase):
             artifact_ops.run_remote_python = original_runner  # type: ignore[assignment]
 
     def test_artifact_push_rejects_local_symlink(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "target.txt"
             target.write_text("secret\n", encoding="utf-8")
@@ -57,13 +57,13 @@ class ArtifactTests(unittest.TestCase):
             payload = artifact_ops.remote_artifact_push(
                 endpoint,
                 local_path=str(link),
-                remote_path="/vllm-workspace/out/link.txt",
+                remote_path="/mnt/motor-workspace/out/link.txt",
             )
             self.assertEqual(payload["result"]["outcome"], "blocked")
             self.assertEqual(payload["result"]["status"], "symlink_not_allowed")
 
     def test_artifact_push_streams_and_verifies_hash(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         observed_calls = []
         original = artifact_ops.run_bytes
         try:
@@ -80,7 +80,7 @@ class ArtifactTests(unittest.TestCase):
                 payload = artifact_ops.remote_artifact_push(
                     endpoint,
                     local_path=str(local),
-                    remote_path="/vllm-workspace/out/artifact.txt",
+                    remote_path="/mnt/motor-workspace/out/artifact.txt",
                 )
                 self.assertEqual(payload["result"]["outcome"], "success")
                 self.assertEqual(payload["result"]["artifacts"][0]["pushed"][0]["sha256"], expected)
@@ -90,7 +90,7 @@ class ArtifactTests(unittest.TestCase):
             artifact_ops.run_bytes = original  # type: ignore[assignment]
 
     def test_artifact_pull_blocks_malicious_relpath(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_manifest = artifact_ops.remote_artifact_manifest
         try:
             artifact_ops.remote_artifact_manifest = lambda *_args, **_kwargs: {  # type: ignore[assignment]
@@ -100,7 +100,7 @@ class ArtifactTests(unittest.TestCase):
                         "status": "ok",
                         "files": [{
                             "relpath": "../escape.txt",
-                            "path": "/vllm-workspace/out/file.txt",
+                            "path": "/mnt/motor-workspace/out/file.txt",
                             "sha256": "0" * 64,
                             "size": 1,
                         }],
@@ -110,7 +110,7 @@ class ArtifactTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 payload = artifact_ops.remote_artifact_pull(
                     endpoint,
-                    remote_path="/vllm-workspace/out",
+                    remote_path="/mnt/motor-workspace/out",
                     local_dir=tmp,
                 )
             self.assertEqual(payload["result"]["outcome"], "blocked")

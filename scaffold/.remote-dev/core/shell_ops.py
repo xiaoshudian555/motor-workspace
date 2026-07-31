@@ -98,7 +98,7 @@ def remote_bash(
     start = time.monotonic()
     log_dir = new_log_dir(endpoint, "bash", invocation_id)
     runtime_lines = [
-        "if [ -f /etc/profile.d/vaws-ascend-env.sh ]; then set +u; . /etc/profile.d/vaws-ascend-env.sh; set -u; fi"
+        "if [ -f /etc/profile.d/mws-ascend-env.sh ]; then set +u; . /etc/profile.d/mws-ascend-env.sh; set -u; fi"
     ] if runtime_enabled else []
     validation = "\n".join(
         [

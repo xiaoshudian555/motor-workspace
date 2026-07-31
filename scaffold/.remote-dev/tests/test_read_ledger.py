@@ -15,7 +15,7 @@ import core.state_store as state_store  # noqa: E402
 
 class ReadLedgerTests(unittest.TestCase):
     def test_read_ledger_round_trip_uses_endpoint_state(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         with tempfile.TemporaryDirectory() as tmp:
             original = state_store.substrate_root
             try:
@@ -23,7 +23,7 @@ class ReadLedgerTests(unittest.TestCase):
                 path = state_store.write_read_ledger(
                     endpoint,
                     {
-                        "path": "/vllm-workspace/foo.py",
+                        "path": "/mnt/motor-workspace/foo.py",
                         "sha256": "abc",
                         "size": 3,
                         "mtime_ns": 1,
@@ -32,14 +32,14 @@ class ReadLedgerTests(unittest.TestCase):
                     },
                 )
                 self.assertTrue(path.exists())
-                loaded = state_store.load_read_ledger(endpoint, "/vllm-workspace/foo.py")
+                loaded = state_store.load_read_ledger(endpoint, "/mnt/motor-workspace/foo.py")
                 self.assertEqual(loaded["sha256"], "abc")
                 self.assertIn(endpoint.endpoint_id, str(path))
             finally:
                 state_store.substrate_root = original  # type: ignore[assignment]
 
     def test_read_ledger_scope_isolated_by_client_context(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         with tempfile.TemporaryDirectory() as tmp:
             original = state_store.substrate_root
             try:
@@ -47,7 +47,7 @@ class ReadLedgerTests(unittest.TestCase):
                 path = state_store.write_read_ledger(
                     endpoint,
                     {
-                        "path": "/vllm-workspace/foo.py",
+                        "path": "/mnt/motor-workspace/foo.py",
                         "sha256": "abc",
                         "size": 3,
                         "mtime_ns": 1,
@@ -55,8 +55,8 @@ class ReadLedgerTests(unittest.TestCase):
                     client_context_id="context-a",
                 )
                 self.assertIn("/reads/context-a/", path.as_posix())
-                self.assertIsNone(state_store.load_read_ledger(endpoint, "/vllm-workspace/foo.py", client_context_id="context-b"))
-                loaded = state_store.load_read_ledger(endpoint, "/vllm-workspace/foo.py", client_context_id="context-a")
+                self.assertIsNone(state_store.load_read_ledger(endpoint, "/mnt/motor-workspace/foo.py", client_context_id="context-b"))
+                loaded = state_store.load_read_ledger(endpoint, "/mnt/motor-workspace/foo.py", client_context_id="context-a")
                 self.assertIsNotNone(loaded)
                 self.assertEqual(loaded["ledger_scope"], "context-a")
             finally:

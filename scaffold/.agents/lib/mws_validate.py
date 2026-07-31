@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared validation helpers for motor-workspace agent scripts."""
+"""Shared validation helpers for MWS agent-facing scripts."""
 
 from __future__ import annotations
 
@@ -38,24 +38,6 @@ def require_safe_id(value: str, *, label: str = "id") -> str:
     return value
 
 
-def require_k8s_dns_label(value: str, *, label: str = "label") -> str:
-    if not isinstance(value, str):
-        raise ValidationError(f"invalid {label}: must be a string")
-    normalized = value.strip().lower()
-    if not normalized or not K8S_DNS_LABEL_RE.fullmatch(normalized):
-        raise ValidationError(
-            f"invalid {label}: must be a Kubernetes DNS-1123 label "
-            "(lowercase alphanumeric or '-', 1-63 chars, start/end alphanumeric)"
-        )
-    return normalized
-
-
-def require_hostname(value: str, *, label: str = "host") -> str:
-    if not isinstance(value, str) or not HOSTNAME_RE.fullmatch(value.strip()):
-        raise ValidationError(f"invalid {label}: {value!r}")
-    return value.strip()
-
-
 def require_remote_leaf(value: str, *, label: str = "id") -> str:
     safe = require_safe_id(value, label=label)
     path = PurePosixPath(safe)
@@ -86,9 +68,7 @@ def parse_device_csv(value: str | None, *, label: str = "devices") -> list[int] 
         try:
             device = int(token, 10)
         except ValueError as exc:
-            raise ValidationError(
-                f"{label} contains a non-integer device id: {token!r}"
-            ) from exc
+            raise ValidationError(f"{label} contains a non-integer device id: {token!r}") from exc
         if device < 0:
             raise ValidationError(f"{label} contains a negative device id: {device}")
         if device in seen:
@@ -96,6 +76,24 @@ def parse_device_csv(value: str | None, *, label: str = "devices") -> list[int] 
         seen.add(device)
         devices.append(device)
     return sorted(devices)
+
+
+def require_k8s_dns_label(value: str, *, label: str = "label") -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"invalid {label}: must be a string")
+    normalized = value.strip().lower()
+    if not normalized or not K8S_DNS_LABEL_RE.fullmatch(normalized):
+        raise ValidationError(
+            f"invalid {label}: must be a Kubernetes DNS-1123 label "
+            "(lowercase alphanumeric or '-', 1-63 chars, start/end alphanumeric)"
+        )
+    return normalized
+
+
+def require_hostname(value: str, *, label: str = "host") -> str:
+    if not isinstance(value, str) or not HOSTNAME_RE.fullmatch(value.strip()):
+        raise ValidationError(f"invalid {label}: {value!r}")
+    return value.strip()
 
 
 def normalize_mount_root(value: str | None) -> str:

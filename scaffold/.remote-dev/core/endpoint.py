@@ -67,7 +67,7 @@ def substrate_root() -> Path:
 
 
 def repo_root() -> Path:
-    return substrate_root().parent.parent
+    return substrate_root().parent
 
 
 def _read_endpoint_aliases() -> dict[str, Any]:
@@ -108,6 +108,41 @@ def _direct_endpoint(payload: dict[str, Any]) -> Endpoint:
     )
 
 
+def _endpoint_from_managed(payload: dict[str, Any]) -> Endpoint:
+    lib_dir = repo_root() / ".agents" / "lib"
+    if not lib_dir.exists():
+        raise EndpointError("managed machine/session resolution requires .agents/lib")
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    try:
+        from mws_remote_toolbox import resolve_remote_target  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise EndpointError(f"failed to import MWS target resolver: {exc}") from exc
+    try:
+        target = resolve_remote_target(
+            machine=payload.get("machine"),
+            session_id=payload.get("session_id"),
+            session_file=payload.get("session_file"),
+            repo_root=repo_root(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise EndpointError(f"failed to resolve managed target: {exc}") from exc
+    endpoint = target.container_endpoint
+    return Endpoint(
+        host=endpoint.host,
+        port=int(endpoint.port),
+        user=endpoint.user,
+        root=str(payload.get("root") or DEFAULT_ROOT),
+        cwd=str(payload.get("cwd") or target.runtime_root),
+        runtime_env=bool(payload.get("runtime_env", True)),
+        identity_file=str(payload["identity_file"]) if payload.get("identity_file") else None,
+        connect_timeout_ms=int(payload.get("connect_timeout_ms") or 10000),
+        kind="managed-session" if payload.get("session_id") or payload.get("session_file") else "managed-machine",
+        alias=str(payload.get("session_id") or payload.get("machine") or target.alias),
+        source={"mws_target": target.to_dict()},
+    )
+
+
 def resolve_endpoint(payload: dict[str, Any]) -> Endpoint:
     if payload.get("host") and payload.get("port"):
         return _direct_endpoint(payload)
@@ -119,4 +154,6 @@ def resolve_endpoint(payload: dict[str, Any]) -> Endpoint:
         merged = {**aliases[alias], **payload}
         merged["alias"] = alias
         return _direct_endpoint(merged)
-    raise EndpointError("provide host+port or alias")
+    if payload.get("session_id") or payload.get("session_file") or payload.get("machine"):
+        return _endpoint_from_managed(payload)
+    raise EndpointError("provide host+port, alias, session_id/session_file, or machine")

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Deterministic helper for repo-init remote topology.
 
-Adapted from vllm-ascend-workspace repo_topology.py (MIT, commit 4a952fcc).
-Conservative origin/upstream configuration; extra remotes are never removed.
+This script keeps common git-remote mutations compact and predictable so the
+agent does not need to construct noisy ad-hoc shell pipelines.
 """
 
 from __future__ import annotations
@@ -15,18 +15,16 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
+
+class RepoTopologyError(RuntimeError):
+    """Raised for deterministic, user-facing failures."""
+
+
 GIT_URL_PATTERNS = [
     r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$",
     r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$",
     r"^ssh://git@github\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$",
-    r"^git@gitcode\.com:(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$",
-    r"^https://gitcode\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$",
-    r"^ssh://git@gitcode\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+?)(?:\.git)?$",
 ]
-
-
-class RepoTopologyError(RuntimeError):
-    """Raised for deterministic, user-facing failures."""
 
 
 def run(
@@ -82,10 +80,7 @@ def resolve_repo(path_value: str) -> pathlib.Path:
 
 
 def branch_exists(repo: pathlib.Path, branch: str) -> bool:
-    return (
-        run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo).returncode
-        == 0
-    )
+    return run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo).returncode == 0
 
 
 def local_head(repo: pathlib.Path, ref: str) -> str | None:
@@ -136,6 +131,41 @@ def local_branch_status(repo: pathlib.Path) -> dict[str, Any]:
     }
 
 
+def cmd_compare_main(args: argparse.Namespace) -> int:
+    repo = resolve_repo(args.repo)
+    remotes = remote_names(repo)
+    branch = args.branch
+    result: dict[str, Any] = {
+        "repo": str(repo),
+        "branch": branch,
+        "local_branch": local_head(repo, f"refs/heads/{branch}"),
+        "status": local_branch_status(repo),
+        "remotes": {},
+    }
+
+    for name in remotes:
+        ls = run(["git", "ls-remote", "--heads", name, branch], cwd=repo)
+        remote_head = None
+        if ls.returncode == 0 and ls.stdout.strip():
+            remote_head = ls.stdout.split()[0]
+        tracking_head = local_head(repo, f"refs/remotes/{name}/{branch}")
+        fetch_url = remote_url(repo, name)
+        push_url = remote_url(repo, name, push=True)
+        result["remotes"][name] = {
+            "fetch_url": fetch_url,
+            "push_url": push_url,
+            "fetch_repo": parse_repo_url(fetch_url),
+            "push_repo": parse_repo_url(push_url),
+            "remote_head": remote_head,
+            "tracking_head": tracking_head,
+            "tracking_matches_remote": None if not (remote_head and tracking_head) else tracking_head == remote_head,
+            "local_matches_remote": None if not (remote_head and result["local_branch"]) else result["local_branch"] == remote_head,
+        }
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def mutate_remote(repo: pathlib.Path, name: str, desired_url: str) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     existing_fetch = remote_url(repo, name)
@@ -147,16 +177,12 @@ def mutate_remote(repo: pathlib.Path, name: str, desired_url: str) -> list[dict[
         existing_push = remote_url(repo, name, push=True)
     elif existing_fetch != desired_url:
         run(["git", "remote", "set-url", name, desired_url], cwd=repo, check=True)
-        actions.append(
-            {"remote": name, "action": "set-fetch-url", "from": existing_fetch, "to": desired_url}
-        )
+        actions.append({"remote": name, "action": "set-fetch-url", "from": existing_fetch, "to": desired_url})
         existing_fetch = desired_url
 
     if existing_push not in {None, desired_url}:
         run(["git", "remote", "set-url", "--push", name, desired_url], cwd=repo, check=True)
-        actions.append(
-            {"remote": name, "action": "set-push-url", "from": existing_push, "to": desired_url}
-        )
+        actions.append({"remote": name, "action": "set-push-url", "from": existing_push, "to": desired_url})
     elif existing_push is None:
         run(["git", "remote", "set-url", "--push", name, desired_url], cwd=repo, check=True)
         actions.append({"remote": name, "action": "set-push-url", "from": None, "to": desired_url})
@@ -206,45 +232,6 @@ def configure_remotes(
     }
 
 
-def cmd_compare_main(args: argparse.Namespace) -> int:
-    repo = resolve_repo(args.repo)
-    remotes = remote_names(repo)
-    branch = args.branch
-    result: dict[str, Any] = {
-        "repo": str(repo),
-        "branch": branch,
-        "local_branch": local_head(repo, f"refs/heads/{branch}"),
-        "status": local_branch_status(repo),
-        "remotes": {},
-    }
-
-    for name in remotes:
-        ls = run(["git", "ls-remote", "--heads", name, branch], cwd=repo)
-        remote_head = None
-        if ls.returncode == 0 and ls.stdout.strip():
-            remote_head = ls.stdout.split()[0]
-        tracking_head = local_head(repo, f"refs/remotes/{name}/{branch}")
-        fetch_url = remote_url(repo, name)
-        push_url = remote_url(repo, name, push=True)
-        result["remotes"][name] = {
-            "fetch_url": fetch_url,
-            "push_url": push_url,
-            "fetch_repo": parse_repo_url(fetch_url),
-            "push_repo": parse_repo_url(push_url),
-            "remote_head": remote_head,
-            "tracking_head": tracking_head,
-            "tracking_matches_remote": None
-            if not (remote_head and tracking_head)
-            else tracking_head == remote_head,
-            "local_matches_remote": None
-            if not (remote_head and result["local_branch"])
-            else result["local_branch"] == remote_head,
-        }
-
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0
-
-
 def cmd_configure(args: argparse.Namespace) -> int:
     repo = resolve_repo(args.repo)
     result = configure_remotes(
@@ -291,9 +278,7 @@ def cmd_ensure_main(args: argparse.Namespace) -> int:
             actions.append({"action": "switch-existing-branch", "branch": branch})
     else:
         run(["git", "switch", "-c", branch, "--track", f"{remote}/{branch}"], cwd=repo, check=True)
-        actions.append(
-            {"action": "create-tracking-branch", "branch": branch, "tracking": f"{remote}/{branch}"}
-        )
+        actions.append({"action": "create-tracking-branch", "branch": branch, "tracking": f"{remote}/{branch}"})
 
     run(["git", "branch", "--set-upstream-to", f"{remote}/{branch}", branch], cwd=repo, check=True)
     actions.append({"action": "set-upstream", "branch": branch, "tracking": f"{remote}/{branch}"})

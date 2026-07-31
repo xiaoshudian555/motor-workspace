@@ -19,7 +19,7 @@ import core.job_ops as job_ops  # noqa: E402
 
 class RemoteBashTests(unittest.TestCase):
     def test_remote_bash_path_escape_returns_blocked_result(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/mnt/motor-workspace")
         payload = shell_ops.remote_bash(endpoint, command="pwd", cwd="/tmp")
         self.assertEqual(payload["result"]["outcome"], "blocked")
         self.assertEqual(payload["result"]["status"], "cwd_outside_root")
@@ -30,7 +30,7 @@ class RemoteBashTests(unittest.TestCase):
         self.assertIn("--root /tmp --cwd /tmp", payload["text"])
 
     def test_remote_bash_core_allows_secret_like_argv(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace", cwd="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = shell_ops.run_script
         scripts = []
@@ -51,14 +51,14 @@ class RemoteBashTests(unittest.TestCase):
             shell_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_remote_bash_relative_cwd_hint_does_not_suggest_bad_root(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/mnt/motor-workspace")
         payload = shell_ops.remote_bash(endpoint, command="pwd", cwd="tmp")
         self.assertEqual(payload["result"]["outcome"], "blocked")
         self.assertEqual(payload["result"]["next"]["suggested_action"], "rerun_with_absolute_cwd")
         self.assertNotIn("endpoint_patch", payload["result"]["next"])
 
     def test_remote_bash_success_writes_log_refs(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace", cwd="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = shell_ops.run_script
         scripts = []
@@ -81,7 +81,7 @@ class RemoteBashTests(unittest.TestCase):
             shell_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_background_remote_bash_missing_cwd_does_not_start_job(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
         calls = []
@@ -96,20 +96,20 @@ class RemoteBashTests(unittest.TestCase):
                 job_ops.run_script = fake_run_script  # type: ignore[assignment]
                 payload = shell_ops.remote_bash(
                     endpoint,
-                    command="touch /vllm-workspace/should-not-exist",
-                    cwd="/vllm-workspace/missing",
+                    command="touch /mnt/motor-workspace/should-not-exist",
+                    cwd="/mnt/motor-workspace/missing",
                     run_in_background=True,
                 )
                 self.assertEqual(payload["result"]["outcome"], "failed")
                 self.assertEqual(payload["result"]["status"], "cwd_not_found")
                 self.assertEqual(len(calls), 1)
-                self.assertNotIn("touch /vllm-workspace/should-not-exist", calls[0])
+                self.assertNotIn("touch /mnt/motor-workspace/should-not-exist", calls[0])
         finally:
             state_store.substrate_root = original_state_root  # type: ignore[assignment]
             job_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_background_remote_bash_duplicate_job_id_is_blocked(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
         try:
@@ -125,7 +125,7 @@ class RemoteBashTests(unittest.TestCase):
             job_ops.run_script = original_runner  # type: ignore[assignment]
 
     def test_remote_job_tail_clamps_lines_and_text(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
         scripts = []
@@ -135,7 +135,7 @@ class RemoteBashTests(unittest.TestCase):
                 job_id = "job-tail-test"
                 state_store.atomic_write_json(
                     state_store.job_record_path(endpoint, job_id),
-                    {"job_id": job_id, "target": endpoint.to_result_target(), "remote_dir": "/vllm-workspace/.remote-dev/jobs/job-tail-test"},
+                    {"job_id": job_id, "target": endpoint.to_result_target(), "remote_dir": "/mnt/motor-workspace/.remote-dev/jobs/job-tail-test"},
                 )
 
                 def fake_run_script(_endpoint, script, **_kwargs):

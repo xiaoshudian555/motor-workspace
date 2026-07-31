@@ -133,7 +133,7 @@ def start_remote_job(
     timeout_prefix = f"timeout {int(timeout_ms / 1000)} " if timeout_ms else ""
     env_lines = [f"export {require_env_name(key)}={shlex.quote(str(value))}" for key, value in sorted(env.items())]
     runtime_lines = [
-        "if [ -f /etc/profile.d/vaws-ascend-env.sh ]; then set +u; . /etc/profile.d/vaws-ascend-env.sh; set -u; fi"
+        "if [ -f /etc/profile.d/mws-ascend-env.sh ]; then set +u; . /etc/profile.d/mws-ascend-env.sh; set -u; fi"
     ] if runtime_enabled else []
     status_running = shlex.quote('{"status":"running","job_id":"' + job_id + '","started_at":"' + started + '"}')
     runner = "\n".join(

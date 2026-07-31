@@ -1,10 +1,7 @@
 # Remote Developer Substrate Design
 
-> **Motor workspace 当前模型**：direct SSH endpoint（`host` + `port` + `user`），默认
-> `root=/mnt`、`cwd=/mnt/motor-workspace`。不使用 VAWS managed session/container selector。
-> 历史 VAWS session 语义见 `MIGRATION-NOTES.md`。
-
-This package implements the remote developer substrate for motor-workspace.
+This package implements the design from
+`/Users/maoxx241/Downloads/remote_dev_substrate_design_for_codex.md`.
 
 ## Architecture
 
@@ -72,7 +69,7 @@ stdout/stderr reads, and local artifact manifests:
 - `remote://endpoint/<endpoint-id>/artifacts`
 - `remote://endpoint/<endpoint-id>/artifacts/<artifact-id>/manifest`
 
-Phase 6 keeps existing VAWS wrappers as compatibility backend while
+Phase 6 keeps existing MWS wrappers as compatibility backend while
 vLLM-Ascend skills are progressively rewritten as remote-dev consumers.
 
 Generated Claude Code skill shims are checked with:
@@ -92,6 +89,6 @@ python3 -m unittest discover -s .agents/tests
 python3 .remote-dev/tools/validate_remote_dev_scaffold.py --local-only
 ```
 
-Remote endpoint behavior requires a reachable SSH endpoint or managed VAWS
+Remote endpoint behavior requires a reachable SSH endpoint or managed MWS
 session. Use `validate_remote_dev_scaffold.py` with either `--host/--port` or
 `--session-id` to run the live smoke, including parallel scratch workers.

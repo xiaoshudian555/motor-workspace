@@ -6,10 +6,9 @@ import shutil
 from pathlib import Path
 
 
-SCAFFOLD_ROOT = Path(__file__).resolve().parents[2]
-REPO_ROOT = SCAFFOLD_ROOT.parent
-AGENTS_SKILLS = SCAFFOLD_ROOT / ".agents" / "skills"
-CLAUDE_SKILLS = REPO_ROOT / ".claude" / "skills"
+ROOT = Path(__file__).resolve().parents[2]
+AGENTS_SKILLS = ROOT / ".agents" / "skills"
+CLAUDE_SKILLS = ROOT / ".claude" / "skills"
 MAX_SHIM_LINES = 60
 
 
@@ -41,7 +40,7 @@ def expected_skill_body(skill_dir: Path) -> str:
     name = frontmatter.get("name") or skill_dir.name
     description = frontmatter.get("description") or first_markdown_heading(source, skill_dir.name)
     title = first_markdown_heading(source, name)
-    return f"""<!-- Generated Claude Code shim from scaffold/.agents/skills/{skill_dir.name}/SKILL.md. Do not edit. -->
+    return f"""<!-- Generated Claude Code shim from .agents/skills/{skill_dir.name}/SKILL.md. Do not edit. -->
 ---
 name: {name}
 description: {description}
@@ -51,7 +50,7 @@ description: {description}
 
 Canonical skill source:
 
-`scaffold/.agents/skills/{skill_dir.name}/SKILL.md`
+`.agents/skills/{skill_dir.name}/SKILL.md`
 
 Before using this skill:
 

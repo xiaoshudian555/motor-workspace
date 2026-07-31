@@ -15,12 +15,12 @@ import core.search_ops as search_ops  # noqa: E402
 
 class RemoteSearchTests(unittest.TestCase):
     def test_remote_glob_path_escape_returns_blocked_result(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/mnt/motor-workspace")
         payload = search_ops.remote_glob(endpoint, pattern="*", path="/etc")
         self.assertEqual(payload["result"]["outcome"], "blocked")
 
     def test_remote_grep_path_escape_returns_blocked_result(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/mnt/motor-workspace")
         payload = search_ops.remote_grep(endpoint, pattern="x", path="/etc")
         self.assertEqual(payload["result"]["outcome"], "blocked")
 
@@ -29,7 +29,7 @@ class RemoteSearchTests(unittest.TestCase):
         self.assertIn("shutil.which(\"rg\")", search_ops.REMOTE_SEARCH_PY)
 
     def test_remote_grep_clamps_limit_and_text(self) -> None:
-        endpoint = Endpoint(host="1.2.3.4", port=46000, root="/vllm-workspace")
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_runner = search_ops.run_remote_python
         captured = {}
         try:
@@ -45,7 +45,7 @@ class RemoteSearchTests(unittest.TestCase):
                 }
 
             search_ops.run_remote_python = fake_run_remote_python  # type: ignore[assignment]
-            payload = search_ops.remote_grep(endpoint, pattern="x", path="/vllm-workspace", output_mode="content", limit=100000)
+            payload = search_ops.remote_grep(endpoint, pattern="x", path="/mnt/motor-workspace", output_mode="content", limit=100000)
             self.assertEqual(captured["limit"], MAX_GREP_MATCHES)
             self.assertIn("clamped", payload["result"]["warnings"][0])
             self.assertLessEqual(len(payload["text"]), MAX_TEXT_CHARS)
