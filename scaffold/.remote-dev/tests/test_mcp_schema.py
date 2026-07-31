@@ -62,7 +62,6 @@ class McpSchemaTests(unittest.TestCase):
                 self.assertIn({"anyOf": ENDPOINT_SELECTOR_ANY_OF}, schema.get("allOf", []), name)
         self.assertIn({"required": ["host", "port"]}, ENDPOINT_SELECTOR_ANY_OF)
         self.assertIn({"required": ["alias"]}, ENDPOINT_SELECTOR_ANY_OF)
-        self.assertIn({"required": ["session_id"]}, ENDPOINT_SELECTOR_ANY_OF)
 
     def test_resources_include_endpoint_index(self) -> None:
         resources = {resource["uri"] for resource in list_resources()}

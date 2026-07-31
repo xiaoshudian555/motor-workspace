@@ -7,23 +7,17 @@ ENDPOINT_PROPS: dict[str, Any] = {
     "host": {"type": "string"},
     "port": {"type": "integer"},
     "user": {"type": "string", "default": "root"},
-    "root": {"type": "string", "default": "/"},
+    "root": {"type": "string", "default": "/mnt"},
     "cwd": {"type": "string"},
     "runtime_env": {"type": "boolean", "default": True},
     "identity_file": {"type": "string"},
     "connect_timeout_ms": {"type": "integer", "default": 10000},
     "alias": {"type": "string"},
-    "session_id": {"type": "string"},
-    "session_file": {"type": "string"},
-    "machine": {"type": "string"},
 }
 
 ENDPOINT_SELECTOR_ANY_OF: list[dict[str, Any]] = [
     {"required": ["host", "port"]},
     {"required": ["alias"]},
-    {"required": ["session_id"]},
-    {"required": ["session_file"]},
-    {"required": ["machine"]},
 ]
 
 def schema(props: dict[str, Any], required: list[str] | None = None, *, endpoint_selector: bool = True) -> dict[str, Any]:

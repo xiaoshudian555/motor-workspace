@@ -1,111 +1,35 @@
 # Repo-init command recipes
 
-Prefer the helper scripts in `scripts/` and `.agents/scripts/` when possible.
-
 ## Probe
 
-macOS / Linux / WSL:
-
 ```bash
-python3 .agents/skills/repo-init/scripts/repo_init_probe.py --compact
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_probe.py --compact
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_probe.py
 ```
 
-Windows:
-
-```powershell
-py -3 .agents/skills/repo-init/scripts/repo_init_probe.py --compact
-```
-
-## Broad-init machine profile
-
-Get the exact three-option machine-username question:
+## Apply submodules
 
 ```bash
-python3 .agents/skills/repo-init/scripts/repo_init_profile.py plan
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_apply.py --submodules
 ```
 
-Apply the Git-username option:
+## Apply remote topology (after user consent)
 
 ```bash
-python3 .agents/skills/repo-init/scripts/repo_init_profile.py apply --choice git-username
+python3 scaffold/.agents/skills/repo-init/scripts/repo_init_apply.py \
+  --configure-remotes --repo vllm \
+  --origin-url git@github.com:USER/vllm.git \
+  --upstream-url git@github.com:vllm-project/vllm.git
 ```
 
-Apply the random `agent#####` option:
+## Topology helper (direct)
 
 ```bash
-python3 .agents/skills/repo-init/scripts/repo_init_profile.py apply --choice random
-```
-
-Apply the custom option after the user gave the literal username:
-
-```bash
-python3 .agents/skills/repo-init/scripts/repo_init_profile.py apply --choice custom --custom-username alice123
-```
-
-## Low-level profile helper
-
-Validate one user-provided name:
-
-```bash
-python3 .agents/scripts/workspace_profile.py validate alice123
-```
-
-Read the current profile summary:
-
-```bash
-python3 .agents/scripts/workspace_profile.py summary
-```
-
-## Submodules
-
-```bash
-git submodule sync --recursive
-git submodule update --init --recursive
-```
-
-## Resolve CI-pinned vLLM ref
-
-Use this after `vllm-ascend/` is populated and the user chose CI-pinned
-alignment:
-
-```bash
-python3 .agents/skills/repo-init/scripts/resolve_vllm_ci_pin.py --vllm-ascend-dir vllm-ascend
-```
-
-Then check out `vllm/` at the returned `vllm_ref`. The resolver prefers
-`.github/vllm-main-verified.commit`; older checkouts may fall back to a
-workflow `vllm_version` or docs `main_vllm_commit` value.
-
-## Quiet main comparison
-
-```bash
-python3 .agents/skills/repo-init/scripts/repo_topology.py compare-main --repo .
-python3 .agents/skills/repo-init/scripts/repo_topology.py compare-main --repo vllm
-python3 .agents/skills/repo-init/scripts/repo_topology.py compare-main --repo vllm-ascend
-```
-
-## Remote configuration
-
-Workspace example:
-
-```bash
-python3 .agents/skills/repo-init/scripts/repo_topology.py configure   --repo .   --origin-url git@github.com:USER/vllm-ascend-workspace.git   --upstream-url git@github.com:maoxx241/vllm-ascend-workspace.git
-```
-
-`vllm-ascend` example:
-
-```bash
-python3 .agents/skills/repo-init/scripts/repo_topology.py configure   --repo vllm-ascend   --origin-url git@github.com:USER/vllm-ascend.git   --upstream-url git@github.com:vllm-project/vllm-ascend.git
-```
-
-Optionally set `gh repo set-default` during configure:
-
-```bash
-python3 .agents/skills/repo-init/scripts/repo_topology.py configure   --repo vllm-ascend   --origin-url git@github.com:USER/vllm-ascend.git   --upstream-url git@github.com:vllm-project/vllm-ascend.git   --gh-default upstream
-```
-
-## Branch tracking
-
-```bash
-python3 .agents/skills/repo-init/scripts/repo_topology.py ensure-main   --repo vllm-ascend   --remote origin
+python3 scaffold/.agents/skills/repo-init/scripts/repo_topology.py compare-main --repo sources/vllm
+python3 scaffold/.agents/skills/repo-init/scripts/repo_topology.py configure \
+  --repo sources/vllm \
+  --origin-url git@github.com:USER/vllm.git \
+  --upstream-url git@github.com:vllm-project/vllm.git
+python3 scaffold/.agents/skills/repo-init/scripts/repo_topology.py ensure-main \
+  --repo sources/vllm --remote upstream --branch main
 ```
