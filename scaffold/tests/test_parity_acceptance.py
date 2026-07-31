@@ -13,9 +13,11 @@ SCAFFOLD = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCAFFOLD.parent
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
+from mws_local_state import upsert_machine  # noqa: E402
 from mws_parity import (  # noqa: E402
-    MACHINE_RUNS_DIR,
     PARITY_STATE_DIR,
     build_source_manifest,
     load_machine_ready_evidence,
@@ -23,7 +25,6 @@ from mws_parity import (  # noqa: E402
     save_parity_state,
     sync_workspace_to_remote,
 )
-from mws_state import atomic_write_json  # noqa: E402
 from mws_transport import FakeRemoteTransport  # noqa: E402
 
 
@@ -34,24 +35,14 @@ def _machine() -> dict:
         "user": "root",
         "port": 22,
         "mount_root": "/mnt",
+        "remote_workspace_root": "/mnt/motor-workspace",
+        "kube_context": "ctx-a",
+        "parity_backend": "shared-hostpath",
     }
 
 
 def _machine_ready(alias: str = "dev1", run_id: str = "machine-test-1") -> dict:
-    import mws_parity as parity_mod
-
-    run_dir = parity_mod.MACHINE_RUNS_DIR / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    record = {
-        "status": "ok",
-        "ready": True,
-        "alias": alias,
-        "machine_ref": {"alias": alias, "host": "dev1"},
-        "endpoint": {"host": "dev1"},
-        "checks": [{"name": "ssh", "status": "pass"}],
-        "created_at": "2026-01-01T00:00:00Z",
-    }
-    atomic_write_json(run_dir / "run.json", record)
+    write_valid_machine_ready_run(_machine(), run_id=run_id)
     return load_machine_ready_evidence(alias, machine_run_id=run_id)
 
 
@@ -59,12 +50,17 @@ def _machine_ready(alias: str = "dev1", run_id: str = "machine-test-1") -> dict:
 def parity_env(tmp_path: Path, monkeypatch):
     state_root = tmp_path / "state"
     state_root.mkdir()
+    inventory_path = state_root / "machine-inventory.json"
+    lock_path = inventory_path.with_name(inventory_path.name + ".lock")
     monkeypatch.setattr("mws_local_state.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_local_state.INVENTORY_PATH", inventory_path)
+    monkeypatch.setattr("mws_local_state.INVENTORY_LOCK_PATH", lock_path)
     monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
     monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
     monkeypatch.setattr("mws_parity.MACHINE_RUNS_DIR", state_root / "machine-runs")
     monkeypatch.setattr("mws_parity.OVERLAY_ROOT", state_root / "python-overlay")
     monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
+    upsert_machine(_machine())
     FakeRemoteTransport._shared_parity_locks.clear()
     yield state_root
     FakeRemoteTransport._shared_parity_locks.clear()
@@ -325,7 +321,7 @@ def test_mid_failure_manifest_not_ok(
 
 
 def test_machine_ready_required(parity_env: Path) -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="machine_run_id is required"):
         load_machine_ready_evidence("dev1")
 
 

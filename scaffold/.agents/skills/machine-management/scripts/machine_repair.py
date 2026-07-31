@@ -23,8 +23,9 @@ from mws_local_state import (  # noqa: E402
     upsert_machine,
     utc_now_iso,
 )
-from mws_machine_target import run_machine_ready_checks  # noqa: E402
-from mws_result import emit, emit_error, progress  # noqa: E402
+from mws_machine_target import build_machine_result_envelope, run_machine_ready_checks  # noqa: E402
+from mws_result import build_result_envelope, emit_result, progress, utc_now_iso as result_now  # noqa: E402
+from mws_run_state import new_run_id, new_workflow_run_id  # noqa: E402
 from mws_transport import transport_for_machine  # noqa: E402
 from mws_validate import normalize_mount_root, require_safe_id  # noqa: E402
 from repo_paths import SCAFFOLD_ROOT  # noqa: E402
@@ -52,10 +53,24 @@ def main() -> int:
     args = parser.parse_args()
 
     alias = require_safe_id(args.alias, label="alias")
+    started_at = result_now()
+    repair_run_id = new_run_id("repair")
+    workflow_run_id = new_workflow_run_id()
+
     try:
         record = dict(get_machine(alias))
     except WorkspaceStateError as exc:
-        return emit_error(str(exc), alias=alias)
+        envelope = build_result_envelope(
+            kind="machine-repair",
+            run_id=repair_run_id,
+            workflow_run_id=workflow_run_id,
+            checks=[],
+            started_at=started_at,
+            errors=[str(exc)],
+            status="failed",
+            extra={"alias": alias},
+        )
+        return emit_result(envelope)
 
     updated_fields: list[str] = []
     if args.host is not None:
@@ -88,7 +103,17 @@ def main() -> int:
         try:
             _, record = upsert_machine(record)
         except WorkspaceStateError as exc:
-            return emit_error(str(exc), alias=alias, updated_fields=updated_fields)
+            envelope = build_result_envelope(
+                kind="machine-repair",
+                run_id=repair_run_id,
+                workflow_run_id=workflow_run_id,
+                checks=[],
+                started_at=started_at,
+                errors=[str(exc)],
+                status="failed",
+                extra={"alias": alias, "updated_fields": updated_fields},
+            )
+            return emit_result(envelope)
 
     profile_path = SCAFFOLD_ROOT / args.profile
     profile = load_profile(profile_path) if profile_path.exists() else {}
@@ -103,27 +128,44 @@ def main() -> int:
             profile_kube_context=str(profile_context or ""),
         )
     except WorkspaceStateError as exc:
-        return emit_error(str(exc), alias=alias, updated_fields=updated_fields)
+        envelope = build_result_envelope(
+            kind="machine-repair",
+            run_id=repair_run_id,
+            workflow_run_id=workflow_run_id,
+            checks=[],
+            started_at=started_at,
+            errors=[str(exc)],
+            status="failed",
+            extra={"alias": alias, "updated_fields": updated_fields},
+        )
+        return emit_result(envelope)
 
     if updated_fields:
         record["last_repaired_at"] = utc_now_iso()
         try:
             upsert_machine(record)
         except WorkspaceStateError as exc:
-            return emit_error(str(exc), alias=alias, updated_fields=updated_fields)
+            envelope = build_result_envelope(
+                kind="machine-repair",
+                run_id=repair_run_id,
+                workflow_run_id=workflow_run_id,
+                checks=result.get("checks", []),
+                started_at=started_at,
+                errors=[str(exc)],
+                status="failed",
+                extra={"alias": alias, "updated_fields": updated_fields},
+            )
+            return emit_result(envelope)
 
-    return emit(
-        {
-            "status": "ok" if result["ready"] else "error",
-            "alias": alias,
-            "ready": result["ready"],
-            "updated_fields": updated_fields,
-            "checks": result["checks"],
-            "errors": result["errors"],
-            "machine_ref": result["machine_ref"],
-            "endpoint": result["endpoint"],
-        }
+    envelope = build_machine_result_envelope(
+        run_id=repair_run_id,
+        workflow_run_id=workflow_run_id,
+        payload=result,
+        started_at=started_at,
     )
+    envelope["kind"] = "machine-repair"
+    envelope["updated_fields"] = updated_fields
+    return emit_result(envelope)
 
 
 if __name__ == "__main__":

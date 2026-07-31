@@ -14,6 +14,7 @@ SCAFFOLD = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCAFFOLD.parent
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mws_deploy import (  # noqa: E402
     inject_namespace,
@@ -35,6 +36,11 @@ from mws_parity import (  # noqa: E402
 from mws_transport import FakeRemoteTransport, SshScpTransport  # noqa: E402
 
 
+from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
+from mws_local_state import upsert_machine  # noqa: E402
+from mws_parity import load_machine_ready_evidence  # noqa: E402
+
+
 def _machine() -> dict:
     return {
         "alias": "dev1",
@@ -42,18 +48,27 @@ def _machine() -> dict:
         "user": "root",
         "port": 22,
         "mount_root": "/mnt",
+        "remote_workspace_root": "/mnt/motor-workspace",
+        "kube_context": "ctx-a",
+        "parity_backend": "shared-hostpath",
     }
 
 
 def _machine_ready() -> dict:
-    return {
-        "machine_run_id": "machine-test-1",
-        "alias": "dev1",
-        "machine_ref": {"alias": "dev1", "host": "dev1"},
-        "endpoint": {"host": "dev1"},
-        "checks": [{"name": "ssh", "status": "pass"}],
-        "verified_at": "2026-01-01T00:00:00Z",
-    }
+    write_valid_machine_ready_run(_machine(), run_id="machine-test-1")
+    return load_machine_ready_evidence("dev1", machine_run_id="machine-test-1")
+
+
+def _setup_machine_ready_state(monkeypatch, state_root: Path) -> None:
+    inventory_path = state_root / "machine-inventory.json"
+    lock_path = inventory_path.with_name(inventory_path.name + ".lock")
+    monkeypatch.setattr("mws_local_state.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_local_state.INVENTORY_PATH", inventory_path)
+    monkeypatch.setattr("mws_local_state.INVENTORY_LOCK_PATH", lock_path)
+    monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_parity.MACHINE_RUNS_DIR", state_root / "machine-runs")
+    monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
+    upsert_machine(_machine())
 
 
 def test_fixed_paths_use_machine_workspace_root() -> None:
@@ -129,6 +144,7 @@ def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) 
     state_root.mkdir()
     monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
     monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
+    _setup_machine_ready_state(monkeypatch, state_root)
     FakeRemoteTransport._shared_parity_locks.clear()
 
     motor = tmp_path / "motor"
@@ -203,6 +219,7 @@ def test_sync_failure_does_not_report_ok(tmp_path: Path, monkeypatch) -> None:
     state_root.mkdir()
     monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
     monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
+    _setup_machine_ready_state(monkeypatch, state_root)
     FakeRemoteTransport._shared_parity_locks.clear()
 
     motor = tmp_path / "motor"

@@ -11,8 +11,15 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from mws_local_state import LOCAL_ROOT, WorkspaceStateError, utc_now_iso
-from mws_machine_target import build_fixed_source_paths, machine_ref
+from mws_local_state import LOCAL_ROOT, WorkspaceStateError, get_machine, utc_now_iso
+from mws_machine_target import (
+    MACHINE_READY_REQUIRED_CHECKS,
+    build_fixed_source_paths,
+    endpoint_matches_machine,
+    machine_identity_matches,
+    machine_ref,
+)
+from mws_result import RESULT_SCHEMA_VERSION
 from mws_result import progress
 from mws_state import atomic_write_json, file_lock, load_json
 from mws_transport import RemoteTransport, shell_quote, transport_for_machine, validate_machine_transport_fields
@@ -226,43 +233,20 @@ def load_machine_ready_evidence(
     *,
     machine_run_id: str | None = None,
 ) -> dict[str, Any]:
-    if machine_run_id:
-        run_path = MACHINE_RUNS_DIR / machine_run_id / "run.json"
-        if not run_path.exists():
-            raise WorkspaceStateError(
-                f"machine-ready run not found: {machine_run_id} ({run_path})"
-            )
-        data = load_json(run_path, default={})
-        if not isinstance(data, dict):
-            raise WorkspaceStateError(f"invalid machine run record: {run_path}")
-        return _validate_machine_ready_record(data, machine_alias, machine_run_id)
-
-    if not MACHINE_RUNS_DIR.exists():
+    if not machine_run_id or not str(machine_run_id).strip():
         raise WorkspaceStateError(
-            f"no machine-ready evidence for {machine_alias!r}; run machine-management verify first"
+            f"machine_run_id is required to load machine-ready evidence for {machine_alias!r}"
         )
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for run_dir in sorted(MACHINE_RUNS_DIR.iterdir(), reverse=True):
-        if not run_dir.is_dir():
-            continue
-        run_path = run_dir / "run.json"
-        if not run_path.exists():
-            continue
-        data = load_json(run_path, default={})
-        if not isinstance(data, dict):
-            continue
-        alias = str(data.get("alias") or data.get("machine") or "")
-        if alias != machine_alias:
-            continue
-        if data.get("ready") is True or data.get("status") == "ok":
-            candidates.append((run_dir.name, data))
-    if not candidates:
+    run_id = str(machine_run_id).strip()
+    run_path = MACHINE_RUNS_DIR / run_id / "run.json"
+    if not run_path.exists():
         raise WorkspaceStateError(
-            f"no successful machine-ready run found for {machine_alias!r}; "
-            "run machine-management verify first"
+            f"machine-ready run not found: {run_id} ({run_path})"
         )
-    run_id, record = candidates[0]
-    return _validate_machine_ready_record(record, machine_alias, run_id)
+    data = load_json(run_path, default={})
+    if not isinstance(data, dict):
+        raise WorkspaceStateError(f"invalid machine run record: {run_path}")
+    return _validate_machine_ready_record(data, machine_alias, run_id)
 
 
 def _validate_machine_ready_record(
@@ -270,30 +254,76 @@ def _validate_machine_ready_record(
     machine_alias: str,
     run_id: str,
 ) -> dict[str, Any]:
+    schema_version = str(record.get("schema_version", ""))
+    if schema_version != RESULT_SCHEMA_VERSION:
+        raise WorkspaceStateError(
+            f"machine-ready run {run_id} has unsupported schema_version: {schema_version!r}"
+        )
+    kind = str(record.get("kind", ""))
+    if kind != "machine-ready":
+        raise WorkspaceStateError(
+            f"machine-ready run {run_id} kind mismatch: expected machine-ready, got {kind!r}"
+        )
+    if str(record.get("run_id", run_id)) != run_id:
+        raise WorkspaceStateError(f"machine-ready run {run_id} run_id mismatch")
+    status = str(record.get("status", ""))
+    if status != "ready":
+        raise WorkspaceStateError(f"machine-ready run {run_id} is not ready (status={status!r})")
+
     alias = str(record.get("alias") or record.get("machine") or "")
-    if alias and alias != machine_alias:
+    if alias != machine_alias:
         raise WorkspaceStateError(
             f"machine-ready run {run_id} is for {alias!r}, not {machine_alias!r}"
         )
-    ready = record.get("ready")
-    status = record.get("status")
-    if ready is False or status == "error":
-        raise WorkspaceStateError(f"machine-ready run {run_id} is not ready")
-    if ready is not True and status != "ok":
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} missing ready=true or status=ok evidence"
-        )
-    if not record.get("machine_ref") and not record.get("endpoint"):
+
+    machine = get_machine(machine_alias)
+    ref = record.get("machine_ref")
+    endpoint = record.get("endpoint")
+    if not isinstance(ref, dict) or not isinstance(endpoint, dict):
         raise WorkspaceStateError(
             f"machine-ready run {run_id} missing machine_ref/endpoint evidence"
         )
+    if not machine_identity_matches(machine, ref):
+        raise WorkspaceStateError(
+            f"machine-ready run {run_id} machine_ref does not match inventory for {machine_alias!r}"
+        )
+    if not endpoint_matches_machine(machine, endpoint):
+        raise WorkspaceStateError(
+            f"machine-ready run {run_id} endpoint does not match inventory for {machine_alias!r}"
+        )
+
+    checks = record.get("checks")
+    if not isinstance(checks, list):
+        raise WorkspaceStateError(f"machine-ready run {run_id} missing checks list")
+
+    seen_names: set[str] = set()
+    for item in checks:
+        if not isinstance(item, dict):
+            raise WorkspaceStateError(f"machine-ready run {run_id} has invalid check entry")
+        name = str(item.get("name", "")).strip()
+        if not name:
+            raise WorkspaceStateError(f"machine-ready run {run_id} has unnamed check")
+        seen_names.add(name)
+        check_status = str(item.get("status", ""))
+        if check_status not in {"ok", "warning"}:
+            raise WorkspaceStateError(
+                f"machine-ready run {run_id} check {name!r} has invalid status {check_status!r}"
+            )
+
+    missing = sorted(MACHINE_READY_REQUIRED_CHECKS - seen_names)
+    if missing:
+        raise WorkspaceStateError(
+            f"machine-ready run {run_id} missing required checks: {', '.join(missing)}"
+        )
+
     return {
         "machine_run_id": run_id,
+        "workflow_run_id": record.get("workflow_run_id"),
         "alias": machine_alias,
-        "machine_ref": record.get("machine_ref"),
-        "endpoint": record.get("endpoint"),
-        "checks": record.get("checks", []),
-        "verified_at": record.get("created_at") or record.get("verified_at"),
+        "machine_ref": ref,
+        "endpoint": endpoint,
+        "checks": checks,
+        "verified_at": record.get("finished_at") or record.get("created_at"),
     }
 
 

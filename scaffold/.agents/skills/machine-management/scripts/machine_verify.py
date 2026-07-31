@@ -17,20 +17,48 @@ from mws_local_state import (  # noqa: E402
     save_inventory,
     utc_now_iso,
 )
-from mws_machine_target import run_machine_ready_checks  # noqa: E402
-from mws_result import emit, progress  # noqa: E402
+from mws_machine_target import (  # noqa: E402
+    build_machine_result_envelope,
+    run_machine_ready_checks,
+)
+from mws_result import emit_result, progress, utc_now_iso as result_now  # noqa: E402
+from mws_run_state import new_run_id, new_workflow_run_id, write_run  # noqa: E402
 from mws_transport import transport_for_machine  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 from repo_paths import SCAFFOLD_ROOT  # noqa: E402
+
+
+def _persist_machine_run(
+    *,
+    machine_run_id: str,
+    envelope: dict,
+    alias: str,
+    machine_ref: dict,
+    endpoint: dict,
+) -> None:
+    record = {
+        **envelope,
+        "alias": alias,
+        "machine": alias,
+        "machine_ref": machine_ref,
+        "endpoint": endpoint,
+    }
+    write_run("machine-ready", machine_run_id, record, immutable=True)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--alias", required=True)
     parser.add_argument("--profile", default="profiles/a2-dev.yaml")
+    parser.add_argument("--workflow-run-id", default="", help="optional workflow run id")
+    parser.add_argument("--machine-run-id", default="", help="optional explicit machine run id")
     args = parser.parse_args()
     alias = require_safe_id(args.alias, label="alias")
     machine = get_machine(alias)
+
+    started_at = result_now()
+    machine_run_id = args.machine_run_id.strip() or new_run_id("machine")
+    workflow_run_id = args.workflow_run_id.strip() or new_workflow_run_id()
 
     profile_path = SCAFFOLD_ROOT / args.profile
     profile = load_profile(profile_path) if profile_path.exists() else {}
@@ -45,32 +73,53 @@ def main() -> int:
             profile_kube_context=str(profile_context or ""),
         )
     except WorkspaceStateError as exc:
-        return emit(
-            {
-                "status": "error",
+        envelope = build_machine_result_envelope(
+            run_id=machine_run_id,
+            workflow_run_id=workflow_run_id,
+            payload={
                 "alias": alias,
-                "ready": False,
                 "checks": [],
+                "warnings": [],
                 "errors": [str(exc)],
-            }
+                "machine_ref": None,
+                "endpoint": None,
+            },
+            started_at=started_at,
         )
+        envelope["status"] = "failed"
+        _persist_machine_run(
+            machine_run_id=machine_run_id,
+            envelope=envelope,
+            alias=alias,
+            machine_ref={},
+            endpoint={},
+        )
+        inventory = load_inventory()
+        inventory["machines"][alias]["last_verified_at"] = utc_now_iso()
+        inventory["machines"][alias]["last_verify_errors"] = [str(exc)]
+        save_inventory(inventory)
+        return emit_result(envelope)
+
+    envelope = build_machine_result_envelope(
+        run_id=machine_run_id,
+        workflow_run_id=workflow_run_id,
+        payload=result,
+        started_at=started_at,
+    )
+    _persist_machine_run(
+        machine_run_id=machine_run_id,
+        envelope=envelope,
+        alias=alias,
+        machine_ref=result["machine_ref"],
+        endpoint=result["endpoint"],
+    )
 
     inventory = load_inventory()
     inventory["machines"][alias]["last_verified_at"] = utc_now_iso()
     inventory["machines"][alias]["last_verify_errors"] = result["errors"]
     save_inventory(inventory)
 
-    return emit(
-        {
-            "status": "ok" if result["ready"] else "error",
-            "alias": alias,
-            "ready": result["ready"],
-            "checks": result["checks"],
-            "errors": result["errors"],
-            "machine_ref": result["machine_ref"],
-            "endpoint": result["endpoint"],
-        }
-    )
+    return emit_result(envelope)
 
 
 if __name__ == "__main__":

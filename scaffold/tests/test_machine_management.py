@@ -209,7 +209,7 @@ def test_run_machine_ready_checks_success() -> None:
     result = run_machine_ready_checks(_machine(), MockReadyTransport())
     assert result["ready"] is True
     assert result["endpoint"]["host"] == "dev1.example"
-    assert any(item["name"] == "ssh" and item["status"] == "pass" for item in result["checks"])
+    assert any(item["name"] == "ssh" and item["status"] == "ok" for item in result["checks"])
 
 
 def test_run_machine_ready_checks_ssh_failure() -> None:
@@ -227,7 +227,7 @@ def test_run_machine_ready_checks_ssh_failure() -> None:
 def test_run_machine_ready_checks_mount_not_writable() -> None:
     result = run_machine_ready_checks(_machine(), MockReadyTransport(writable=False))
     assert result["ready"] is False
-    assert any(item["name"] == "mount_root" and item["status"] == "fail" for item in result["checks"])
+    assert any(item["name"] == "mount_root" and item["status"] == "error" for item in result["checks"])
 
 
 def test_run_machine_ready_checks_remote_workspace_escape() -> None:
@@ -242,7 +242,7 @@ def test_run_machine_ready_checks_remote_workspace_escape() -> None:
 def test_run_machine_ready_checks_missing_parity_tool() -> None:
     result = run_machine_ready_checks(_machine(), MockReadyTransport(tools={"mkdir"}))
     assert result["ready"] is False
-    assert any(item["name"] == "parity_tool:tar" and item["status"] == "fail" for item in result["checks"])
+    assert any(item["name"] == "parity_tool:tar" and item["status"] == "error" for item in result["checks"])
 
 
 def test_run_machine_ready_checks_includes_fixed_endpoint_evidence() -> None:
@@ -255,7 +255,7 @@ def test_run_machine_ready_checks_includes_fixed_endpoint_evidence() -> None:
     assert result["endpoint"]["root"] == "/mnt/motor-workspace"
     assert result["endpoint"]["cwd"] == "/mnt/motor-workspace"
     assert result["endpoint"]["host"] == "dev1.example"
-    assert any(item["name"] == "mount_root" and item["status"] == "pass" for item in result["checks"])
+    assert any(item["name"] == "mount_root" and item["status"] == "ok" for item in result["checks"])
 
 
 def test_run_machine_ready_checks_kube_context_metadata_mismatch() -> None:
@@ -266,7 +266,7 @@ def test_run_machine_ready_checks_kube_context_metadata_mismatch() -> None:
     )
     assert result["ready"] is False
     assert any(
-        item["name"] == "kube_context_metadata" and item["status"] == "fail"
+        item["name"] == "kube_context_metadata" and item["status"] == "error"
         for item in result["checks"]
     )
 
@@ -282,7 +282,7 @@ def test_run_machine_ready_checks_cleanup_failure() -> None:
     result = run_machine_ready_checks(_machine(), CleanupFailTransport())
     assert result["ready"] is False
     assert any(
-        item["name"] in {"mount_root", "remote_workspace_root"} and item["status"] == "fail"
+        item["name"] in {"mount_root", "remote_workspace_root"} and item["status"] == "error"
         for item in result["checks"]
     )
 
@@ -337,13 +337,26 @@ def test_machine_add_script_registers_record(inventory_paths) -> None:
     assert saved["remote_workspace_root"] == "/mnt/motor-workspace"
 
 
-def test_machine_verify_script_updates_diagnostic_metadata_only(inventory_paths, monkeypatch) -> None:
+def test_machine_verify_script_writes_ready_run(inventory_paths, tmp_path, monkeypatch) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    monkeypatch.setattr("mws_local_state.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
+    monkeypatch.setattr(
+        "mws_deploy.load_profile",
+        lambda _path: {"kubernetes": {"context": "ctx-a"}},
+    )
     upsert_machine(_machine(host="1.2.3.4", kube_context="ctx-a"))
     monkeypatch.setattr("mws_transport.transport_for_machine", lambda _: MockReadyTransport())
     module = _load_script_module("machine_verify")
     exit_code, payload = _capture_script_main(module, ["--alias", "dev1"])
     assert exit_code == 0
-    assert payload["ready"] is True
+    assert payload["schema_version"] == "mws.result.v1"
+    assert payload["kind"] == "machine-ready"
+    assert payload["status"] == "ready"
+    assert payload["run_id"]
+    run_path = state_root / "machine-runs" / payload["run_id"] / "run.json"
+    assert run_path.exists()
     saved = load_inventory()["machines"]["dev1"]
     assert saved["host"] == "1.2.3.4"
     assert saved["kube_context"] == "ctx-a"
@@ -351,14 +364,19 @@ def test_machine_verify_script_updates_diagnostic_metadata_only(inventory_paths,
     assert saved["last_verify_errors"] == []
 
 
-def test_machine_verify_script_does_not_touch_kubectl(inventory_paths, monkeypatch) -> None:
-    upsert_machine(_machine())
+def test_machine_verify_script_does_not_touch_kubectl(inventory_paths, tmp_path, monkeypatch) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    monkeypatch.setattr("mws_local_state.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
+    monkeypatch.setattr("mws_deploy.load_profile", lambda _path: {"kubernetes": {"context": "ctx-a"}})
+    upsert_machine(_machine(kube_context="ctx-a"))
     monkeypatch.setattr("mws_transport.transport_for_machine", lambda _: MockReadyTransport())
     module = _load_script_module("machine_verify")
     with patch("subprocess.run", side_effect=AssertionError("kubectl must not run")):
         exit_code, payload = _capture_script_main(module, ["--alias", "dev1"])
     assert exit_code == 0
-    assert payload["ready"] is True
+    assert payload["status"] == "ready"
 
 
 def test_machine_repair_script_only_updates_explicit_fields(inventory_paths, monkeypatch) -> None:

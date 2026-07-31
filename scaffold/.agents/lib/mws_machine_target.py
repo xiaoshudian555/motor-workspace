@@ -7,11 +7,25 @@ import uuid
 from typing import Any
 
 from mws_local_state import WorkspaceStateError, get_machine
+from mws_result import CheckRunner, build_result_envelope
 from mws_transport import RemoteTransport, shell_quote, validate_machine_transport_fields
 from mws_validate import normalize_mount_root, require_safe_id, validate_remote_workspace_in_mount
 
 DEFAULT_REMOTE_WORKSPACE_SUFFIX = "motor-workspace"
 PARITY_TOOL_COMMANDS = ("tar", "mkdir")
+
+MACHINE_READY_REQUIRED_CHECKS = frozenset(
+    {
+        "ssh",
+        "mount_root",
+        "remote_workspace_path",
+        "remote_workspace_root",
+        "parity_tool:tar",
+        "parity_tool:mkdir",
+        "shared_hostpath_root",
+        "parity_backend",
+    }
+)
 
 
 def check_item(
@@ -19,9 +33,14 @@ def check_item(
     *,
     status: str,
     evidence: str = "",
-    error: str = "",
+    message: str = "",
 ) -> dict[str, Any]:
-    return {"name": name, "status": status, "evidence": evidence, "error": error}
+    record: dict[str, Any] = {"name": name, "status": status}
+    if evidence:
+        record["evidence"] = evidence
+    if message:
+        record["message"] = message
+    return record
 
 
 def _verify_writable_directory(
@@ -43,10 +62,10 @@ def _verify_writable_directory(
         transport.run(f"rm -rf {shell_quote(verify_dir)}")
         if transport.run(f"test -d {shell_quote(verify_dir)}").returncode == 0:
             raise WorkspaceStateError("remote verify directory was not cleaned up")
-        return check_item(check_name, status="pass", evidence=directory)
+        return check_item(check_name, status="ok", evidence=directory)
     except Exception as exc:  # noqa: BLE001
         transport.run(f"rm -rf {shell_quote(verify_dir)}")
-        return check_item(check_name, status="fail", error=str(exc))
+        return check_item(check_name, status="error", message=str(exc))
 
 
 def run_machine_ready_checks(
@@ -57,138 +76,177 @@ def run_machine_ready_checks(
 ) -> dict[str, Any]:
     """Read-only machine-ready checks for remote development / parity substrate."""
     validate_machine_transport_fields(machine)
-    checks: list[dict[str, Any]] = []
-    errors: list[str] = []
+    runner = CheckRunner()
+    alias = str(machine.get("alias") or machine.get("host") or "")
 
-    ssh = transport.run("echo ok")
+    try:
+        ssh = transport.run("echo ok")
+    except Exception as exc:  # noqa: BLE001
+        runner.append(
+            {
+                "name": "ssh",
+                "status": "unavailable",
+                "message": str(exc),
+            }
+        )
+        return _finalize_machine_checks(runner, machine, alias)
+
     if ssh.returncode == 0 and ssh.stdout.strip() == "ok":
-        checks.append(
+        runner.append(
             check_item(
                 "ssh",
-                status="pass",
+                status="ok",
                 evidence=f"{machine.get('user', 'root')}@{machine['host']}",
             )
         )
     else:
         msg = ssh.stderr.strip() or ssh.stdout.strip() or "SSH probe failed"
-        checks.append(check_item("ssh", status="fail", error=msg))
-        errors.append(msg)
-        return {
-            "ready": False,
-            "checks": checks,
-            "errors": errors,
-            "machine_ref": machine_ref(machine),
-            "endpoint": endpoint_payload_for_machine(machine),
-        }
+        runner.append({"name": "ssh", "status": "error", "message": msg})
+        return _finalize_machine_checks(runner, machine, alias)
 
     mount_root = normalize_mount_root(machine.get("mount_root"))
     mount_check = _verify_writable_directory(transport, mount_root, check_name="mount_root")
-    checks.append(mount_check)
-    if mount_check["status"] == "fail":
-        errors.append(mount_check.get("error") or "mount_root not writable")
+    if not runner.append(mount_check):
+        return _finalize_machine_checks(runner, machine, alias)
 
     workspace_root = remote_workspace_root(machine)
     try:
         validate_remote_workspace_in_mount(mount_root, workspace_root)
-        checks.append(
+        if not runner.append(
             check_item(
                 "remote_workspace_path",
-                status="pass",
+                status="ok",
                 evidence=workspace_root,
             )
-        )
+        ):
+            return _finalize_machine_checks(runner, machine, alias)
     except Exception as exc:  # noqa: BLE001
-        checks.append(check_item("remote_workspace_path", status="fail", error=str(exc)))
-        errors.append(str(exc))
-        workspace_root = ""
-
-    if workspace_root:
-        workspace_check = _verify_writable_directory(
-            transport,
-            workspace_root,
-            check_name="remote_workspace_root",
+        runner.append(
+            check_item("remote_workspace_path", status="error", message=str(exc))
         )
-        checks.append(workspace_check)
-        if workspace_check["status"] == "fail":
-            errors.append(workspace_check.get("error") or "remote_workspace_root not writable")
+        return _finalize_machine_checks(runner, machine, alias)
+
+    workspace_check = _verify_writable_directory(
+        transport,
+        workspace_root,
+        check_name="remote_workspace_root",
+    )
+    if not runner.append(workspace_check):
+        return _finalize_machine_checks(runner, machine, alias)
 
     for tool in PARITY_TOOL_COMMANDS:
         result = transport.run(f"command -v {shell_quote(tool)}")
         found = result.returncode == 0 and bool(result.stdout.strip())
-        checks.append(
+        if not runner.append(
             check_item(
                 f"parity_tool:{tool}",
-                status="pass" if found else "fail",
-                evidence=result.stdout.strip(),
-                error="" if found else f"{tool} not found in remote PATH",
+                status="ok" if found else "error",
+                evidence=result.stdout.strip() if found else "",
+                message="" if found else f"{tool} not found in remote PATH",
             )
-        )
-        if not found:
-            errors.append(f"{tool} not found in remote PATH")
+        ):
+            return _finalize_machine_checks(runner, machine, alias)
 
     visible = transport.run(f"test -d {shell_quote(mount_root)}")
-    checks.append(
+    if not runner.append(
         check_item(
             "shared_hostpath_root",
-            status="pass" if visible.returncode == 0 else "fail",
+            status="ok" if visible.returncode == 0 else "error",
             evidence=mount_root,
-            error="" if visible.returncode == 0 else "shared mount root not visible on login host",
+            message=""
+            if visible.returncode == 0
+            else "shared mount root not visible on login host",
         )
-    )
-    if visible.returncode:
-        errors.append("shared mount root not visible on login host")
+    ):
+        return _finalize_machine_checks(runner, machine, alias)
 
     machine_context = str(machine.get("kube_context") or "").strip()
     profile_context = str(profile_kube_context or "").strip()
     if machine_context and profile_context and machine_context != profile_context:
-        checks.append(
+        runner.append(
             check_item(
                 "kube_context_metadata",
-                status="fail",
-                error=(
+                status="error",
+                message=(
                     f"machine kube_context={machine_context!r} != profile context={profile_context!r}"
                 ),
             )
         )
-        errors.append("kube context mismatch between machine inventory and profile")
-    elif machine_context or profile_context:
-        checks.append(
+        return _finalize_machine_checks(runner, machine, alias)
+    if machine_context and not profile_context:
+        runner.append(
             check_item(
                 "kube_context_metadata",
-                status="pass",
-                evidence=machine_context or profile_context,
+                status="warning",
+                message="profile missing kube context; using machine inventory value",
+                evidence=machine_context,
             )
         )
-    else:
-        checks.append(
+    elif machine_context or profile_context:
+        runner.append(
             check_item(
                 "kube_context_metadata",
-                status="not_applicable",
-                evidence="no kube context recorded",
+                status="ok",
+                evidence=machine_context or profile_context,
             )
         )
 
     backend = machine.get("parity_backend", "shared-hostpath")
     if backend == "node-local-hostpath":
-        checks.append(
+        runner.append(
             check_item(
                 "parity_backend",
-                status="fail",
-                error="node-local-hostpath is not supported yet; use shared-hostpath",
+                status="error",
+                message="node-local-hostpath is not supported yet; use shared-hostpath",
             )
         )
-        errors.append("unsupported parity_backend")
-    else:
-        checks.append(check_item("parity_backend", status="pass", evidence=backend))
+        return _finalize_machine_checks(runner, machine, alias)
 
-    ready = not errors
+    runner.append(check_item("parity_backend", status="ok", evidence=backend))
+    return _finalize_machine_checks(runner, machine, alias)
+
+
+def _finalize_machine_checks(
+    runner: CheckRunner,
+    machine: dict[str, Any],
+    alias: str,
+) -> dict[str, Any]:
+    ready = runner.stopped_at is None and not runner.errors
     return {
         "ready": ready,
-        "checks": checks,
-        "errors": errors,
+        "alias": alias,
+        "checks": runner.checks,
+        "warnings": runner.warnings,
+        "errors": runner.errors,
+        "stopped_at": runner.stopped_at,
         "machine_ref": machine_ref(machine),
         "endpoint": endpoint_payload_for_machine(machine),
     }
+
+
+def build_machine_result_envelope(
+    *,
+    run_id: str,
+    workflow_run_id: str,
+    payload: dict[str, Any],
+    started_at: str,
+) -> dict[str, Any]:
+    return build_result_envelope(
+        kind="machine-ready",
+        run_id=run_id,
+        workflow_run_id=workflow_run_id,
+        checks=payload.get("checks", []),
+        started_at=started_at,
+        warnings=payload.get("warnings", []),
+        errors=payload.get("errors", []),
+        extra={
+            "alias": payload.get("alias"),
+            "machine": payload.get("alias"),
+            "machine_ref": payload.get("machine_ref"),
+            "endpoint": payload.get("endpoint"),
+            "stopped_at": payload.get("stopped_at"),
+        },
+    )
 
 
 def remote_workspace_root(machine: dict[str, Any]) -> str:
@@ -272,3 +330,19 @@ def endpoint_payload_for_machine(
         "source": {"machine_ref": machine_ref(machine)},
     }
     return payload
+
+
+def machine_identity_matches(machine: dict[str, Any], machine_ref_payload: dict[str, Any]) -> bool:
+    expected = machine_ref(machine)
+    for key in ("alias", "host", "port", "user", "mount_root", "remote_workspace_root"):
+        if str(expected.get(key, "")) != str(machine_ref_payload.get(key, "")):
+            return False
+    return True
+
+
+def endpoint_matches_machine(machine: dict[str, Any], endpoint: dict[str, Any]) -> bool:
+    expected = endpoint_payload_for_machine(machine)
+    for key in ("host", "port", "user", "root", "cwd"):
+        if str(expected.get(key, "")) != str(endpoint.get(key, "")):
+            return False
+    return True

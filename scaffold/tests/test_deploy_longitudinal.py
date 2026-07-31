@@ -12,6 +12,9 @@ SCAFFOLD = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCAFFOLD.parent
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
 
 from mws_deploy import configure_deploy_bundle, compute_config_fingerprint, normalize_native_config  # noqa: E402
 from mws_local_state import WorkspaceStateError  # noqa: E402
@@ -218,17 +221,9 @@ def test_deploy_configure_reuse_cli(tmp_path, local_state_root, monkeypatch) -> 
         parity_id,
         {"status": "ready", "workflow_run_id": "wf-1", "machine": "dev1", "alias": "dev1"},
     )
-    write_run(
-        "machine-ready",
-        "machine-1",
-        {
-            "status": "ready",
-            "workflow_run_id": "wf-1",
-            "alias": "dev1",
-            "ready": True,
-            "machine_ref": {"alias": "dev1", "host": "1.2.3.4"},
-        },
-    )
+    inv = {"schema_version": 1, "machines": {"dev1": _machine()}}
+    atomic_write_json(local_state_root / "machine-inventory.json", inv)
+    write_valid_machine_ready_run(_machine(), run_id="machine-1", workflow_run_id="wf-1")
     manifest = tmp_path / "manifest.yaml"
     manifest.write_text("apiVersion: v1\nkind: ConfigMap\n", encoding="utf-8")
     native = normalize_native_config(config_dir)
@@ -280,6 +275,8 @@ def test_deploy_configure_reuse_cli(tmp_path, local_state_root, monkeypatch) -> 
             str(config_dir),
             "--workflow-run-id",
             "wf-1",
+            "--machine-run-id",
+            "machine-1",
             "--reuse",
         ],
     )

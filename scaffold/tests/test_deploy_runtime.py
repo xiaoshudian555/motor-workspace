@@ -13,6 +13,9 @@ SCAFFOLD = Path(__file__).resolve().parents[1]
 REPO_ROOT = SCAFFOLD.parent
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
 
 from mws_deploy import (  # noqa: E402
     apply_config_bundle,
@@ -137,6 +140,13 @@ def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
     configure.assert_not_called()
 
 
+MACHINE_RUN_ID = "machine-1"
+
+
+def _write_machine_ready() -> None:
+    write_valid_machine_ready_run(_machine(), run_id=MACHINE_RUN_ID)
+
+
 def _write_inventory(local_root: Path, machine: dict | None = None) -> None:
     record = machine if machine is not None else _machine()
     inv = {
@@ -152,16 +162,7 @@ def test_apply_script_bundle_path_mismatch_fails(local_state_root, tmp_path, mon
     bundle_meta = _write_bundle(local_state_root, machine_paths=other_paths)
     config_run_id = _write_config_run(local_state_root, bundle_meta)
     _write_inventory(local_state_root)
-    write_run(
-        "machine-ready",
-        "machine-1",
-        {
-            "status": "ready",
-            "alias": "dev1",
-            "ready": True,
-            "machine_ref": {"alias": "dev1", "host": "1.2.3.4"},
-        },
-    )
+    _write_machine_ready()
     monkeypatch.setattr("mws_local_state.LOCAL_ROOT", local_state_root, raising=False)
     monkeypatch.setattr("mws_local_state.INVENTORY_PATH", local_state_root / "machine-inventory.json", raising=False)
     monkeypatch.setattr("mws_run_state.LOCAL_ROOT", local_state_root, raising=False)
@@ -182,6 +183,8 @@ def test_apply_script_bundle_path_mismatch_fails(local_state_root, tmp_path, mon
             "dev1",
             "--config-run-id",
             config_run_id,
+            "--machine-run-id",
+            MACHINE_RUN_ID,
             "--approved-by-user",
         ],
     )
@@ -194,16 +197,7 @@ def test_apply_script_bundle_path_mismatch_fails(local_state_root, tmp_path, mon
 
 def _run_apply_main(local_state_root, monkeypatch, config_run_id: str, **patches):
     _write_inventory(local_state_root)
-    write_run(
-        "machine-ready",
-        "machine-1",
-        {
-            "status": "ready",
-            "alias": "dev1",
-            "ready": True,
-            "machine_ref": {"alias": "dev1", "host": "1.2.3.4"},
-        },
-    )
+    _write_machine_ready()
     monkeypatch.setattr("mws_local_state.LOCAL_ROOT", local_state_root, raising=False)
     monkeypatch.setattr("mws_local_state.INVENTORY_PATH", local_state_root / "machine-inventory.json", raising=False)
     monkeypatch.setattr("mws_run_state.LOCAL_ROOT", local_state_root, raising=False)
@@ -223,6 +217,8 @@ def _run_apply_main(local_state_root, monkeypatch, config_run_id: str, **patches
             "dev1",
             "--config-run-id",
             config_run_id,
+            "--machine-run-id",
+            MACHINE_RUN_ID,
             "--approved-by-user",
         ],
     )
