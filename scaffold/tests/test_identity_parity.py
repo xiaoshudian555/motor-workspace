@@ -148,3 +148,39 @@ def test_identity_parity_fails_closed_on_missing_fixed_dir(
     with pytest.raises(Exception) as exc:
         prove_identity_parity(_machine(), machine_ready=ready)
     assert "fixed source dir missing" in str(exc.value)
+
+
+def test_identity_parity_run_consumable_by_configure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """M0 acceptance: an identity parity proof is an immutable parity-complete
+    run that the configure consumer can load, with machine identity intact."""
+    from mws_run_state import load_run, new_run_id, write_parity_run
+
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    _setup_state(monkeypatch, state_root)
+
+    paths = _remote_native_fixture(tmp_path, monkeypatch)
+
+    ready = _machine_ready(monkeypatch, state_root)
+    manifest = prove_identity_parity(_machine(), machine_ready=ready)
+
+    run_id = new_run_id("parity")
+    write_parity_run(
+        run_id,
+        {
+            "status": "ready",
+            "parity_complete": True,
+            "machine": "dev-native",
+            "machine_run_id": ready.get("machine_run_id"),
+            "manifest_path": "scaffold/runs/parity/manifest.json",
+            "manifest": manifest,
+        },
+    )
+    run = load_run("parity-complete", run_id)
+    assert run["status"] == "ready"
+    assert run["parity_complete"] is True
+    assert run["machine"] == "dev-native"
+    # configure consumer checks parity run machine/alias against the deploy alias
+    assert run.get("machine") == _machine()["alias"]

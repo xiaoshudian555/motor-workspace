@@ -38,14 +38,27 @@ from mws_validate import require_safe_id  # noqa: E402
 
 
 def run_parity(machine: str, *, machine_run_id: str = "") -> dict:
-    script = SCAFFOLD_ROOT / ".agents/skills/remote-code-parity/scripts/parity_sync.py"
-    cmd = [
-        sys.executable,
-        str(script),
-        "--machine",
-        machine,
-        "--approved-overwrite",
-    ]
+    """Run the parity step appropriate for the machine topology.
+
+    SSH machines sync the local dirty tree to fixed remote directories
+    (`parity_sync.py`). Remote-native machines are already on the target host,
+    so parity only proves identity (`parity_identity.py`) without any copy or
+    overwrite, and never initiates a self-SSH.
+    """
+    alias = require_safe_id(machine, label="machine")
+    record = get_machine(alias)
+    if record.get("executor") == "native":
+        script = SCAFFOLD_ROOT / ".agents/skills/remote-code-parity/scripts/parity_identity.py"
+        cmd = [sys.executable, str(script), "--machine", machine]
+    else:
+        script = SCAFFOLD_ROOT / ".agents/skills/remote-code-parity/scripts/parity_sync.py"
+        cmd = [
+            sys.executable,
+            str(script),
+            "--machine",
+            machine,
+            "--approved-overwrite",
+        ]
     if machine_run_id.strip():
         cmd.extend(["--machine-run-id", machine_run_id.strip()])
     result = subprocess.run(

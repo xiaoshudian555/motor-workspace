@@ -18,11 +18,34 @@ deploy readiness.
 python3 .agents/skills/machine-management/scripts/inventory.py list
 python3 .agents/skills/machine-management/scripts/inventory.py get dev1
 python3 .agents/skills/machine-management/scripts/machine_add.py --alias dev1 --host 1.2.3.4 --mount-root /mnt
+python3 .agents/skills/machine-management/scripts/machine_self_identify.py --dry-run
+python3 .agents/skills/machine-management/scripts/machine_self_identify.py
 python3 .agents/skills/machine-management/scripts/machine_ssh_setup.py --host 1.2.3.4 --password-stdin
 python3 .agents/skills/machine-management/scripts/machine_verify.py --alias dev1
 python3 .agents/skills/machine-management/scripts/machine_repair.py --alias dev1 --mount-root /mnt
 python3 .agents/skills/machine-management/scripts/machine_remove.py --alias dev1
 ```
+
+## Remote-native self-registration
+
+When the Agent runs **directly on the target NPU host** (remote-native
+topology), there is no SSH metadata to record: the current host is the
+machine. Use `machine_self_identify.py` instead of `machine_add.py`:
+
+- Probes hostname, current user, shared mount root, fixed workspace root,
+  and the active `kubectl` context.
+- Registers (or reuses) an `executor=native` machine record so downstream
+  workflow steps resolve the machine exactly like an SSH machine, but drive
+  it through `NativeTransport`.
+- `--dry-run` prints the probed record without writing inventory.
+- Explicit overrides: `--alias`, `--mount-root`, `--remote-workspace-root`,
+  `--kube-context`, `--user`.
+- If the same host already has a native record, the existing alias is reused
+  so parity / machine-ready evidence keeps a stable identity.
+
+Registration only supplies connection defaults. Run `machine_verify.py
+--alias <alias>` to prove the machine is actually ready (writable mount root,
+parity tools, shared hostPath) before downstream steps.
 
 ## SSH bootstrap (one-time)
 

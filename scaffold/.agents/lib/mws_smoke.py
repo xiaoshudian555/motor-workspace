@@ -124,6 +124,7 @@ def resolve_validation_context(*, machine_alias: str, deploy_run_id: str) -> dic
         raise WorkspaceStateError(f"config bundle missing user_config.json: {bundle_dir}")
     user_config = _load_json_object(user_config_path)
     machine = get_machine(machine_alias)
+    executor = str(machine.get("executor") or "ssh")
     namespace = str(
         deploy_run.get("namespace") or config_run.get("namespace") or bundle.get("namespace") or ""
     ).strip()
@@ -141,6 +142,7 @@ def resolve_validation_context(*, machine_alias: str, deploy_run_id: str) -> dic
         "bundle_digest": bundle_digest,
         "namespace": namespace,
         "kube_context": str(machine.get("kube_context") or ""),
+        "executor": executor,
         "model": resolve_model_name(user_config),
         "mgmt_tls_enabled": bool(_tls_config(user_config, "mgmt_tls_config").get("enable_tls")),
         "infer_tls_enabled": bool(_tls_config(user_config, "infer_tls_config").get("enable_tls")),
@@ -209,7 +211,7 @@ def discover_coordinator_services(
         raise WorkspaceStateError(f"unknown Coordinator service role(s): {unknown_roles}")
     for role in roles:
         expected_port = COORDINATOR_PORTS[role]
-        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        candidates: list[tuple[int, str, dict[str, Any], dict[str, Any]]] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -230,20 +232,23 @@ def discover_coordinator_services(
             name = str(item.get("metadata", {}).get("name") or "")
             score = _service_score(item, role)
             if name and score > 0:
-                candidates.append((score, name, matching))
+                candidates.append((score, name, matching, item))
         if not candidates:
             raise WorkspaceStateError(
                 f"cannot find Motor Coordinator {role} Service on port {expected_port} in namespace {namespace}"
             )
         candidates.sort(key=lambda candidate: (candidate[0], candidate[1]), reverse=True)
         if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
-            tied = [name for score, name, _ in candidates if score == candidates[0][0]]
+            tied = [name for score, name, _, _ in candidates if score == candidates[0][0]]
             raise WorkspaceStateError(f"ambiguous Coordinator {role} Services: {tied}")
-        _, name, port_spec = candidates[0]
+        _, name, port_spec, service_item = candidates[0]
+        spec = service_item.get("spec") if isinstance(service_item.get("spec"), dict) else {}
+        cluster_ip = str(spec.get("clusterIP") or "")
         resolved[role] = {
             "name": name,
             "port": expected_port,
             "target_port": port_spec.get("targetPort", expected_port),
+            "cluster_ip": cluster_ip,
         }
     return resolved
 
@@ -310,6 +315,7 @@ def request_json(
     *,
     port: int,
     path: str,
+    host: str = "127.0.0.1",
     method: str = "GET",
     payload: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
@@ -325,14 +331,14 @@ def request_json(
         request_headers.setdefault("Content-Type", "application/json")
     if tls:
         connection: http.client.HTTPConnection = _ServerNameHTTPSConnection(
-            "127.0.0.1",
+            host,
             port,
             context=ssl_context or build_ssl_context(),
             server_name=tls_server_name,
             timeout=timeout,
         )
     else:
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        connection = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
         connection.request(method, path, body=body, headers=request_headers)
         response = connection.getresponse()

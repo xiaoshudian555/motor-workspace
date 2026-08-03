@@ -235,6 +235,94 @@ def test_wait_for_readiness_requires_ready_true() -> None:
     assert result["json"]["ready"] is True
 
 
+def test_smoke_script_native_direct_cluster_ip(tmp_path, monkeypatch) -> None:
+    """remote-native smoke hits the ClusterIP directly, no port-forward."""
+    script = SCAFFOLD / ".agents/skills/motor-smoke/scripts/smoke_run.py"
+    spec = importlib.util.spec_from_file_location("smoke_run_native_test", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    context = {
+        "machine": "dev1",
+        "deploy_run_id": "deploy-1",
+        "config_run_id": "cfg-1",
+        "workflow_run_id": "wf-1",
+        "bundle_dir": "bundle",
+        "bundle_digest": "abc",
+        "namespace": "ns1",
+        "kube_context": "ctx-a",
+        "executor": "native",
+        "model": "qwen-smoke",
+        "mgmt_tls_enabled": False,
+        "infer_tls_enabled": False,
+        "api_key_enabled": False,
+        "api_key_header": "Authorization",
+        "api_key_prefix": "Bearer ",
+    }
+    services = {
+        "mgmt": {
+            "name": "mindie-motor-coordinator-mgmt",
+            "port": 1026,
+            "cluster_ip": "10.107.213.17",
+        },
+    }
+
+    class FakeForward:
+        """Must NOT be entered on the native path."""
+
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("native smoke must not use port-forward")
+
+    request_calls: list[dict] = []
+
+    def fake_request_json(**kwargs):
+        request_calls.append(kwargs)
+        return {
+            "status": 200,
+            "body": '{"status":"ok","ready":true}',
+            "json": {"status": "ok", "ready": True},
+        }
+
+    monkeypatch.setattr(module, "resolve_smoke_context", lambda **kwargs: context)
+    monkeypatch.setattr(module, "get_machine", lambda alias: _machine())
+    monkeypatch.setattr(module, "discover_coordinator_services", lambda **kwargs: services)
+    monkeypatch.setattr(
+        module,
+        "ensure_service_endpoints",
+        lambda **kwargs: {
+            "mgmt": {"service": services["mgmt"]["name"], "ready_addresses": 1},
+        },
+    )
+    monkeypatch.setattr(module, "PortForward", FakeForward)
+    monkeypatch.setattr(module, "wait_for_readiness", lambda fn, **kwargs: fn())
+    monkeypatch.setattr(module, "request_json", fake_request_json)
+    out_dir = tmp_path / "validation-runs" / "smoke-native"
+    out_dir.mkdir(parents=True)
+    monkeypatch.setattr(module, "validation_run_dir", lambda run_id: out_dir)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(script),
+            "--machine",
+            "dev1",
+            "--deploy-run-id",
+            "deploy-1",
+            "--smoke-run-id",
+            "smoke-native",
+        ],
+    )
+    captured = {}
+    monkeypatch.setattr(module, "emit_result", lambda payload: captured.setdefault("payload", payload) and 0)
+
+    assert module.main() == 0
+    assert captured["payload"]["status"] == "ready"
+    assert request_calls and request_calls[0]["host"] == "10.107.213.17"
+    assert request_calls[0]["port"] == 1026
+    assert request_calls[0]["path"] == "/readiness"
+
+
 def test_smoke_script_stops_at_coordinator_readiness(tmp_path, monkeypatch) -> None:
     script = SCAFFOLD / ".agents/skills/motor-smoke/scripts/smoke_run.py"
     spec = importlib.util.spec_from_file_location("smoke_run_test", script)

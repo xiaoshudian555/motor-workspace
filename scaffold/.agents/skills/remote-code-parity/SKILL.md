@@ -28,7 +28,8 @@ transfer only the object delta.
 
 - Successful `machine-ready` evidence from `machine-management verify`
   (stored under `.motor-workspace-local/machine-runs/`).
-- User consent to overwrite existing remote fixed directories.
+- User consent to overwrite existing remote fixed directories (sync parity
+  only; identity parity never overwrites).
 
 ## Entry point
 
@@ -43,6 +44,28 @@ Optional:
 - `--machine-run-id <id>` — pin a specific machine-ready run instead of the
   latest successful run for the machine.
 - `--skip-fast-path` — force full sync even when local and remote digests match.
+
+## Remote-native identity parity
+
+When the machine record has `executor: native` (the Agent runs directly on the
+target NPU host), the local working tree **is** the machine's fixed source
+paths, so there is nothing to sync. Run identity parity instead:
+
+```bash
+python3 .agents/skills/remote-code-parity/scripts/parity_identity.py \
+  --machine <alias>
+```
+
+Identity parity proves source readiness without copying or overwriting:
+
+- each local source repo resolves to the machine's fixed source dir
+- the fixed source dirs exist on the current host
+- content digests are captured and published as an immutable
+  `parity-complete(source_mode=identity)` run
+
+It fails closed: a local repo that does not resolve to the fixed source dir, a
+missing fixed dir, or a digest failure never publishes a ready proof. No
+`--approved-overwrite` is accepted — there is no overwrite.
 
 ## Deliverables
 
