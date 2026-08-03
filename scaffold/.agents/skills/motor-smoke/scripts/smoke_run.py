@@ -12,11 +12,11 @@ sys.path.insert(0, str(LIB))
 
 from repo_paths import REPO_ROOT  # noqa: E402
 
-from mws_local_state import get_machine  # noqa: E402
+from mws_execution import ServiceTarget, execution_adapter_for_machine  # noqa: E402
+from mws_local_state import WorkspaceStateError, get_machine  # noqa: E402
 from mws_result import CheckRunner, build_result_envelope, emit_result, progress, utc_now_iso  # noqa: E402
 from mws_run_state import new_run_id, validation_run_dir  # noqa: E402
 from mws_smoke import (  # noqa: E402
-    PortForward,
     build_ssl_context,
     discover_coordinator_services,
     ensure_service_endpoints,
@@ -141,19 +141,27 @@ def main() -> int:
         )
 
         if context.get("executor", "ssh") == "native":
-            # remote-native: Agent runs on the master host, reachable ClusterIP
-            # directly through kube-proxy. No port-forward / socat dependency.
             cluster_ip = str(services["mgmt"].get("cluster_ip") or "")
             if not cluster_ip:
                 raise WorkspaceStateError(
                     "native smoke requires a ClusterIP Service, but mgmt Service has no "
                     f"clusterIP; service={services['mgmt']['name']}"
                 )
-            progress("waiting for Coordinator readiness body ready=true (direct ClusterIP)")
+        progress("opening Coordinator management Service access")
+        adapter = execution_adapter_for_machine(machine)
+        target = ServiceTarget(
+            namespace=context["namespace"],
+            service_name=services["mgmt"]["name"],
+            service_port=services["mgmt"]["port"],
+            kube_context=context["kube_context"],
+            cluster_ip=services["mgmt"].get("cluster_ip", ""),
+        )
+        with adapter.port_forward(target) as mgmt_forward:
+            progress("waiting for Coordinator readiness body ready=true")
             readiness = wait_for_readiness(
                 lambda: request_json(
-                    host=cluster_ip,
-                    port=services["mgmt"]["port"],
+                    host=mgmt_forward.target_host,
+                    port=mgmt_forward.local_port,
                     path="/readiness",
                     timeout=args.request_timeout,
                     tls=context["mgmt_tls_enabled"],
@@ -163,27 +171,6 @@ def main() -> int:
                 ),
                 timeout=args.ready_timeout,
             )
-        else:
-            with PortForward(
-                machine,
-                context["kube_context"],
-                context["namespace"],
-                services["mgmt"]["name"],
-                services["mgmt"]["port"],
-            ) as mgmt_forward:
-                progress("waiting for Coordinator readiness body ready=true")
-                readiness = wait_for_readiness(
-                    lambda: request_json(
-                        port=mgmt_forward.local_port,
-                        path="/readiness",
-                        timeout=args.request_timeout,
-                        tls=context["mgmt_tls_enabled"],
-                        ssl_context=mgmt_ssl,
-                        tls_server_name=args.mgmt_tls_server_name
-                        or f"{services['mgmt']['name']}.{context['namespace']}.svc",
-                    ),
-                    timeout=args.ready_timeout,
-                )
         readiness_path = out_dir / "readiness.json"
         atomic_write_json(readiness_path, readiness)
         artifacts.append({"path": _artifact_ref(readiness_path)})

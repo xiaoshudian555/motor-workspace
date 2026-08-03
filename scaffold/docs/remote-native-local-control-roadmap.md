@@ -1,7 +1,20 @@
 # Remote-native 与 local-control 应共享一套 Workflow Core——双拓扑适配 Roadmap
 
-> **状态：Roadmap / 待专项分支实施**  
+> **状态：R0/R1 已完成，R2 待实施**  
 > **日期：2026-08-03**  
+> **实施进度（2026-08-03）：**
+> - **M0（MVP）**：remote-native 拓扑最小可用——`NativeTransport`、简化
+>   identity parity（`prove_identity_parity`）、机器自省登记（方案 A）、
+>   dry-run/apply/smoke 的 native 分支，已交付并在真实环境验证；
+> - **R0（基线）**：全量测试回归基线 207 passed，local-control 行为冻结；
+> - **R1（ExecutionAdapter 抽象）**：`mws_execution.py` 定义
+>   `CommandResult`/`ServiceTarget`/`PortForwardHandle` +
+>   `ExecutionAdapter` ABC，实现 `SshExecutionAdapter` 与
+>   `NativeExecutionAdapter`；kubectl、file staging、deployer dry-run、apply、
+>   smoke/functional 消费点全部迁移到 adapter，port-forward 统一为 handle，
+>   Workflow Core 不再 `isinstance` 具体 SSH class。全量测试 221 passed
+>   （207 基线 + 14 新 adapter 单测）；
+> - **R2 起**：identity parity 完整化、统一 topology 入口、双拓扑纵向验收。
 > **评审修订（2026-08-03）：** 实施顺序改为「MVP → 完整版」两级演进：
 > - **M0（MVP）**：remote-native 拓扑最小可用——本机执行、简化 identity parity、
 >   显式 topology，交付「remote-native 能跑通 deploy→smoke」；
@@ -499,7 +512,7 @@ MVP 明确不做：
 - 没有新增第二套 Deploy/Validation 参数；
 - 当前 local-control fixture 不回退。
 
-### R1：抽取 ExecutionAdapter，保持 local-control 行为不变
+### R1：抽取 ExecutionAdapter，保持 local-control 行为不变 ✅ 已完成（2026-08-03）
 
 目标：先把现有 SSH 执行包装进新接口，再让 M0 的 `NativeTransport` 演化为
 `NativeExecutionAdapter`（本机执行能力已在 M0 落地，这里只包一层接口，不重写）。
@@ -513,12 +526,31 @@ MVP 明确不做：
 - port-forward 抽象为统一 handle；
 - 删除 Workflow Core 对具体 SSH class 的判断。
 
+完成记录（2026-08-03）：
+
+- 新增 `scaffold/.agents/lib/mws_execution.py`：
+  `CommandResult`/`ServiceTarget`/`PortForwardHandle` + `ExecutionAdapter` ABC，
+  及 `SshExecutionAdapter`/`NativeExecutionAdapter` 两个实现；
+- `mws_kubectl.py` 的 `build_kubectl_runner`/`stage_remote_files`/
+  `RemoteKubectlPortForward`/`RemoteHostPortForward` 委托 adapter
+  （`_AdapterBackedForward` 保留历史签名与 `.local_port`/`.log` API）；
+- `mws_deploy.py` 的 dry-run/apply 迁移到 adapter，删除
+  `isinstance(transport, (SshScpTransport, NativeTransport))`；
+- `smoke_run.py`/`functional_run.py` 消费点统一为
+  `adapter.port_forward(ServiceTarget(...))` + handle 的
+  `target_host`/`local_port`，删除 `executor == "native"` 分叉；
+- 测试：新增 `tests/test_execution_adapter.py`（14 例，
+  command/file/kubectl/stage/port-forward/host-port-forward），更新
+  `test_kubectl.py`/`test_smoke.py`/`test_functional.py`；
+- 全量 `tests/` 221 passed（R0 基线 207 + 新增 14），local-control fixture 无回归；
+- 技术债 `TD-P1-10` 关闭。
+
 验收：
 
-- local-control 原有 contract fixture 全部通过；
-- Native adapter 有 command/file/kubectl/port-forward 单元测试；
-- 两种 adapter 输出同一 CommandResult/error contract；
-- remote-native 路径不发起 self-SSH。
+- local-control 原有 contract fixture 全部通过； ✅ 221 passed
+- Native adapter 有 command/file/kubectl/port-forward 单元测试； ✅
+- 两种 adapter 输出同一 CommandResult/error contract； ✅
+- remote-native 路径不发起 self-SSH。 ✅
 
 ### R2：实现 IdentityParityAdapter
 

@@ -306,6 +306,66 @@ local-control
 
 ---
 
+### TD-P1-10：smoke 在 remote-native 拓扑下需按 executor 分叉直接访问 ClusterIP
+
+现状：
+
+- `smoke_run.py` 无条件走 `PortForward`（`RemoteKubectlPortForward`）。在
+  local-control（SSH）拓扑下这是必须的：Agent 不在集群网络，ClusterIP 不可达，
+  必须「SSH 到 master + 远端 kubectl port-forward + 隧道拉回本地」。
+- 在 remote-native 拓扑（Agent 就在 master 宿主机上）下，kube-proxy 的 iptables
+  规则就在本机，直接 `curl ClusterIP:port` 即可（实测
+  `curl http://10.107.213.17:1026/readiness` → HTTP 200）。port-forward 依赖
+  kubelet 侧 `socat`，宿主机缺该二进制时这条路径就是断的。
+- 远端 agent 验证已确认：native transport 路由、identity parity、native dry-run、
+  native port-forward 代码路径均正确，唯一没适配的是 smoke 后置链路。
+
+本轮的修复（已落地）：
+
+- `mws_smoke.py::request_json` 增加 `host` 参数（默认 `127.0.0.1`，local-control
+  行为不变），TLS 场景天然支持（连接地址与 SNI server name 分离）。
+- `mws_smoke.py::discover_coordinator_services` 返回每个 role 的 `cluster_ip`
+  （从 service `spec.clusterIP` 取；headless/空则 native 下 fail-closed）。
+- `mws_smoke.py::resolve_validation_context` 增加 `executor` 字段（从 machine
+  record 读，缺省 `ssh`）。
+- `smoke_run.py` 按 `executor == "native"` 分叉：native 直接
+  `request_json(host=cluster_ip, port=mgmt_port, path="/readiness")`，不进
+  `with PortForward`；ssh 走原逻辑。
+- 测试：`test_smoke.py` 新增 native 直连分支（断言 host=ClusterIP、不进入
+  port-forward），ssh 分支回归通过。
+
+仍保留的技术债（本轮不封闭，属 R1 范畴）：
+
+- 该分叉是「在消费点分叉」，不是统一的 `ServiceAccess` adapter。R1 做
+  `ExecutionAdapter` 时，native 直连逻辑应收敛为 `DirectServiceAccess`（或
+  `NativeExecutionAdapter.port_forward` 的直连实现），消除消费点拓扑分支。
+- `discover_coordinator_services` 只暴露 `clusterIP`，未暴露 NodePort/ExternalIP
+  等其它访问形态；若未来需要多形态访问需扩展。
+
+目标：
+
+- remote-native 下 smoke 直接访问 ClusterIP，不依赖 `socat` / port-forward；
+- local-control 行为零变化；
+- R1 时把消费点分叉收敛为统一访问 adapter。
+
+验收：
+
+- native 机器上 smoke 走直连分支并拿到 `/readiness` ready=true（真实环境）；
+- local-control 机器 smoke 仍走 port-forward（现有 fixture 回归）。
+
+R1 关闭记录（2026-08-03）：
+
+- `mws_execution.py` 引入 `PortForwardHandle`（`target_host`/`local_port`/`log`/
+  `close`）与 `ExecutionAdapter.port_forward`/`host_port_forward` 抽象；
+  `NativeExecutionAdapter` 对带 `cluster_ip` 的 `ServiceTarget` 返回直连 handle
+  （`_NativeClusterIPAccess`），SSH 返回远端 listener + tunnel handle。
+- `smoke_run.py` / `functional_run.py` 消费点统一改为
+  `adapter.port_forward(ServiceTarget(...))` + `request_json(host=handle.target_host,
+  port=handle.local_port, ...)`，删除 `executor == "native"` 消费点分叉。
+- 本技术债条目关闭；遗留项仅剩「多形态访问（NodePort/ExternalIP）暂未暴露」。
+
+---
+
 ## P2：不阻塞第一版的维护性和后续能力
 
 ### TD-P2-01（剩余）：两套 SSH/传输实现未完全收敛

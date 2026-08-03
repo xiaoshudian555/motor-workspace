@@ -275,15 +275,23 @@ def test_functional_run_owns_real_inference_requests(tmp_path, monkeypatch) -> N
     }
 
     class FakeForward:
-        def __init__(self, *args, **kwargs):
-            self.local_port = 18000 + int(args[4])
+        def __init__(self, *, target):
+            self.local_port = 18000 + target.service_port
             self.log = "closed"
+
+        @property
+        def target_host(self) -> str:
+            return "127.0.0.1"
 
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
             self.log = "closed"
+
+    class FakeAdapter:
+        def port_forward(self, target):
+            return FakeForward(target=target)
 
     responses = iter(
         [
@@ -315,7 +323,7 @@ def test_functional_run_owns_real_inference_requests(tmp_path, monkeypatch) -> N
             "infer": {"service": services["infer"]["name"], "ready_addresses": 1}
         },
     )
-    monkeypatch.setattr(module, "PortForward", FakeForward)
+    monkeypatch.setattr(module, "execution_adapter_for_machine", lambda machine: FakeAdapter())
     monkeypatch.setattr(module, "request_json", lambda **kwargs: next(responses))
     out_dir = tmp_path / "validation-runs" / "functional-test"
     out_dir.mkdir(parents=True)
@@ -384,9 +392,13 @@ def test_functional_run_executes_metrics_and_tracing(tmp_path, monkeypatch) -> N
     }
 
     class FakeForward:
-        def __init__(self, *args, **kwargs):
-            self.local_port = 18000 + int(args[4])
+        def __init__(self, *, target):
+            self.local_port = 18000 + target.service_port
             self.log = ""
+
+        @property
+        def target_host(self) -> str:
+            return "127.0.0.1"
 
         def __enter__(self):
             return self
@@ -397,16 +409,24 @@ def test_functional_run_executes_metrics_and_tracing(tmp_path, monkeypatch) -> N
     tempo_targets = []
 
     class FakeTempoForward:
-        def __init__(self, *args, **kwargs):
-            tempo_targets.append((args, kwargs))
+        def __init__(self, *, remote_port, remote_host):
+            tempo_targets.append({"remote_port": remote_port, "remote_host": remote_host})
             self.local_port = 23200
             self.log = ""
+            self.target_host = "127.0.0.1"
 
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
             self.log = "closed"
+
+    class FakeAdapter:
+        def port_forward(self, target):
+            return FakeForward(target=target)
+
+        def host_port_forward(self, remote_port, *, remote_host="127.0.0.1"):
+            return FakeTempoForward(remote_port=remote_port, remote_host=remote_host)
 
     metric_queries = 0
     trace_id = ""
@@ -450,8 +470,7 @@ def test_functional_run_executes_metrics_and_tracing(tmp_path, monkeypatch) -> N
             for role, service in services.items()
         },
     )
-    monkeypatch.setattr(module, "PortForward", FakeForward)
-    monkeypatch.setattr(module, "RemoteHostPortForward", FakeTempoForward)
+    monkeypatch.setattr(module, "execution_adapter_for_machine", lambda machine: FakeAdapter())
     monkeypatch.setattr(module, "request_json", fake_request_json)
     out_dir = tmp_path / "validation-runs" / "functional-obs-test"
     out_dir.mkdir(parents=True)
@@ -494,7 +513,8 @@ def test_functional_run_executes_metrics_and_tracing(tmp_path, monkeypatch) -> N
     ]
     assert metric_queries == 3
     assert len(trace_id) == 32
-    assert tempo_targets[0][1]["remote_host"] == "obs.example.com"
+    assert tempo_targets[0]["remote_host"] == "obs.example.com"
+    assert tempo_targets[0]["remote_port"] == 3200
     assert (out_dir / "cases/metrics.exposed/metrics.prom").exists()
     assert (out_dir / "cases/metrics.request-updated/metrics-before.prom").exists()
     assert (out_dir / "cases/metrics.request-updated/metrics-after.prom").exists()

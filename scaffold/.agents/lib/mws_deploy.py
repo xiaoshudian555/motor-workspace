@@ -595,7 +595,7 @@ def _run_deploy_dry_run_local(config_dir: Path) -> dict[str, Any]:
 
 def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dict[str, Any]:
     """Execute the deployer dry-run on the machine host over SSH or natively."""
-    from mws_transport import NativeTransport, SshScpTransport, transport_for_machine
+    from mws_execution import execution_adapter_for_machine
 
     paths = build_fixed_source_paths(machine)
     remote_motor = str(paths["motor_source"]).rstrip("/")
@@ -603,11 +603,9 @@ def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dic
     remote_deploy_py = f"{remote_deployer}/deploy.py"
     remote_config = f"/tmp/mws-dryrun-config-{os.getpid()}"
 
-    transport = transport_for_machine(machine)
-    if not isinstance(transport, (SshScpTransport, NativeTransport)):
-        raise WorkspaceStateError("remote dry-run requires an SSH or native transport")
+    adapter = execution_adapter_for_machine(machine)
 
-    probe = transport.run(f"test -f {shell_quote(remote_deploy_py)} && echo OK")
+    probe = adapter.run(f"test -f {shell_quote(remote_deploy_py)} && echo OK")
     if probe.returncode != 0 or "OK" not in probe.stdout:
         return {
             "status": "error",
@@ -618,7 +616,7 @@ def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dic
             "generated_files": [],
         }
 
-    cleanup = transport.run(f"rm -rf {shell_quote(remote_config)} && mkdir -p {shell_quote(remote_config)}")
+    cleanup = adapter.run(f"rm -rf {shell_quote(remote_config)} && mkdir -p {shell_quote(remote_config)}")
     if cleanup.returncode:
         return {
             "status": "error",
@@ -628,10 +626,10 @@ def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dic
         }
     for item in sorted(config_dir.iterdir()):
         if item.is_file():
-            transport.upload_file(str(item), f"{remote_config}/{item.name}")
+            adapter.upload_file(str(item), f"{remote_config}/{item.name}")
 
     remote_output = f"{remote_deployer}/output_yamls"
-    clear = transport.run(
+    clear = adapter.run(
         f"rm -rf {shell_quote(remote_output)} && mkdir -p {shell_quote(remote_output)}"
     )
     if clear.returncode:
@@ -646,20 +644,20 @@ def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dic
         f"cd {shell_quote(remote_deployer)} && "
         f"python3 deploy.py --config_dir {shell_quote(remote_config)} --dry-run"
     )
-    result = transport.run(command)
+    result = adapter.run(command)
 
-    remote_files = set(transport.directory_file_hashes(remote_output).keys())
+    remote_files = set(adapter.directory_file_hashes(remote_output).keys())
 
     local_output = OUTPUT_YAMLS
     local_output.mkdir(parents=True, exist_ok=True)
     fetched: list[str] = []
     for name in sorted(remote_files):
         remote_path = f"{remote_output}/{name}"
-        data = transport.read_bytes(remote_path)
+        data = adapter.read_bytes(remote_path)
         (local_output / name).write_bytes(data)
         fetched.append(name)
 
-    transport.run(f"rm -rf {shell_quote(remote_config)}")
+    adapter.run(f"rm -rf {shell_quote(remote_config)}")
     return {
         "status": "ok" if result.returncode == 0 else "error",
         "returncode": result.returncode,

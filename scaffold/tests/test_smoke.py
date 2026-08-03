@@ -236,7 +236,7 @@ def test_wait_for_readiness_requires_ready_true() -> None:
 
 
 def test_smoke_script_native_direct_cluster_ip(tmp_path, monkeypatch) -> None:
-    """remote-native smoke hits the ClusterIP directly, no port-forward."""
+    """remote-native smoke reaches the Service ClusterIP directly, no tunnel."""
     script = SCAFFOLD / ".agents/skills/motor-smoke/scripts/smoke_run.py"
     spec = importlib.util.spec_from_file_location("smoke_run_native_test", script)
     module = importlib.util.module_from_spec(spec)
@@ -268,12 +268,6 @@ def test_smoke_script_native_direct_cluster_ip(tmp_path, monkeypatch) -> None:
         },
     }
 
-    class FakeForward:
-        """Must NOT be entered on the native path."""
-
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("native smoke must not use port-forward")
-
     request_calls: list[dict] = []
 
     def fake_request_json(**kwargs):
@@ -283,6 +277,31 @@ def test_smoke_script_native_direct_cluster_ip(tmp_path, monkeypatch) -> None:
             "body": '{"status":"ok","ready":true}',
             "json": {"status": "ok", "ready": True},
         }
+
+    class FakeClusterIPForward:
+        """Native handle: target is the ClusterIP itself, no local listener."""
+
+        def __init__(self, *, target):
+            self.target = target
+            self.log = ""
+
+        @property
+        def target_host(self) -> str:
+            return self.target.cluster_ip
+
+        @property
+        def local_port(self) -> int:
+            return self.target.service_port
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeNativeAdapter:
+        def port_forward(self, target):
+            return FakeClusterIPForward(target=target)
 
     monkeypatch.setattr(module, "resolve_smoke_context", lambda **kwargs: context)
     monkeypatch.setattr(module, "get_machine", lambda alias: _machine())
@@ -294,7 +313,9 @@ def test_smoke_script_native_direct_cluster_ip(tmp_path, monkeypatch) -> None:
             "mgmt": {"service": services["mgmt"]["name"], "ready_addresses": 1},
         },
     )
-    monkeypatch.setattr(module, "PortForward", FakeForward)
+    monkeypatch.setattr(
+        module, "execution_adapter_for_machine", lambda machine: FakeNativeAdapter()
+    )
     monkeypatch.setattr(module, "wait_for_readiness", lambda fn, **kwargs: fn())
     monkeypatch.setattr(module, "request_json", fake_request_json)
     out_dir = tmp_path / "validation-runs" / "smoke-native"
@@ -351,15 +372,24 @@ def test_smoke_script_stops_at_coordinator_readiness(tmp_path, monkeypatch) -> N
     }
 
     class FakeForward:
-        def __init__(self, *args, **kwargs):
-            self.local_port = 18000 + int(args[4])
+        def __init__(self, *, target):
+            self.target = target
+            self.local_port = 18000 + target.service_port
             self.log = "closed"
+
+        @property
+        def target_host(self) -> str:
+            return "127.0.0.1"
 
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
             self.log = "closed"
+
+    class FakeSshAdapter:
+        def port_forward(self, target):
+            return FakeForward(target=target)
 
     monkeypatch.setattr(module, "resolve_smoke_context", lambda **kwargs: context)
     monkeypatch.setattr(module, "get_machine", lambda alias: _machine())
@@ -371,7 +401,9 @@ def test_smoke_script_stops_at_coordinator_readiness(tmp_path, monkeypatch) -> N
             "mgmt": {"service": services["mgmt"]["name"], "ready_addresses": 1},
         },
     )
-    monkeypatch.setattr(module, "PortForward", FakeForward)
+    monkeypatch.setattr(
+        module, "execution_adapter_for_machine", lambda machine: FakeSshAdapter()
+    )
     monkeypatch.setattr(
         module,
         "wait_for_readiness",

@@ -26,12 +26,11 @@ from mws_functional import (  # noqa: E402
     wait_for_tempo_trace,
     write_validation_spec,
 )
-from mws_kubectl import RemoteHostPortForward  # noqa: E402
+from mws_execution import ServiceTarget, execution_adapter_for_machine  # noqa: E402
 from mws_local_state import WorkspaceStateError, get_machine  # noqa: E402
 from mws_result import aggregate_result_status, build_result_envelope, emit_result, progress, utc_now_iso  # noqa: E402
 from mws_run_state import new_run_id, validation_run_dir  # noqa: E402
 from mws_smoke import (  # noqa: E402
-    PortForward,
     build_ssl_context,
     discover_coordinator_services,
     ensure_service_endpoints,
@@ -254,21 +253,28 @@ def main() -> int:
             "temperature": 0,
             "max_tokens": args.max_tokens,
         }
+        adapter = execution_adapter_for_machine(machine) if machine else None
         if needs_infer:
-            infer_forward = PortForward(
-                machine,
-                context["kube_context"],
-                context["namespace"],
-                services["infer"]["name"],
-                services["infer"]["port"],
+            assert adapter is not None
+            infer_forward = adapter.port_forward(
+                ServiceTarget(
+                    namespace=context["namespace"],
+                    service_name=services["infer"]["name"],
+                    service_port=services["infer"]["port"],
+                    kube_context=context["kube_context"],
+                    cluster_ip=services["infer"].get("cluster_ip", ""),
+                )
             )
         if needs_obs:
-            obs_forward = PortForward(
-                machine,
-                context["kube_context"],
-                context["namespace"],
-                services["obs"]["name"],
-                services["obs"]["port"],
+            assert adapter is not None
+            obs_forward = adapter.port_forward(
+                ServiceTarget(
+                    namespace=context["namespace"],
+                    service_name=services["obs"]["name"],
+                    service_port=services["obs"]["port"],
+                    kube_context=context["kube_context"],
+                    cluster_ip=services["obs"].get("cluster_ip", ""),
+                )
             )
 
         def run_inference(
@@ -297,6 +303,7 @@ def main() -> int:
             artifacts.append({"path": _artifact_ref(request_path)})
             progress(f"running Motor functional case {case_id}")
             response = request_json(
+                host=infer_forward.target_host,
                 port=infer_forward.local_port,
                 path="/v1/completions",
                 method="POST",
@@ -322,6 +329,7 @@ def main() -> int:
             if obs_forward is None:
                 raise WorkspaceStateError("metrics case requires Coordinator observability access")
             return request_json(
+                host=obs_forward.target_host,
                 port=obs_forward.local_port,
                 path="/metrics",
                 timeout=min(args.request_timeout, 30),
@@ -435,8 +443,9 @@ def main() -> int:
                 or str(context.get("tracing_export_host") or "").strip()
                 or "127.0.0.1"
             )
-            tempo_forward = RemoteHostPortForward(
-                machine, args.tempo_port, remote_host=tempo_host
+            assert adapter is not None
+            tempo_forward = adapter.host_port_forward(
+                args.tempo_port, remote_host=tempo_host
             )
             tempo_log_path = case_dir / "tempo-port-forward.log"
             backend_ready = False
@@ -444,6 +453,7 @@ def main() -> int:
                 with tempo_forward:
                     try:
                         ready = request_json(
+                            host=tempo_forward.target_host,
                             port=tempo_forward.local_port,
                             path="/ready",
                             timeout=min(args.request_timeout, 5),
@@ -469,6 +479,7 @@ def main() -> int:
 
                     def query_trace() -> dict:
                         return request_json(
+                            host=tempo_forward.target_host,
                             port=tempo_forward.local_port,
                             path=f"/api/traces/{trace_id}",
                             timeout=min(args.request_timeout, 10),

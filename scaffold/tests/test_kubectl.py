@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 SCAFFOLD = Path(__file__).resolve().parents[1]
 LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
+from mws_execution import NativeExecutionAdapter, SshExecutionAdapter  # noqa: E402
 from mws_kubectl import (  # noqa: E402
     RemoteHostPortForward,
     RemoteKubectlPortForward,
@@ -31,12 +32,12 @@ def _machine() -> dict:
 def test_kubectl_runner_always_uses_remote_transport(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 
-    class FakeTransport:
+    class FakeAdapter:
         def kubectl(self, *args: str) -> subprocess.CompletedProcess[str]:
             calls.append(args)
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda machine: FakeTransport())
+    monkeypatch.setattr("mws_kubectl.execution_adapter_for_machine", lambda machine: FakeAdapter())
     result = build_kubectl_runner(_machine(), kube_context="ctx-a")(
         "get", "pods", "-n", "ns1"
     )
@@ -51,7 +52,7 @@ def test_stage_remote_files_uploads_and_cleans_unique_directory(monkeypatch, tmp
     commands: list[str] = []
     uploads: list[tuple[str, str]] = []
 
-    class FakeTransport:
+    class FakeAdapter:
         def run(self, command: str) -> subprocess.CompletedProcess[str]:
             commands.append(command)
             return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
@@ -59,7 +60,21 @@ def test_stage_remote_files_uploads_and_cleans_unique_directory(monkeypatch, tmp
         def upload_file(self, local_path: str, remote_path: str) -> None:
             uploads.append((local_path, remote_path))
 
-    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda machine: FakeTransport())
+        @contextmanager
+        def stage_files(self, paths, *, prefix):
+            remote_dir = f"/tmp/{prefix}-abc123"
+            self.run(f"mkdir -p {remote_dir}")
+            staged: dict[Path, str] = {}
+            try:
+                for index, path in enumerate(paths):
+                    remote_path = f"{remote_dir}/{index:03d}-{path.name}"
+                    self.upload_file(str(path), remote_path)
+                    staged[path] = remote_path
+                yield staged
+            finally:
+                self.run(f"rm -rf {remote_dir}")
+
+    monkeypatch.setattr("mws_kubectl.execution_adapter_for_machine", lambda machine: FakeAdapter())
     with stage_remote_files(_machine(), [manifest], prefix="mws-test") as staged:
         remote_path = staged[manifest]
         assert remote_path.startswith("/tmp/mws-test-")
@@ -79,10 +94,11 @@ def test_port_forward_runs_remote_kubectl_behind_ssh_tunnel(monkeypatch) -> None
             args=[], returncode=0, stdout="19090\n", stderr=""
         ),
     )
-    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda machine: transport)
-    monkeypatch.setattr("mws_kubectl._allocate_local_port", lambda: 18080)
+    adapter = SshExecutionAdapter(_machine(), transport)
+    monkeypatch.setattr("mws_kubectl.execution_adapter_for_machine", lambda machine: adapter)
+    monkeypatch.setattr("mws_execution._allocate_local_port", lambda: 18080)
     monkeypatch.setattr(
-        "mws_kubectl.socket.create_connection",
+        "mws_execution.socket.create_connection",
         lambda *args, **kwargs: nullcontext(),
     )
 
@@ -108,7 +124,7 @@ def test_port_forward_runs_remote_kubectl_behind_ssh_tunnel(monkeypatch) -> None
         captured["command"] = command
         return FakeProcess()
 
-    monkeypatch.setattr("mws_kubectl.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("mws_execution.subprocess.Popen", fake_popen)
 
     with RemoteKubectlPortForward(
         _machine(), "ctx-a", "ns1", "coordinator-infer", 1025
@@ -125,6 +141,8 @@ def test_port_forward_runs_remote_kubectl_behind_ssh_tunnel(monkeypatch) -> None
 
 def test_port_forward_native_runs_local_kubectl_without_ssh(monkeypatch) -> None:
     machine = {**_machine(), "executor": "native"}
+    adapter = NativeExecutionAdapter(machine, NativeTransport(machine))
+    monkeypatch.setattr("mws_kubectl.execution_adapter_for_machine", lambda m: adapter)
     captured: dict[str, object] = {}
 
     class FakeProcess:
@@ -147,13 +165,12 @@ def test_port_forward_native_runs_local_kubectl_without_ssh(monkeypatch) -> None
         captured["command"] = command
         return FakeProcess()
 
-    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda m: NativeTransport(m))
-    monkeypatch.setattr("mws_kubectl._allocate_local_port", lambda: 18082)
+    monkeypatch.setattr("mws_execution._allocate_local_port", lambda: 18082)
     monkeypatch.setattr(
-        "mws_kubectl.socket.create_connection",
+        "mws_execution.socket.create_connection",
         lambda *args, **kwargs: nullcontext(),
     )
-    monkeypatch.setattr("mws_kubectl.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("mws_execution.subprocess.Popen", fake_popen)
 
     with RemoteKubectlPortForward(
         machine, "ctx-a", "ns1", "coordinator-infer", 1025
@@ -169,7 +186,8 @@ def test_port_forward_native_runs_local_kubectl_without_ssh(monkeypatch) -> None
 
 def test_remote_host_port_forward_native_maps_local_to_remote(monkeypatch) -> None:
     machine = {**_machine(), "executor": "native"}
-    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda m: NativeTransport(m))
+    adapter = NativeExecutionAdapter(machine, NativeTransport(machine))
+    monkeypatch.setattr("mws_kubectl.execution_adapter_for_machine", lambda m: adapter)
 
     with RemoteHostPortForward(machine, 3200) as forward:
         # native: no tunnel, local port is the remote port directly
@@ -178,10 +196,11 @@ def test_remote_host_port_forward_native_maps_local_to_remote(monkeypatch) -> No
 
 def test_remote_host_port_forward_uses_ssh_no_command_tunnel(monkeypatch) -> None:
     transport = SshScpTransport(_machine())
-    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda machine: transport)
-    monkeypatch.setattr("mws_kubectl._allocate_local_port", lambda: 18081)
+    adapter = SshExecutionAdapter(_machine(), transport)
+    monkeypatch.setattr("mws_kubectl.execution_adapter_for_machine", lambda machine: adapter)
+    monkeypatch.setattr("mws_execution._allocate_local_port", lambda: 18081)
     monkeypatch.setattr(
-        "mws_kubectl.socket.create_connection",
+        "mws_execution.socket.create_connection",
         lambda *args, **kwargs: nullcontext(),
     )
     captured: dict[str, object] = {}
@@ -206,7 +225,7 @@ def test_remote_host_port_forward_uses_ssh_no_command_tunnel(monkeypatch) -> Non
         captured["command"] = command
         return FakeProcess()
 
-    monkeypatch.setattr("mws_kubectl.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("mws_execution.subprocess.Popen", fake_popen)
 
     with RemoteHostPortForward(_machine(), 3200) as forward:
         assert forward.local_port == 18081
