@@ -29,7 +29,7 @@ from mws_run_state import (
 DEPLOYER_ROOT = MOTOR_ROOT / "examples" / "deployer"
 DEPLOY_PY = DEPLOYER_ROOT / "deploy.py"
 OUTPUT_YAMLS = DEPLOYER_ROOT / "output_yamls"
-MANIFEST_INJECTOR_VERSION = "mws-injector-v1"
+MANIFEST_INJECTOR_VERSION = "mws-injector-v2"
 
 CLUSTER_SCOPED_KINDS = frozenset(
     {
@@ -143,6 +143,21 @@ def _is_runtime_container(container: dict[str, Any]) -> bool:
     return any(hint in joined for hint in RUNTIME_CONTAINER_HINTS)
 
 
+def _path_covers(mounted: str, requested: str) -> bool:
+    """True when `mounted` is an ancestor-or-self of `requested`.
+
+    Comparison is segment-wise so `/mnt/foo` does not cover `/mnt/foobar`.
+    Used to avoid mounting overlapping hostPath volumes when the upstream
+    template already mounts an ancestor of the target (e.g. `/mnt` covers
+    `/mnt/share/...`).
+    """
+    mounted = mounted.rstrip("/") or "/"
+    requested = requested.rstrip("/") or "/"
+    if mounted == "/":
+        return True
+    return requested == mounted or requested.startswith(mounted + "/")
+
+
 def _ensure_mnt_hostpath(pod_spec: dict[str, Any], mount_root: str = "/mnt") -> None:
     volumes = pod_spec.setdefault("volumes", [])
     if not isinstance(volumes, list):
@@ -151,7 +166,9 @@ def _ensure_mnt_hostpath(pod_spec: dict[str, Any], mount_root: str = "/mnt") -> 
         if not isinstance(volume, dict):
             continue
         host_path = volume.get("hostPath")
-        if isinstance(host_path, dict) and host_path.get("path") == mount_root:
+        if isinstance(host_path, dict) and _path_covers(
+            str(host_path.get("path", "")), mount_root
+        ):
             return
     volumes.append({"name": "mnt", "hostPath": {"path": mount_root}})
 
@@ -162,7 +179,9 @@ def _ensure_mnt_mount(pod_spec: dict[str, Any], mount_root: str = "/mnt") -> Non
         if not isinstance(volume, dict):
             continue
         host_path = volume.get("hostPath")
-        if isinstance(host_path, dict) and host_path.get("path") == mount_root:
+        if isinstance(host_path, dict) and _path_covers(
+            str(host_path.get("path", "")), mount_root
+        ):
             volume_name = volume.get("name") or "mnt"
             break
     if not volume_name:
@@ -173,7 +192,11 @@ def _ensure_mnt_mount(pod_spec: dict[str, Any], mount_root: str = "/mnt") -> Non
         mounts = container.setdefault("volumeMounts", [])
         if not isinstance(mounts, list):
             continue
-        if any(isinstance(item, dict) and item.get("mountPath") == mount_root for item in mounts):
+        if any(
+            isinstance(item, dict)
+            and _path_covers(str(item.get("mountPath", "")), mount_root)
+            for item in mounts
+        ):
             continue
         mounts.append({"name": volume_name, "mountPath": mount_root})
 
@@ -185,6 +208,57 @@ def inject_hostpath_mount(documents: list[dict[str, Any]], mount_root: str = "/m
         for pod_spec in iter_pod_specs(doc):
             _ensure_mnt_hostpath(pod_spec, mount_root=mount_root)
             _ensure_mnt_mount(pod_spec, mount_root=mount_root)
+        patched.append(doc)
+    return patched
+
+
+_PD_WORKLOAD_PATTERN = re.compile(r"^(.+)-([pd])(\d+)$")
+
+
+def _ensure_pod_anti_affinity(pod_spec: dict[str, Any], other_label: str) -> None:
+    """Add a hard host-level anti-affinity rule against `other_label`."""
+    affinity = pod_spec.setdefault("affinity", {})
+    if not isinstance(affinity, dict):
+        return
+    pod_anti = affinity.setdefault("podAntiAffinity", {})
+    if not isinstance(pod_anti, dict):
+        return
+    required = pod_anti.setdefault("requiredDuringSchedulingIgnoredDuringExecution", [])
+    if not isinstance(required, list):
+        return
+    for rule in required:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("labelSelector") == {"app": other_label}:
+            return
+    required.append(
+        {
+            "labelSelector": {"matchLabels": {"app": other_label}},
+            "topologyKey": "kubernetes.io/hostname",
+        }
+    )
+
+
+def inject_pd_anti_affinity(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep prefill and decode engine pods off the same node in PD mode.
+
+    Motor names engine workloads `{base}-p{index}` / `{base}-d{index}` and labels
+    their pods with `app: <workload-name>`. For each matched pair we inject a
+    required anti-affinity rule so a prefill pod refuses to land on a node that
+    already runs its decode counterpart (and vice versa).
+    """
+    patched: list[dict[str, Any]] = []
+    for doc in documents:
+        doc = copy.deepcopy(doc)
+        if doc.get("kind") in {"Deployment", "StatefulSet"}:
+            name = str(doc.get("metadata", {}).get("name", ""))
+            match = _PD_WORKLOAD_PATTERN.match(name)
+            if match:
+                base, role, index = match.group(1), match.group(2), match.group(3)
+                other = "d" if role == "p" else "p"
+                other_label = f"{base}-{other}{index}"
+                for pod_spec in iter_pod_specs(doc):
+                    _ensure_pod_anti_affinity(pod_spec, other_label)
         patched.append(doc)
     return patched
 
@@ -667,6 +741,103 @@ def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dic
     }
 
 
+def run_deploy_full(
+    config_dir: Path,
+    *,
+    machine: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute the full upstream deployment (not dry-run) on the machine host.
+
+    The config directory is staged under `/tmp` on the machine and
+    `deploy.py --nostep --auto_log_collect` is run from the remote deployer.
+    ConfigMap/env generation, apply and log collection are all owned by the
+    upstream deployer. Returns stdout/stderr tails plus the status.
+    """
+    if machine is None:
+        return _run_deploy_full_local(config_dir)
+    return _run_deploy_full_remote(config_dir, machine)
+
+
+def _run_deploy_full_local(config_dir: Path) -> dict[str, Any]:
+    if not DEPLOY_PY.exists():
+        return {
+            "status": "error",
+            "reason": f"deployer not found: {DEPLOY_PY}",
+            "returncode": None,
+        }
+    cmd = [
+        "python3",
+        str(DEPLOY_PY),
+        "--config_dir",
+        str(config_dir),
+        "--nostep",
+        "--auto_log_collect",
+    ]
+    result = subprocess.run(
+        cmd,
+        cwd=str(DEPLOYER_ROOT),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+    return {
+        "status": "ok" if result.returncode == 0 else "error",
+        "returncode": result.returncode,
+        "stdout_tail": result.stdout[-4000:],
+        "stderr_tail": result.stderr[-4000:],
+    }
+
+
+def _run_deploy_full_remote(config_dir: Path, machine: dict[str, Any]) -> dict[str, Any]:
+    """Execute the full upstream deployment on the machine host."""
+    from mws_execution import execution_adapter_for_machine
+
+    paths = build_fixed_source_paths(machine)
+    remote_motor = str(paths["motor_source"]).rstrip("/")
+    remote_deployer = f"{remote_motor}/examples/deployer"
+    remote_deploy_py = f"{remote_deployer}/deploy.py"
+    remote_config = f"/tmp/mws-deploy-config-{os.getpid()}"
+
+    adapter = execution_adapter_for_machine(machine)
+
+    probe = adapter.run(f"test -f {shell_quote(remote_deploy_py)} && echo OK")
+    if probe.returncode != 0 or "OK" not in probe.stdout:
+        return {
+            "status": "error",
+            "reason": f"remote deployer not found: {remote_deploy_py}",
+            "returncode": probe.returncode,
+            "stdout_tail": probe.stdout[-4000:],
+            "stderr_tail": probe.stderr[-4000:],
+        }
+
+    cleanup = adapter.run(
+        f"rm -rf {shell_quote(remote_config)} && mkdir -p {shell_quote(remote_config)}"
+    )
+    if cleanup.returncode:
+        return {
+            "status": "error",
+            "reason": f"remote config staging failed: {cleanup.stderr.strip() or cleanup.stdout.strip()}",
+            "returncode": cleanup.returncode,
+        }
+    for item in sorted(config_dir.iterdir()):
+        if item.is_file() and item.name != "bundle.json":
+            adapter.upload_file(str(item), f"{remote_config}/{item.name}")
+
+    command = (
+        f"cd {shell_quote(remote_deployer)} && "
+        "python3 deploy.py --config_dir "
+        f"{shell_quote(remote_config)} --nostep --auto_log_collect"
+    )
+    result = adapter.run(command)
+    return {
+        "status": "ok" if result.returncode == 0 else "error",
+        "returncode": result.returncode,
+        "stdout_tail": result.stdout[-4000:],
+        "stderr_tail": result.stderr[-4000:],
+    }
+
+
 def process_manifest_documents(
     documents: list[dict[str, Any]],
     *,
@@ -678,6 +849,7 @@ def process_manifest_documents(
 ) -> list[dict[str, Any]]:
     docs = inject_namespace(documents, namespace)
     docs = inject_hostpath_mount(docs, mount_root=mount_root)
+    docs = inject_pd_anti_affinity(docs)
     docs = inject_image_ref(docs, base_image_ref)
     docs = inject_pythonpath_env(docs, pythonpath)
     if node_port_overrides:
@@ -1206,6 +1378,7 @@ def configure_deploy_bundle(
     base_image_ref: str,
     parity_path_refs: dict[str, str],
     reuse_bundle_dir: Path | None = None,
+    skip_npu_check: bool = False,
 ) -> dict[str, Any]:
     """Render or reuse an immutable deploy config bundle."""
     from mws_result import CheckRunner
@@ -1343,16 +1516,25 @@ def configure_deploy_bundle(
         if not runner.append(check):
             return _configure_failed(runner, namespace=namespace)
 
-    npu_requirement = compute_npu_requirement(native_config)
-    for check in check_node_npu_capacity(
-        kube_context=kube_context,
-        namespace=namespace,
-        per_node_requirement=npu_requirement["per_node"],
-        machine=machine,
-        kubectl=kubectl_runner,
-    ):
-        if not runner.append(check):
-            return _configure_failed(runner, namespace=namespace)
+    if skip_npu_check:
+        runner.append(
+            {
+                "name": "npu_capacity",
+                "status": "ok",
+                "message": "skipped by --skip-npu-check",
+            }
+        )
+    else:
+        npu_requirement = compute_npu_requirement(native_config)
+        for check in check_node_npu_capacity(
+            kube_context=kube_context,
+            namespace=namespace,
+            per_node_requirement=npu_requirement["per_node"],
+            machine=machine,
+            kubectl=kubectl_runner,
+        ):
+            if not runner.append(check):
+                return _configure_failed(runner, namespace=namespace)
 
     bundle_files = {f"manifests/{path.name}": path for path in manifest_paths}
     bundle_files["user_config.json"] = staged_config / "user_config.json"
@@ -1398,22 +1580,57 @@ def load_config_bundle(bundle_dir: Path) -> dict[str, Any]:
     return data
 
 
-def apply_config_bundle(
+def _apply_injected_overlay(
     *,
-    bundle_dir: Path,
+    manifest_dir: Path,
     machine: dict[str, Any],
     kube_context: str,
     namespace: str,
     kubectl: KubectlRunner | None = None,
 ) -> dict[str, Any]:
+    """Idempotently apply the injected (overlay) manifests from a config bundle.
+
+    These are the injector copies of the upstream YAMLs (hostPath/PYTHONPATH,
+    PD anti-affinity, nodePort overrides). Applying them on top of the upstream
+    deployment triggers a rolling update so pods pick up the shared source tree.
+    """
     run_kubectl = _resolve_kubectl_runner(
         machine=machine,
         kube_context=kube_context,
         kubectl=kubectl,
     )
-    manifest_dir = bundle_dir / "manifests"
-    if not manifest_dir.exists():
-        raise WorkspaceStateError(f"bundle manifests missing: {manifest_dir}")
+    results: list[dict[str, Any]] = []
+    manifests = sorted(manifest_dir.glob("*.yaml"))
+    with stage_remote_files(machine, manifests, prefix="mws-apply-overlay") as staged:
+        for manifest in manifests:
+            result = run_kubectl("apply", "-f", staged[manifest], "-n", namespace)
+            results.append(
+                {
+                    "manifest": manifest.name,
+                    "bytes_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                    "returncode": result.returncode,
+                    "stdout": result.stdout[-2000:],
+                    "stderr": result.stderr[-2000:],
+                }
+            )
+    ok = all(item["returncode"] == 0 for item in results) if results else False
+    return {"status": "ok" if ok else "error", "apply_results": results}
+
+
+def _apply_bundle_direct(
+    *,
+    manifest_dir: Path,
+    machine: dict[str, Any],
+    kube_context: str,
+    namespace: str,
+    kubectl: KubectlRunner | None = None,
+) -> dict[str, Any]:
+    """Fallback: apply bundle manifests directly when the upstream deployer is unavailable."""
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
     results: list[dict[str, Any]] = []
     manifests = sorted(manifest_dir.glob("*.yaml"))
     with stage_remote_files(machine, manifests, prefix="mws-apply-bundle") as staged:
@@ -1430,6 +1647,69 @@ def apply_config_bundle(
             )
     ok = all(item["returncode"] == 0 for item in results) if results else False
     return {"status": "ok" if ok else "error", "apply_results": results}
+
+
+def apply_config_bundle(
+    *,
+    bundle_dir: Path,
+    machine: dict[str, Any],
+    kube_context: str,
+    namespace: str,
+    kubectl: KubectlRunner | None = None,
+) -> dict[str, Any]:
+    """Deploy a config bundle.
+
+    Primary path: run the full upstream deployment on the machine host
+    (ConfigMap/env generation, apply and log collection are owned by the upstream
+    deployer), then overlay the injected manifests so the rolling update lands
+    pods on the shared source tree. Falls back to a direct apply of the bundle
+    only when the upstream deployer itself is unavailable; an upstream deploy
+    failure is reported as an error rather than silently downgraded.
+    """
+    manifest_dir = bundle_dir / "manifests"
+    if not manifest_dir.exists():
+        raise WorkspaceStateError(f"bundle manifests missing: {manifest_dir}")
+
+    deploy = run_deploy_full(bundle_dir, machine=machine)
+    if deploy.get("status") == "ok":
+        overlay = _apply_injected_overlay(
+            manifest_dir=manifest_dir,
+            machine=machine,
+            kube_context=kube_context,
+            namespace=namespace,
+            kubectl=kubectl,
+        )
+        return {
+            "status": overlay["status"],
+            "upstream_deploy": deploy,
+            "overlay": overlay,
+            "apply_results": overlay.get("apply_results", []),
+            "fallback": False,
+        }
+
+    if "deployer not found" in str(deploy.get("reason", "")):
+        fallback = _apply_bundle_direct(
+            manifest_dir=manifest_dir,
+            machine=machine,
+            kube_context=kube_context,
+            namespace=namespace,
+            kubectl=kubectl,
+        )
+        return {
+            "status": fallback["status"],
+            "upstream_deploy": deploy,
+            "apply_results": fallback.get("apply_results", []),
+            "fallback": True,
+        }
+
+    return {
+        "status": "error",
+        "upstream_deploy": deploy,
+        "errors": [
+            deploy.get("stderr_tail") or deploy.get("reason") or "upstream deploy failed"
+        ],
+        "fallback": False,
+    }
 
 
 RUNTIME_MODULES = (

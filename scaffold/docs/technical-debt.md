@@ -430,6 +430,34 @@ R1 关闭记录（2026-08-03）：
 - 测试中使用 `/vllm-workspace` 只能作为明确的隔离 fixture，不能出现在 Motor
   产品默认值或 live validation 结论中。
 
+### TD-P2-07：发布级代码替换需支持 Motor 完整构建（protobuf + Rust），而非仅 hostPath/PYTHONPATH
+
+现状：
+
+- 快路径（固定共享目录 hostPath + `PYTHONPATH`）只覆盖纯 Python 修改：远端
+  `motor/vllm/vllm-ascend` 源码树可被 Pod 直接加载，无需重新打包镜像。
+- Motor 运行时还依赖两类产物，快路径无法提供：
+  - protobuf 生成文件（`*_pb2.py`）：由 `.proto` 编译生成，若源码树缺少
+    `pb2`，`import` 阶段即失败，hostPath 同步成功并不能代表代码已可用；
+  - Rust 扩展（如 kv-connector）：需要 `cargo build` 产出动态库并打成 wheel
+    安装进 Python 环境。
+
+目标：
+
+- 发布级替换提供 build 路径：编译 protobuf、构建 kv-connector wheel、重新
+  打包基础镜像（image rebuild），作为 release/delivery 的显式旁路。
+- 明确两条路径分工：日常 Python 迭代走快路径；涉及 pb2 / Rust 扩展 / 打包
+  产物时必须走 build 路径。
+- 快路径对"覆盖不到什么"有显式声明，避免同步成功后误认为代码已完整生效；
+  build 路径有可执行的构建命令、产物落盘位置和镜像引用记录。
+
+验收：
+
+- 文档记录哪些产物必须走 build 路径（pb2、kv-connector wheel）及原因；
+- build 路径存在可执行脚本或明确命令，产物有固定落盘位置；
+- 快路径执行后能检测 pb2 / Rust 扩展缺失并提示走 build 路径（而非静默失败）；
+- 该条目不阻塞第一版真实部署验收，但须在发布级替换前完成。
+
 ---
 
 ## 完成定义

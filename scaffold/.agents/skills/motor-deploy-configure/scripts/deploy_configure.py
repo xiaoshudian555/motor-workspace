@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--workflow-run-id", default="")
     parser.add_argument("--config-run-id", default="")
     parser.add_argument("--reuse", action="store_true", help="Reuse existing bundle when fingerprint matches")
+    parser.add_argument("--skip-npu-check", action="store_true", help="Skip the node NPU capacity check")
     args = parser.parse_args()
 
     alias = require_safe_id(args.machine, label="machine")
@@ -102,6 +103,7 @@ def main() -> int:
         base_image_ref=base_image_ref,
         parity_path_refs=parity_paths,
         reuse_bundle_dir=reuse_bundle_dir,
+        skip_npu_check=args.skip_npu_check,
     )
     envelope = build_result_envelope(
         kind="deploy-config-ready",

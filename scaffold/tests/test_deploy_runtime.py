@@ -121,16 +121,18 @@ def test_apply_bytes_match_bundle(local_state_root) -> None:
     def fake_stage(*args, **kwargs):
         yield {manifest: "/tmp/mws-test/demo.yaml"}
 
-    with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
-        result = apply_config_bundle(
-            bundle_dir=bundle_dir,
-            machine=_machine(),
-            kube_context="ctx-a",
-            namespace="ns1",
-            kubectl=fake_kubectl,
-        )
+    with patch("mws_deploy.run_deploy_full", return_value={"status": "ok", "returncode": 0}):
+        with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
+            result = apply_config_bundle(
+                bundle_dir=bundle_dir,
+                machine=_machine(),
+                kube_context="ctx-a",
+                namespace="ns1",
+                kubectl=fake_kubectl,
+            )
     assert result["status"] == "ok"
     assert result["apply_results"][0]["bytes_sha256"] == expected_hash
+    assert result["fallback"] is False
 
 
 def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
@@ -146,16 +148,17 @@ def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
         yield {manifest: "/tmp/mws-test/demo.yaml"}
 
     fake_kubectl = lambda *args: subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
-    with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
-        with patch("mws_deploy.run_deploy_dry_run") as dry_run:
-            with patch("mws_deploy.configure_deploy_bundle") as configure:
-                apply_config_bundle(
-                    bundle_dir=bundle_dir,
-                    machine=_machine(),
-                    kube_context="ctx-a",
-                    namespace="ns1",
-                    kubectl=fake_kubectl,
-                )
+    with patch("mws_deploy.run_deploy_full", return_value={"status": "ok", "returncode": 0}):
+        with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
+            with patch("mws_deploy.run_deploy_dry_run") as dry_run:
+                with patch("mws_deploy.configure_deploy_bundle") as configure:
+                    apply_config_bundle(
+                        bundle_dir=bundle_dir,
+                        machine=_machine(),
+                        kube_context="ctx-a",
+                        namespace="ns1",
+                        kubectl=fake_kubectl,
+                    )
     dry_run.assert_not_called()
     configure.assert_not_called()
 
