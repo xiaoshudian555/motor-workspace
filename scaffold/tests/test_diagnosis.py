@@ -150,10 +150,6 @@ def test_diagnosis_script_collects_artifacts(local_state_root, tmp_path, monkeyp
         bundle_digest=bundle_meta["bundle_digest"],
         bundle_dir=bundle_meta["bundle_dir"],
     )
-    monkeypatch.setattr(
-        "subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args=args[0], returncode=0, stdout="{}", stderr=""),
-    )
     import importlib.util
 
     script = SCAFFOLD / ".agents/skills/motor-diagnosis/scripts/diagnosis_collect.py"
@@ -167,12 +163,16 @@ def test_diagnosis_script_collects_artifacts(local_state_root, tmp_path, monkeyp
     )
     captured: dict = {}
 
+    def fake_kubectl(*args):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="{}", stderr="")
+
     def _capture(payload):
         captured["payload"] = payload
         return 0
 
     with patch("mws_result.emit_result", side_effect=lambda payload: _capture(payload) or 0):
         spec.loader.exec_module(module)
+        monkeypatch.setattr(module, "build_kubectl_runner", lambda *args, **kwargs: fake_kubectl)
         module.main()
     payload = captured["payload"]
     assert payload["kind"] == "deploy-diagnosis"

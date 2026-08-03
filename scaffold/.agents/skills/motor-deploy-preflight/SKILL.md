@@ -22,7 +22,7 @@ description: Validate K8s API and MindCluster base environment before deploy con
 
 **检查项**：
 
-- `kubectl` 可用
+- 机器侧（SSH 远端）的 `kubectl` 可用；不读取或回退到开发机 kubeconfig
 - kube context 来自 machine inventory 且可用于 API 访问
 - Kubernetes API 可达并具备读取基础集群环境所需权限
 - environment contract 要求的 CRD/API resource、controller pattern、NPU

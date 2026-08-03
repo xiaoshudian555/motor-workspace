@@ -5,7 +5,8 @@
 - 通过阶梯升压、固定并发、突发流量或混合 workload 推进系统到饱和区。
 - 找出排队、尾延迟恶化、timeout、拒绝和错误率上升的拐点。
 - 识别 Prefill、Decode、Coordinator、KV transfer 或资源层面的首个瓶颈。
-- 验证 overload control 和服务降级行为。
+- 验证 overload control 在负载曲线上的触发点、降级行为，以及压力解除后回到
+  稳定态（过载恢复，不是故障恢复）。
 - 在压力解除后继续观测，确认服务能够恢复到稳定状态。
 
 ## 完成标准
@@ -18,8 +19,12 @@
 - 用一次 `request-rate=inf` 代替完整容量分析。
 - 给出底层 kernel 或调用栈级归因。
 - 把系统被打挂本身当作成功结果，而不验证恢复。
+- 验证 overload 启用后的拒识码 / 限流响应形态是否符合设计；该责任属于
+  [`../functional/`](../functional/)。
+- 主动注入硬件或组件故障并验证隔离恢复；该责任属于
+  [`../reliability/`](../reliability/)。过载解除后的恢复 ≠ 故障恢复。
 
 ## 交付
 
 `stress-capacity` validation run，包括负载阶段、容量曲线、成功率、延迟、资源、
-瓶颈位置、恢复结果和 diagnosis 引用。
+瓶颈位置、恢复结果和 [`../../diagnosis/`](../../diagnosis/) 引用。

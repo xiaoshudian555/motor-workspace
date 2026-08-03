@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from repo_paths import MOTOR_ROOT, REPO_ROOT, SCAFFOLD_ROOT
+from mws_local_state import WorkspaceStateError
 from mws_validate import normalize_mount_root
 
 LOCK_PATH = SCAFFOLD_ROOT / "workspace.lock.yaml"

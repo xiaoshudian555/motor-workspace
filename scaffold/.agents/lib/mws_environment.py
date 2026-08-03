@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from mws_kubectl import build_kubectl_runner, kubectl_available
 from mws_local_state import WorkspaceStateError
 from mws_result import CheckRunner, build_result_envelope, utc_now_iso
 from repo_paths import SCAFFOLD_ROOT
@@ -37,47 +38,20 @@ def load_environment_contract(path: Path | None = None) -> dict[str, Any]:
     return data
 
 
-def kubectl_base(*, kube_context: str = "") -> list[str]:
-    args = ["kubectl"]
-    context = str(kube_context or "").strip()
-    if context:
-        args.extend(["--context", context])
-    return args
-
-
-def _run_kubectl(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, check=False, text=True, capture_output=True)
-
-
 def run_environment_preflight_checks(
     *,
     machine: dict[str, Any],
     machine_ready: dict[str, Any],
     contract: dict[str, Any],
 ) -> dict[str, Any]:
-    """Read-only cluster environment checks; no namespace or deploy inputs."""
+    """Read-only cluster environment checks; no namespace or deploy inputs.
+
+    kubectl always runs on the machine host through the remote transport; the
+    machine host's kubeconfig and selected context are authoritative.
+    """
     runner = CheckRunner()
     machine_context = str(machine.get("kube_context") or "").strip()
     inventory_alias = str(machine.get("alias") or machine_ready.get("alias") or "")
-
-    if not shutil.which("kubectl"):
-        runner.append(
-            {
-                "name": "kubectl",
-                "status": "error",
-                "message": "kubectl not found in PATH",
-            }
-        )
-        return _finalize(runner, machine_context, contract, inventory_alias)
-
-    runner.append(
-        {
-            "name": "kubectl",
-            "status": "ok",
-            "message": "kubectl available",
-            "evidence": shutil.which("kubectl"),
-        }
-    )
 
     if not machine_context:
         runner.append(
@@ -98,8 +72,27 @@ def run_environment_preflight_checks(
         }
     )
 
-    kubectl = kubectl_base(kube_context=machine_context)
-    cluster_info = _run_kubectl([*kubectl, "cluster-info"])
+    kubectl = build_kubectl_runner(machine, kube_context=machine_context)
+    available, evidence = kubectl_available(machine, kube_context=machine_context)
+    if not available:
+        runner.append(
+            {
+                "name": "kubectl",
+                "status": "error",
+                "message": evidence,
+            }
+        )
+        return _finalize(runner, machine_context, contract, inventory_alias)
+    runner.append(
+        {
+            "name": "kubectl",
+            "status": "ok",
+            "message": "kubectl available",
+            "evidence": evidence,
+        }
+    )
+
+    cluster_info = kubectl("cluster-info")
     if cluster_info.returncode != 0:
         runner.append(
             {
@@ -119,7 +112,7 @@ def run_environment_preflight_checks(
         }
     )
 
-    version = _run_kubectl([*kubectl, "version", "--output=json"])
+    version = kubectl("version", "--output=json")
     if version.returncode != 0:
         runner.append(
             {
@@ -139,7 +132,7 @@ def run_environment_preflight_checks(
             }
         )
 
-    auth = _run_kubectl([*kubectl, "auth", "can-i", "list", "customresourcedefinitions"])
+    auth = kubectl("auth", "can-i", "list", "customresourcedefinitions")
     auth_ok = auth.stdout.strip().lower() == "yes"
     if not auth_ok:
         runner.append(
@@ -174,8 +167,7 @@ def run_environment_preflight_checks(
             ):
                 break
             continue
-        cmd = [*kubectl, "api-resources", f"--api-group={api_group}", "-o", "name"]
-        api = _run_kubectl(cmd)
+        api = kubectl("api-resources", f"--api-group={api_group}", "-o", "name")
         found = name in api.stdout
         if not runner.append(
             {
@@ -192,15 +184,13 @@ def run_environment_preflight_checks(
             pattern = str(pattern).strip()
             if not pattern:
                 continue
-            cmd = [
-                *kubectl,
+            pods = kubectl(
                 "get",
                 "pods",
                 "-A",
                 "-o",
                 "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
-            ]
-            pods = _run_kubectl(cmd)
+            )
             if pods.returncode != 0:
                 if not runner.append(
                     {
@@ -225,14 +215,12 @@ def run_environment_preflight_checks(
     if not runner.stopped_at:
         resource_name = str(contract.get("npu_resource_name", "")).strip()
         if resource_name:
-            cmd = [
-                *kubectl,
+            nodes = kubectl(
                 "get",
                 "nodes",
                 "-o",
                 "jsonpath={range .items[*]}{.status.allocatable}{'\\n'}{end}",
-            ]
-            nodes = _run_kubectl(cmd)
+            )
             if nodes.returncode != 0:
                 runner.append(
                     {

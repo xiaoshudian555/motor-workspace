@@ -4,8 +4,6 @@ import json
 import shlex
 import subprocess
 import sys
-import tarfile
-from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -29,13 +27,13 @@ from mws_lock import verify_lock  # noqa: E402
 from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine  # noqa: E402
 from mws_parity import (  # noqa: E402
     build_source_manifest,
-    create_repo_tarball,
     fanout_nodes,
     sync_workspace_to_remote,
 )
 from mws_transport import FakeRemoteTransport, SshScpTransport  # noqa: E402
 
 
+from git_fixtures import init_repo  # noqa: E402
 from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
 from mws_local_state import upsert_machine  # noqa: E402
 from mws_parity import load_machine_ready_evidence  # noqa: E402
@@ -89,54 +87,20 @@ def test_pythonpath_uses_fixed_paths() -> None:
     assert "/current/" not in value
 
 
-def test_build_source_manifest_schema_v2(monkeypatch, tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / "a.py").write_text("a\n", encoding="utf-8")
+def _bind_repos(monkeypatch, repo: Path) -> None:
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", repo)
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", repo)
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm_ascend", repo)
 
-    def fake_git(args: list[str], path: Path):
-        if args[:2] == ["rev-parse", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, "deadbeef\n", "")
-        if args[:1] == ["status"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["diff"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["ls-files"]:
-            return subprocess.CompletedProcess(args, 0, "a.py\0", "")
-        if args[:2] == ["ls-files", "--error-unmatch"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("mws_parity._git", fake_git)
+def test_build_source_manifest_schema_v2(monkeypatch, tmp_path: Path) -> None:
+    repo = init_repo(tmp_path / "repo", files={"a.py": "a\n"})
+    _bind_repos(monkeypatch, repo)
     manifest = build_source_manifest(_machine())
     assert manifest["schema_version"] == 2
     assert manifest["local_content_digest"]
     assert "snapshot_sha256" not in manifest
     assert manifest["machine"]["alias"] == "dev1"
-
-
-def test_create_repo_tarball_includes_tracked_and_untracked(tmp_path: Path, monkeypatch) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / "tracked.py").write_text("t\n", encoding="utf-8")
-    (repo / "untracked.py").write_text("u\n", encoding="utf-8")
-    (repo / "ignored.pyc").write_text("i\n", encoding="utf-8")
-
-    def fake_git(args: list[str], path: Path):
-        if args[:1] == ["ls-files"]:
-            return subprocess.CompletedProcess(args, 0, "tracked.py\0untracked.py\0", "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    monkeypatch.setattr("mws_parity._git", fake_git)
-    data = create_repo_tarball(repo)
-    with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as archive:
-        names = set(archive.getnames())
-    assert names == {"tracked.py", "untracked.py"}
 
 
 def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) -> None:
@@ -147,30 +111,10 @@ def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) 
     _setup_machine_ready_state(monkeypatch, state_root)
     FakeRemoteTransport._shared_parity_locks.clear()
 
-    motor = tmp_path / "motor"
-    motor.mkdir()
-    (motor / ".git").mkdir()
-    (motor / "keep.py").write_text("keep\n", encoding="utf-8")
-    (motor / "drop.py").write_text("drop\n", encoding="utf-8")
-
-    def fake_git(args: list[str], path: Path):
-        if args[:2] == ["rev-parse", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, "deadbeef\n", "")
-        if args[:1] == ["status"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["diff"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["ls-files"]:
-            names = sorted(p.name for p in path.iterdir() if p.is_file())
-            return subprocess.CompletedProcess(args, 0, "\0".join(names) + ("\0" if names else ""), "")
-        if args[:2] == ["ls-files", "--error-unmatch"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    monkeypatch.setattr("mws_parity._git", fake_git)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", motor)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", motor)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm_ascend", motor)
+    motor = init_repo(
+        tmp_path / "motor", files={"keep.py": "keep\n", "drop.py": "drop\n"}
+    )
+    _bind_repos(monkeypatch, motor)
 
     machine = _machine()
     ready = _machine_ready()
@@ -192,39 +136,56 @@ def test_sync_overwrites_and_removes_deleted_files(tmp_path: Path, monkeypatch) 
     assert not (motor_dir / "drop.py").exists()
 
 
-def test_ssh_upload_streams_bytes_over_stdin(monkeypatch) -> None:
+def test_scp_upload_bytes_writes_remote_tmp_and_moves(monkeypatch) -> None:
     calls: list[tuple[list[str], dict]] = []
+    observed_payloads: list[bytes] = []
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        if cmd[0] == "scp":
+            observed_payloads.append(Path(cmd[-2]).read_bytes())
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        # upload_bytes' `self.run(mv ...)` returns text-mode result.
+        return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr("mws_transport.subprocess.run", fake_run)
     transport = SshScpTransport({"host": "dev1", "user": "root", "port": 22})
     transport.upload_bytes("/tmp/demo.bin", b"payload")
-    assert all(cmd[0] != "scp" for cmd, _ in calls)
-    upload_cmd, upload_kwargs = calls[0]
-    assert upload_cmd[0] == "ssh"
-    assert "head -c 7" in upload_cmd[-1]
-    assert upload_kwargs["input"] == b"payload"
+
+    scp_calls = [call for call in calls if call[0][0] == "scp"]
+    assert len(scp_calls) == 1
+    scp_cmd = scp_calls[0][0]
+    assert "-P" in scp_cmd
+    assert "22" in scp_cmd
+    assert scp_cmd[-1].startswith("root@dev1:/tmp/mws-upload-")
+    assert scp_cmd[-1].endswith(".bin")
+    assert scp_cmd[-2].startswith("/tmp/mws-upload-")
+    assert observed_payloads == [b"payload"]
+    assert not Path(scp_cmd[-2]).exists()
+
+    move_calls = [call for call in calls if "mv" in call[0][-1]]
+    assert len(move_calls) == 1
+    assert "/tmp/mws-upload-" in move_calls[0][0][-1]
 
 
-def test_ssh_large_upload_chunks_bytes_over_stdin(monkeypatch) -> None:
+def test_scp_upload_retries_then_succeeds(monkeypatch) -> None:
     calls: list[tuple[list[str], dict]] = []
+    attempts = {"n": 0}
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        if cmd[0] == "scp":
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                return subprocess.CompletedProcess(cmd, 1, b"", b"scp: connection reset")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr("mws_transport.subprocess.run", fake_run)
-    monkeypatch.setattr(SshScpTransport, "SSH_STDIN_CHUNK_BYTES", 2)
     transport = SshScpTransport({"host": "dev1", "user": "root", "port": 22})
     transport.upload_bytes("/tmp/demo.bin", b"payload")
-    upload_calls = [call for call in calls if "head -c" in call[0][-1]]
-    assert len(upload_calls) == 4
-    assert all(len(call[1]["input"]) <= 2 for call in upload_calls)
-    assert any("cat" in cmd[-1] for cmd, _ in calls)
-    assert all(cmd[0] != "scp" for cmd, _ in calls)
+    scp_calls = [call for call in calls if call[0][0] == "scp"]
+    assert len(scp_calls) == 3
 
 
 def test_ssh_command_is_quoted() -> None:
@@ -242,24 +203,8 @@ def test_sync_failure_does_not_report_ok(tmp_path: Path, monkeypatch) -> None:
     _setup_machine_ready_state(monkeypatch, state_root)
     FakeRemoteTransport._shared_parity_locks.clear()
 
-    motor = tmp_path / "motor"
-    motor.mkdir()
-    (motor / ".git").mkdir()
-    (motor / "file.py").write_text("x\n", encoding="utf-8")
-
-    def fake_git(args: list[str], path: Path):
-        if args[:1] == ["ls-files"]:
-            return subprocess.CompletedProcess(args, 0, "file.py\0", "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    monkeypatch.setattr("mws_parity._git", fake_git)
-    monkeypatch.setattr(
-        "mws_parity.build_source_manifest",
-        lambda machine: {"schema_version": 2, "machine": machine.get("alias")},
-    )
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", motor)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", motor)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm_ascend", motor)
+    motor = init_repo(tmp_path / "motor", files={"file.py": "x\n"})
+    _bind_repos(monkeypatch, motor)
 
     class BrokenTransport(FakeRemoteTransport):
         def upload_file(self, local_path: str, remote_path: str) -> None:
@@ -338,18 +283,15 @@ spec:
 
 
 def test_restart_command_never_uses_delete_all(monkeypatch) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[str, ...]] = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        stdout = "deployment.apps/demo\n" if "get deployment" in " ".join(cmd) else ""
-        return subprocess.CompletedProcess(cmd, 0, stdout, "")
+    def fake_kubectl(*args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr("mws_deploy.shutil.which", lambda _: "/usr/bin/kubectl")
-    monkeypatch.setattr("mws_deploy.subprocess.run", fake_run)
+    monkeypatch.setattr("mws_deploy.build_kubectl_runner", lambda *args, **kwargs: fake_kubectl)
     plan = {"namespace": "motor-dev", "workload_names": ["deployment/demo"]}
-    profile = {"kubernetes": {}}
-    result = restart_deploy_workloads(plan, profile)
+    result = restart_deploy_workloads(plan, _machine(), kube_context="ctx-a")
     assert result["status"] == "ok"
     joined = json.dumps(calls)
     assert "--all" not in joined

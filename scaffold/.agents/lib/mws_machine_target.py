@@ -12,7 +12,7 @@ from mws_transport import RemoteTransport, shell_quote, validate_machine_transpo
 from mws_validate import normalize_mount_root, require_safe_id, validate_remote_workspace_in_mount
 
 DEFAULT_REMOTE_WORKSPACE_SUFFIX = "motor-workspace"
-PARITY_TOOL_COMMANDS = ("tar", "mkdir")
+PARITY_TOOL_COMMANDS = ("tar", "mkdir", "git")
 
 MACHINE_READY_REQUIRED_CHECKS = frozenset(
     {
@@ -22,6 +22,7 @@ MACHINE_READY_REQUIRED_CHECKS = frozenset(
         "remote_workspace_root",
         "parity_tool:tar",
         "parity_tool:mkdir",
+        "parity_tool:git",
         "shared_hostpath_root",
         "parity_backend",
     }
@@ -263,13 +264,14 @@ def remote_workspace_root(machine: dict[str, Any]) -> str:
 def build_fixed_source_paths(machine: dict[str, Any]) -> dict[str, str]:
     mount = normalize_mount_root(machine.get("mount_root"))
     root = remote_workspace_root(machine)
+    custom = machine.get("source_dirs") or {}
     return {
         "mount_root": mount,
         "remote_workspace_root": root,
-        "motor_source": f"{root}/motor",
-        "vllm_source": f"{root}/vllm",
-        "vllm_ascend_source": f"{root}/vllm-ascend",
-        "python_overlay": f"{root}/python-overlay",
+        "motor_source": custom.get("motor") or f"{root}/motor",
+        "vllm_source": custom.get("vllm") or f"{root}/vllm",
+        "vllm_ascend_source": custom.get("vllm_ascend") or f"{root}/vllm-ascend",
+        "python_overlay": custom.get("python_overlay") or f"{root}/python-overlay",
     }
 
 

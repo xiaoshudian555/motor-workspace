@@ -29,6 +29,11 @@ Legacy `deploy_plan.py` redirects to `motor-deploy-configure`.
 
 Apply, stop, and restart require `--approved-by-user`.
 
+All Kubernetes operations run `kubectl` on the selected remote machine over
+SSH, using that machine's `kube_context`. Local bundle manifests are staged in
+a unique remote temporary directory for apply/delete and removed afterwards;
+the development host's kubectl and kubeconfig are never used.
+
 ## Responsibilities
 
 - Validate config run, bundle digest, and fixed path binding before apply.

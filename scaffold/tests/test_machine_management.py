@@ -54,7 +54,7 @@ def _machine(**overrides) -> dict:
 class MockReadyTransport(RemoteTransport):
     def __init__(self, *, writable: bool = True, tools: set[str] | None = None) -> None:
         self.writable = writable
-        self.tools = tools or {"tar", "mkdir"}
+        self.tools = tools or {"tar", "mkdir", "git"}
         self.files: dict[str, bytes] = {}
 
     def run(self, remote_command: str) -> subprocess.CompletedProcess[str]:

@@ -17,6 +17,10 @@ hostPath / `PYTHONPATH`、校验 namespace 与 RBAC、server-side dry-run，产�
 
 **不做**：自动 parity、创建 namespace、apply、诊断 Pod、字段级 CLI override。
 
+所有 Kubernetes 校验都在 machine inventory 指向的远端机器上执行
+`kubectl`。本地生成的 manifest 会上传到远端临时目录做 server-side
+dry-run，完成后清理；不使用开发机的 `kubectl` 或 kubeconfig。
+
 ## Entry point
 
 ```bash

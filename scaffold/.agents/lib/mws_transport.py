@@ -9,7 +9,7 @@ import shlex
 import subprocess
 import tarfile
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 from abc import ABC, abstractmethod
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -34,6 +34,14 @@ class RemoteTransport(ABC):
 
     @abstractmethod
     def read_bytes(self, remote_path: str) -> bytes:
+        raise NotImplementedError
+
+    def git(self, repo_dir: str, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run `git -C <repo_dir> <args...>` on the remote host."""
+        raise NotImplementedError
+
+    def kubectl(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run `kubectl <args...>` on the remote host, using its own kubeconfig."""
         raise NotImplementedError
 
     def mkdir(self, remote_path: str) -> None:
@@ -118,8 +126,6 @@ class RemoteTransport(ABC):
 
 class SshScpTransport(RemoteTransport):
     SSH_COMMAND_TIMEOUT_SECONDS = 60
-    SSH_STDIN_CHUNK_BYTES = 2048
-    SSH_CHUNK_UPLOAD_WORKERS = 16
 
     def __init__(self, machine: dict[str, Any]) -> None:
         host = require_hostname(str(machine["host"]), label="host")
@@ -127,9 +133,15 @@ class SshScpTransport(RemoteTransport):
         self.port = int(machine.get("port", 22))
         self.host = host
         self.target = f"{self.user}@{self.host}"
+        self._safe_registered: set[str] = set()
 
-    def _ssh(self, remote_command: str) -> list[str]:
-        return [
+    def ssh_argv(
+        self,
+        remote_command: str,
+        *,
+        local_forward: tuple[int, str, int] | None = None,
+    ) -> list[str]:
+        command = [
             "ssh",
             "-o",
             "BatchMode=yes",
@@ -145,11 +157,29 @@ class SshScpTransport(RemoteTransport):
             "ConnectTimeout=10",
             "-p",
             str(self.port),
-            self.target,
-            "bash",
-            "-c",
-            shell_quote(remote_command),
         ]
+        if local_forward is not None:
+            local_port, remote_host, remote_port = local_forward
+            command.extend(
+                [
+                    "-o",
+                    "ExitOnForwardFailure=yes",
+                    "-L",
+                    f"127.0.0.1:{local_port}:{remote_host}:{remote_port}",
+                ]
+            )
+        command.extend(
+            [
+                self.target,
+                "bash",
+                "-c",
+                shell_quote(remote_command),
+            ]
+        )
+        return command
+
+    def _ssh(self, remote_command: str) -> list[str]:
+        return self.ssh_argv(remote_command)
 
     def run(self, remote_command: str) -> subprocess.CompletedProcess[str]:
         command = self._ssh(remote_command)
@@ -175,41 +205,78 @@ class SshScpTransport(RemoteTransport):
         data = Path(local_path).read_bytes()
         self.upload_bytes(remote_path, data)
 
-    def upload_bytes(self, remote_path: str, data: bytes) -> None:
-        path = validate_remote_posix_path(remote_path, label="remote_path")
-        remote_tmp = f"/tmp/mws-upload-{hashlib.sha256(path.encode()).hexdigest()[:12]}.bin"
+    def _scp_argv(self, local_path: str, remote_path: str) -> list[str]:
+        command = [
+            "scp",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "GSSAPIAuthentication=no",
+            "-o",
+            "PreferredAuthentications=publickey",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=10",
+            "-P",
+            str(self.port),
+            local_path,
+            f"{self.target}:{remote_path}",
+        ]
+        return command
+
+    def _scp_upload(self, data: bytes, remote_path: str) -> None:
+        """Upload bytes via a scp subprocess.
+
+        scp transfers over its own file channel and does not depend on local ssh
+        stdin EOF forwarding, which is unreliable over `bash -c` wrapped remote
+        commands. This is the primary file transport for uploads.
+        """
+        local_tmp = (
+            f"/tmp/mws-upload-{hashlib.sha256(remote_path.encode()).hexdigest()[:12]}.in"
+        )
+        Path(local_tmp).write_bytes(data)
         upload_timeout = max(
             self.SSH_COMMAND_TIMEOUT_SECONDS,
             self.SSH_COMMAND_TIMEOUT_SECONDS + len(data) // (256 * 1024),
         )
-        if len(data) > self.SSH_STDIN_CHUNK_BYTES:
-            self._upload_chunked(
-                remote_tmp=remote_tmp,
-                data=data,
-                timeout=upload_timeout,
-            )
-            move = self.run(
-                f"mkdir -p {shell_quote(str(PurePosixPath(path).parent))} && "
-                f"mv {shell_quote(remote_tmp)} {shell_quote(path)}"
-            )
-            if move.returncode:
-                raise WorkspaceStateError(
-                    f"remote mv failed: {move.stderr.strip() or move.stdout.strip()}"
-                )
-            return
-        result = subprocess.run(
-            self._ssh(f"head -c {len(data)} > {shell_quote(remote_tmp)}"),
-            input=data,
-            check=False,
-            capture_output=True,
-            timeout=upload_timeout,
-        )
-        if result.returncode:
-            stderr = (result.stderr or b"").decode(errors="replace")
-            stdout = (result.stdout or b"").decode(errors="replace")
-            raise WorkspaceStateError(
-                f"SSH streaming upload failed: {stderr.strip() or stdout.strip()}"
-            )
+        try:
+            for attempt in range(3):
+                try:
+                    result = subprocess.run(
+                        self._scp_argv(local_tmp, remote_path),
+                        check=False,
+                        capture_output=True,
+                        timeout=upload_timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    if attempt < 2:
+                        time.sleep(1.5 * (attempt + 1))
+                        continue
+                    raise WorkspaceStateError(
+                        f"scp upload timed out after {upload_timeout}s for {remote_path}"
+                    )
+                if result.returncode == 0:
+                    return
+                stderr = result.stderr.decode(errors="replace") if result.stderr else ""
+                stdout = result.stdout.decode(errors="replace") if result.stdout else ""
+                if attempt >= 2:
+                    raise WorkspaceStateError(
+                        f"scp upload failed: {stderr.strip() or stdout.strip()}"
+                    )
+                time.sleep(1.5 * (attempt + 1))
+        finally:
+            try:
+                Path(local_tmp).unlink()
+            except OSError:
+                pass
+
+    def upload_bytes(self, remote_path: str, data: bytes) -> None:
+        path = validate_remote_posix_path(remote_path, label="remote_path")
+        remote_tmp = f"/tmp/mws-upload-{hashlib.sha256(path.encode()).hexdigest()[:12]}.bin"
+        self._scp_upload(data, remote_tmp)
         move = self.run(
             f"mkdir -p {shell_quote(str(PurePosixPath(path).parent))} && "
             f"mv {shell_quote(remote_tmp)} {shell_quote(path)}"
@@ -217,53 +284,6 @@ class SshScpTransport(RemoteTransport):
         if move.returncode:
             raise WorkspaceStateError(
                 f"remote mv failed: {move.stderr.strip() or move.stdout.strip()}"
-            )
-
-    def _upload_chunked(self, *, remote_tmp: str, data: bytes, timeout: float) -> None:
-        chunk_size = self.SSH_STDIN_CHUNK_BYTES
-        chunks = [
-            (index, data[offset : offset + chunk_size])
-            for index, offset in enumerate(range(0, len(data), chunk_size))
-        ]
-
-        def upload_chunk(item: tuple[int, bytes]) -> None:
-            index, chunk = item
-            part_path = f"{remote_tmp}.part-{index:08d}"
-            result = subprocess.run(
-                self._ssh(f"head -c {len(chunk)} > {shell_quote(part_path)}"),
-                input=chunk,
-                check=False,
-                capture_output=True,
-                timeout=timeout,
-            )
-            if result.returncode:
-                stderr = (result.stderr or b"").decode(errors="replace")
-                stdout = (result.stdout or b"").decode(errors="replace")
-                raise WorkspaceStateError(
-                    f"SSH chunk upload failed for chunk {index}: "
-                    f"{stderr.strip() or stdout.strip()}"
-                )
-
-        try:
-            with ThreadPoolExecutor(
-                max_workers=min(self.SSH_CHUNK_UPLOAD_WORKERS, len(chunks))
-            ) as executor:
-                futures = [executor.submit(upload_chunk, item) for item in chunks]
-                for future in as_completed(futures):
-                    future.result()
-        except Exception:
-            self.run(f"rm -f {shell_quote(remote_tmp)}.part-* {shell_quote(remote_tmp)}")
-            raise
-
-        assemble = self.run(
-            f"cat {shell_quote(remote_tmp)}.part-* > {shell_quote(remote_tmp)} && "
-            f"rm -f {shell_quote(remote_tmp)}.part-*"
-        )
-        if assemble.returncode:
-            self.run(f"rm -f {shell_quote(remote_tmp)}.part-* {shell_quote(remote_tmp)}")
-            raise WorkspaceStateError(
-                f"remote chunk assembly failed: "
-                f"{assemble.stderr.strip() or assemble.stdout.strip()}"
             )
 
     def read_bytes(self, remote_path: str) -> bytes:
@@ -274,6 +294,25 @@ class SshScpTransport(RemoteTransport):
                 f"remote read failed for {path}: {result.stderr.strip() or result.stdout.strip()}"
             )
         return result.stdout.encode()
+
+    def git(self, repo_dir: str, *args: str) -> subprocess.CompletedProcess[str]:
+        repo = validate_remote_posix_path(repo_dir, label="repo_dir")
+        argv = " ".join(shell_quote(arg) for arg in args)
+        # Old backported git (e.g. 2.33) only honors safe.directory from the
+        # remote global config, not -c/command-line flags. Register the concrete
+        # repo path once per transport so dubious-ownership failures on the
+        # shared mount root are avoided across all git invocations.
+        if repo not in self._safe_registered:
+            self.run(
+                f"git config --global --add safe.directory {shell_quote(repo)} "
+                ">/dev/null 2>&1 || true"
+            )
+            self._safe_registered.add(repo)
+        return self.run(f"git -C {shell_quote(repo)} {argv}")
+
+    def kubectl(self, *args: str) -> subprocess.CompletedProcess[str]:
+        argv = " ".join(shell_quote(arg) for arg in args)
+        return self.run(f"kubectl {argv}")
 
 
 class FakeRemoteTransport(RemoteTransport):
@@ -419,6 +458,25 @@ class FakeRemoteTransport(RemoteTransport):
                 rel = str(path.relative_to(local_root))
                 hashes[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
         return hashes
+
+    def git(self, repo_dir: str, *args: str) -> subprocess.CompletedProcess[str]:
+        local = self._local(repo_dir)
+        local.mkdir(parents=True, exist_ok=True)
+        rewritten = [
+            str(self._local(arg)) if arg.startswith("/") else arg for arg in args
+        ]
+        result = subprocess.run(
+            ["git", "-C", str(local), *rewritten],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        return subprocess.CompletedProcess(
+            args=result.args,
+            returncode=result.returncode,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+        )
 
 
 def transport_for_machine(

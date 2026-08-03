@@ -25,8 +25,9 @@
 | `motor-deploy-preflight` | 验证 K8s 与 MindCluster 基础环境 | 第二部分第一步 |
 | `motor-deploy-configure` | 生成或复用不可变配置包并完成配置验证 | 第二部分第二步 |
 | `motor-k8s-deploy` | 原样 apply 配置包并证明 Ready 和 Pod 加载目标代码 | 第二部分第三步 |
+| `motor-smoke` | 用 Motor readiness 与真实推理证明服务可运行 | 第三部分 |
 | `motor-benchmark` | 对成功 deploy run 执行正式 benchmark | 第三部分 |
-| `motor-diagnosis` | 收集 run-scoped 失败证据 | 跨闭环失败处理 |
+| `motor-diagnosis` | 收集 run-scoped 失败证据；诊断目标见 [diagnosis/](diagnosis/) | 跨闭环失败处理，不属于 validation 场景 |
 
 `remote-toolbox` 不再扩张成全能远端工作流。通用
 read/edit/bash/search/job/artifact 能力属于 `.remote-dev/`；Motor 和
@@ -43,7 +44,7 @@ Kubernetes 生命周期属于对应业务 skill。
 | parity/deploy run 记录 | `mws_run_state.py` |
 | 通用 JSON/lock 工具 | `mws_state.py` |
 | 代码 parity | `mws_parity.py` |
-| Motor 环境、配置和 deploy 公共能力 | `mws_environment.py`（环境 preflight）、`mws_deploy.py`（configure/apply） |
+| Motor 环境、配置、deploy 和 smoke 公共能力 | `mws_environment.py`（环境 preflight）、`mws_deploy.py`（configure/apply）、`mws_smoke.py`（Motor readiness/推理响应判定） |
 | 结果输出 | `mws_result.py` |
 | 输入和边界校验 | `mws_validate.py` |
 | 历史 lock 诊断 | `mws_lock.py` |
@@ -92,6 +93,8 @@ validation runs
 
 | 目录 | 定位 |
 |---|---|
+| `docs/validation/` | 第三层部署后验证场景目标（smoke…profiling）；不含 diagnosis |
+| `docs/diagnosis/` | 跨闭环失败出口与诊断 skill 族目标；独立于 validation |
 | `profiles/` | 可评审的硬件和 MindCluster 配置模板；不保存凭据和一次性状态 |
 | `tools/build/` | 镜像构建旁路；不进入默认 parity 主路径 |
 | `tools/deploy/` | 过渡期薄辅助工具；deploy skill 和共享 deploy 实现才是工作流源头 |

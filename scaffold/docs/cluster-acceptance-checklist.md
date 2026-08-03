@@ -17,6 +17,7 @@ remote-code-parity                 → parity-complete run（--approved-overwrit
 motor-deploy-preflight             → deploy-environment-ready run
 motor-deploy-configure             → deploy-config-ready + immutable bundle
 motor-k8s-deploy apply             → deploy-complete run（--approved-by-user）
+motor-smoke                        → motor-smoke validation run
 （可选）deploy_restart             → 新 runtime source evidence
 （失败时）motor-diagnosis          → deploy-diagnosis artifacts
 ```
@@ -30,6 +31,7 @@ motor-k8s-deploy apply             → deploy-complete run（--approved-by-user�
 | preflight | `deploy-environment-ready` | `.motor-workspace-local/environment-runs/{id}/` |
 | configure | `deploy-config-ready` | `.motor-workspace-local/config-runs/{id}/` + `config-bundles/{fingerprint}/` |
 | deploy | `deploy-complete` | `.motor-workspace-local/deploy-runs/{id}/` |
+| smoke | `motor-smoke` | `.motor-workspace-local/validation-runs/{id}/` |
 | diagnosis | `deploy-diagnosis` | `.motor-workspace-local/validation-runs/{id}/` |
 
 下游必须通过**显式 run ID** 引用上游，不得使用 inventory `last_*` 字段。
@@ -40,7 +42,8 @@ motor-k8s-deploy apply             → deploy-complete run（--approved-by-user�
 2. **Configure**：Motor 原生 `user_config.json` / `env.json` 生成不可变 bundle；namespace 已存在；server-side dry-run 通过；manifest hostPath/`PYTHONPATH` 与 parity 固定路径一致。
 3. **Apply**：bundle digest/fingerprint 与 config run 匹配；关键 Pod Ready；最小服务可访问。
 4. **Runtime proof**：Pod 内 `motor`、`vllm`、`vllm_ascend` 加载路径与当前 parity 固定目录一致。
-5. **Diagnosis（失败路径）**：能从 deploy run + config/bundle 收集 pods/events，**不依赖** legacy `plan_dir`。
+5. **Smoke**：Coordinator `/readiness` 响应体为 `ready=true`，并完成 non-stream 与 stream 两条真实推理请求；Pod Ready、TCP 可连或 `/health` 单独成功均不算通过。
+6. **Diagnosis（失败路径，见 [diagnosis/](diagnosis/)，非 validation 场景）**：能从 deploy run + config/bundle 收集 pods/events，**不依赖** legacy `plan_dir`。
 
 ## 明确不算验收通过的情况
 

@@ -61,6 +61,8 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | `motor-deploy-preflight` | K8s/MindCluster environment preflight (read-only); produces `deploy-environment-ready` |
 | `motor-deploy-configure` | Motor native config → immutable bundle + dry-run; produces `deploy-config-ready` |
 | `motor-k8s-deploy` | Apply immutable config bundle, Ready/runtime source proof; produces `deploy-complete` |
+| `motor-smoke` | Prove a successful deploy is runnable using Motor readiness plus real non-stream/stream inference |
+| `motor-functional` | Compile natural-language feature goals into catalog-backed functional validation specs and dispatch cases |
 | `motor-benchmark` | Benchmark a successful deploy run (third major part) |
 | `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts |
 

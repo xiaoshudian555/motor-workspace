@@ -19,35 +19,13 @@ from mws_parity import load_machine_ready_evidence, sync_workspace_to_remote  # 
 from mws_run_state import run_record_path  # noqa: E402
 from mws_state import atomic_write_json, load_json  # noqa: E402
 from mws_transport import FakeRemoteTransport  # noqa: E402
+from git_fixtures import init_repo  # noqa: E402
 from test_machine_management import (  # noqa: E402
     MockReadyTransport,
     _capture_script_main,
     _load_script_module,
     _machine,
 )
-
-
-def _fake_git_factory(repo: Path):
-    def fake_git(args: list[str], path: Path):
-        if args[:2] == ["rev-parse", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, "deadbeef\n", "")
-        if args[:2] == ["ls-files", "--error-unmatch"]:
-            rel = args[2]
-            tracked = not rel.startswith("untracked-")
-            return subprocess.CompletedProcess(args, 0 if tracked else 1, "", "")
-        if args[:1] == ["status"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["diff"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["ls-files"]:
-            names = sorted(
-                p.name for p in path.iterdir() if p.is_file() and p.name != ".git"
-            )
-            payload = "\0".join(names) + ("\0" if names else "")
-            return subprocess.CompletedProcess(args, 0, payload, "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    return fake_git
 
 
 @pytest.fixture
@@ -70,11 +48,7 @@ def machine_chain_env(tmp_path: Path, monkeypatch):
 
 
 def _setup_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / "main.py").write_text("print('ok')\n", encoding="utf-8")
-    return repo
+    return init_repo(tmp_path / "repo", files={"main.py": "print('ok')\n"})
 
 
 def _bind_repos(monkeypatch, repo: Path) -> None:
@@ -120,7 +94,6 @@ def test_verify_to_parity_longitudinal(
     machine_run_id = payload["run_id"]
 
     repo = _setup_repo(tmp_path)
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
 
     evidence = load_machine_ready_evidence("dev1", machine_run_id=machine_run_id)

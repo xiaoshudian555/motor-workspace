@@ -19,3 +19,6 @@ Artifacts land under `.motor-workspace-local/validation-runs/{diagnosis_run_id}/
 
 **Requires:** existing deploy run (ready or failed) with `config_run_id` and bundle
 references. Fails closed on machine mismatch or bundle digest tampering.
+
+Pod/Event collection runs `kubectl` on the selected remote machine with its
+recorded kube context; it never uses the development host's kubeconfig.

@@ -58,9 +58,11 @@ remote toolbox、managed session、container bootstrap 和 container 版 parity
   - `session-management`、`mws_session_*`、`manage_machine.py`、
     `mws_remote_toolbox.py` 及部分 `.remote-dev` selector 又恢复了
     local worktree + remote container + SSH/service port/NPU lease。
-- `remote-code-parity/SKILL.md` 定义的是同步到固定共享目录的 Motor parity，
-  但同包又新增了 VAWS container cache、synthetic ref、materialize/install、
-  image package replacement 和 first-install consent 实现。
+- `remote-code-parity/SKILL.md` 定义的是同步到固定共享目录的 Motor parity；
+  同包新增的 VAWS 能力中，git 对象增量（synthetic snapshot/bundle/mirror/
+  materialize）已按本轮决策复用到 Motor parity，container cache、
+  install/editable install 和 first-install consent 仍属 Docker session 专属，
+  不进入默认链路。
 - `.remote-dev/README.md` 声明 direct endpoint 默认 `root=/`，而
   `.mcp.json` 与 `core/endpoint.py` 默认仍为 `root=/mnt`；Host 文件访问范围
   和安全边界没有统一。
@@ -86,7 +88,8 @@ VAWS remote 迁移处理矩阵：
 | container SSH port、service port、NPU device lease | 删除 | K8s 资源由 namespace/job、scheduler、device plugin 和 Motor 原生配置管理 |
 | `remote_service_start/status/logs/stop` 的 vLLM container service adapter | 删除或重写 | Motor 服务生命周期只由 `motor-k8s-deploy`/upstream deployer 管理 |
 | `remote_cleanup` 中的 container/session/lease cleanup | 删除或重写 | 仅保留明确的 Host temp/job/artifact cleanup；K8s 删除/停止必须走 Motor workflow 和 consent |
-| VAWS `remote_code_parity.py` 的 synthetic refs、container mirror/cache、runtime materialize/install | 删除 | 与固定 shared-hostPath 设计冲突；不得覆盖 Motor 简单 parity |
+| VAWS `remote_code_parity.py` 的 synthetic snapshot / bundle / mirror / materialize | 保留并适配 | 复用为 git 对象增量 parity（`mws_parity` 已落地：temp-index synthetic snapshot → `git bundle` → bare mirror → worktree `checkout -f -B` + `reset --hard` + `clean -ffd`），输出仍是固定 shared-hostPath 目录 |
+| VAWS 的 container mirror/cache（Docker image 层）、runtime install/editable install、image package replacement | 删除 | 属 Docker session 专属能力，与固定 hostPath + `PYTHONPATH` 运行模型冲突 |
 | `install_consent.py` 的 image package replacement、editable install、container marker | 删除 | Motor daily Python loop 使用 hostPath + `PYTHONPATH`；ABI/install 走明确 bootstrap Job 或 image bypass |
 | managed `session_id`/`session_file` endpoint selector | 从通用 `.remote-dev` 移除 | direct `host+port`/alias 是通用层；Motor machine 解析在 `.agents/lib` adapter 完成 |
 | `machine` endpoint selector | 不进入通用 core | 如需保留便利入口，只能作为 Motor adapter，解析后仍传 direct endpoint |
@@ -106,16 +109,17 @@ VAWS remote 迁移处理矩阵：
    和测试只暴露 Motor 实际支持的 direct-host 路径。
 3. direct remote 原子操作只有一套 transport、path policy、result 和 job/artifact
    状态实现。
-4. 固定目录 Motor parity 与 VAWS container parity 完全分离，默认链路不得再
-   出现 session、container cache、synthetic ref、editable install 或 image package
-   replacement。
+4. 固定目录 Motor parity 采用 git 对象增量（synthetic snapshot → bundle →
+   bare mirror → worktree materialize），但只输出固定 shared-hostPath 目录；
+   默认链路不得再出现 session、container cache、editable install 或 image
+   package replacement。
 5. 清理完成后重新建立测试基线；不得引用 VAWS 自身的 container/session
    validation 证明 Motor direct-host 已完成。
 
 验收：
 
 - 从全仓搜索 `session_id`、`session_file`、`current-session`、`container_ssh_port`、
-  `prepared image`、`npu lease`、`synthetic ref`，保留项都有明确的非 Docker
+  `prepared image`、`npu lease`，保留项都有明确的非 Docker
   理由，否则从 Motor 默认实现移除。
 - `remote.*` direct endpoint 的 read/edit/bash/search/patch/job/artifact
   local contract tests 全部通过。

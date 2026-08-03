@@ -145,7 +145,11 @@ def main() -> int:
     restart = {"status": "skipped", "reason": "--skip-restart"}
     if not args.skip_restart:
         progress("restarting deploy-scoped workloads")
-        restart = restart_deploy_workloads_from_context(plan, kube_context=kube_context)
+        restart = restart_deploy_workloads_from_context(
+            plan,
+            machine=machine,
+            kube_context=kube_context,
+        )
         restart_ok = restart.get("status") == "ok"
         runner.append(
             {
@@ -160,8 +164,12 @@ def main() -> int:
                 extra={"phase": "restart", "parity": parity, "restart": restart},
             )
 
-    pods = pod_readiness_from_context(kube_context, namespace)
-    runtime_paths = collect_runtime_code_paths(kube_context=kube_context, namespace=namespace)
+    pods = pod_readiness_from_context(machine, kube_context, namespace)
+    runtime_paths = collect_runtime_code_paths(
+        machine=machine,
+        kube_context=kube_context,
+        namespace=namespace,
+    )
     code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
     ready = pods.get("ready") is True and code_paths.get("status") == "ok"
     runner.append(

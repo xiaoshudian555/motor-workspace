@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -13,9 +12,9 @@ sys.path.insert(0, str(LIB))
 
 from repo_paths import REPO_ROOT  # noqa: E402
 
-from mws_deploy import kubectl_base_from_context  # noqa: E402
 from mws_diagnosis import resolve_diagnosis_context  # noqa: E402
-from mws_local_state import WorkspaceStateError, utc_now_iso  # noqa: E402
+from mws_kubectl import build_kubectl_runner  # noqa: E402
+from mws_local_state import WorkspaceStateError, get_machine, utc_now_iso  # noqa: E402
 from mws_result import build_result_envelope, emit_result, progress, utc_now_iso as result_now  # noqa: E402
 from mws_run_state import validation_run_dir  # noqa: E402
 from mws_state import atomic_write_json  # noqa: E402
@@ -50,17 +49,18 @@ def main() -> int:
         )
         return emit_result(envelope)
 
-    kubectl = kubectl_base_from_context(context["kube_context"])
+    machine = get_machine(alias)
+    kubectl = build_kubectl_runner(machine, kube_context=context["kube_context"])
     namespace = context["namespace"]
     out_dir = validation_run_dir(diagnosis_run_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     progress("collecting pod and event evidence")
     artifacts: list[str] = []
-    for name, cmd in {
-        "pods": [*kubectl, "get", "pods", "-n", namespace, "-o", "json"],
-        "events": [*kubectl, "get", "events", "-n", namespace, "--sort-by=.lastTimestamp", "-o", "json"],
+    for name, kubectl_args in {
+        "pods": ("get", "pods", "-n", namespace, "-o", "json"),
+        "events": ("get", "events", "-n", namespace, "--sort-by=.lastTimestamp", "-o", "json"),
     }.items():
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        result = kubectl(*kubectl_args)
         path = out_dir / f"{name}.json"
         path.write_text(result.stdout or result.stderr, encoding="utf-8")
         artifacts.append(str(path.relative_to(REPO_ROOT)))

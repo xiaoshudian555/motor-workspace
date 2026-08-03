@@ -2,7 +2,7 @@ schema_version: 1
 name: motor-workspace-environment
 required_api_resources:
   - name: ascendjobs
-    api_group: mindx.huawei.com
+    api_group: mindxdl.gitee.com
   - name: podgroups
     api_group: scheduling.volcano.sh
 component_patterns:

@@ -58,7 +58,12 @@ def main() -> int:
         bundle_dir = REPO_ROOT / bundle_ref
     namespace = str(run_record.get("namespace") or "")
     progress("stopping run-scoped deployment")
-    result = stop_from_bundle(bundle_dir, kube_context=kube_context, namespace=namespace)
+    result = stop_from_bundle(
+        bundle_dir,
+        machine=machine,
+        kube_context=kube_context,
+        namespace=namespace,
+    )
     stop_ok = result["status"] == "ok"
     envelope = build_result_envelope(
         kind="deploy-stop",

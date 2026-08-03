@@ -64,9 +64,17 @@ def main() -> int:
     bundle = load_config_bundle(bundle_dir)
     plan = bundle_to_plan(bundle_dir, bundle)
     namespace = str(run_record.get("namespace") or plan.get("namespace") or "")
-    pods = pod_readiness_from_context(kube_context, namespace)
-    min_access = verify_min_service_access(kube_context=kube_context, namespace=namespace)
-    runtime_paths = collect_runtime_code_paths(kube_context=kube_context, namespace=namespace)
+    pods = pod_readiness_from_context(machine, kube_context, namespace)
+    min_access = verify_min_service_access(
+        machine=machine,
+        kube_context=kube_context,
+        namespace=namespace,
+    )
+    runtime_paths = collect_runtime_code_paths(
+        machine=machine,
+        kube_context=kube_context,
+        namespace=namespace,
+    )
     code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
     ready = pods.get("ready") is True and code_paths.get("status") == "ok"
     checks = [

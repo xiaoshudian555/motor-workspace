@@ -17,10 +17,13 @@
 
 - 用短时间 benchmark 推断长稳结果。
 - 主动注入硬件或组件故障；该责任属于
-  [`reliability/`](../reliability/)。
+  [`../reliability/`](../reliability/)。
+- 把有意扩缩容后的路由收敛当作本场景主责；routing 验收属于
+  [`../routing-topology/`](../routing-topology/)，本场景只观察长稳副作用
+  （例如重启或扩缩容后是否积累脏状态）。
 - 在没有时间序列证据时仅凭最终服务存活判定通过。
 
 ## 交付
 
 `stability` validation run，包括 workload、观测周期、业务与资源时间序列、
-异常事件、趋势判定和 diagnosis 引用。
+异常事件、趋势判定和 [`../../diagnosis/`](../../diagnosis/) 引用。

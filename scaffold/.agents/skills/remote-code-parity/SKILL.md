@@ -15,7 +15,14 @@ vllm, and vllm-ascend to the machine's fixed remote directories:
 /mnt/motor-workspace/python-overlay
 ```
 
-No snapshot directories, no `current` symlink, no Git commit requirement.
+Mechanism: each repo's dirty working tree is captured as a git synthetic
+snapshot (temp-index `read-tree HEAD` + `add -A` + `write-tree` + `commit-tree`),
+transferred incrementally as a `git bundle` into a bare mirror
+(`{remote_workspace_root}/.mws-mirrors/<repo>.git`), and materialized into the
+fixed directory via `checkout -f -B parity/current` + `reset --hard` +
+`clean -ffd`. No snapshot directories, no `current` symlink, and no requirement
+to `git commit` your local changes. First sync is the full tree; later syncs
+transfer only the object delta.
 
 ## Prerequisites
 

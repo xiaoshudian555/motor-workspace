@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -112,15 +113,22 @@ def test_apply_bytes_match_bundle(local_state_root) -> None:
     manifest = bundle_dir / "manifests" / "demo.yaml"
     expected_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
 
-    def fake_run(cmd, **kwargs):
-        assert "-f" in cmd
-        applied = Path(cmd[cmd.index("-f") + 1])
-        assert applied == manifest
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="configured", stderr="")
+    def fake_kubectl(*args):
+        assert args == ("apply", "-f", "/tmp/mws-test/demo.yaml", "-n", "ns1")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="configured", stderr="")
 
-    with patch("mws_deploy.subprocess.run", side_effect=fake_run):
-        with patch("mws_deploy.shutil.which", return_value="/usr/bin/kubectl"):
-            result = apply_config_bundle(bundle_dir=bundle_dir, kube_context="ctx-a", namespace="ns1")
+    @contextmanager
+    def fake_stage(*args, **kwargs):
+        yield {manifest: "/tmp/mws-test/demo.yaml"}
+
+    with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
+        result = apply_config_bundle(
+            bundle_dir=bundle_dir,
+            machine=_machine(),
+            kube_context="ctx-a",
+            namespace="ns1",
+            kubectl=fake_kubectl,
+        )
     assert result["status"] == "ok"
     assert result["apply_results"][0]["bytes_sha256"] == expected_hash
 
@@ -131,11 +139,23 @@ def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
     if not bundle_dir.is_absolute():
         bundle_dir = REPO_ROOT / bundle_dir
 
-    with patch("mws_deploy.subprocess.run", return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")):
-        with patch("mws_deploy.shutil.which", return_value="/usr/bin/kubectl"):
-            with patch("mws_deploy.run_deploy_dry_run") as dry_run:
-                with patch("mws_deploy.configure_deploy_bundle") as configure:
-                    apply_config_bundle(bundle_dir=bundle_dir, kube_context="ctx-a", namespace="ns1")
+    manifest = bundle_dir / "manifests" / "demo.yaml"
+
+    @contextmanager
+    def fake_stage(*args, **kwargs):
+        yield {manifest: "/tmp/mws-test/demo.yaml"}
+
+    fake_kubectl = lambda *args: subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+    with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
+        with patch("mws_deploy.run_deploy_dry_run") as dry_run:
+            with patch("mws_deploy.configure_deploy_bundle") as configure:
+                apply_config_bundle(
+                    bundle_dir=bundle_dir,
+                    machine=_machine(),
+                    kube_context="ctx-a",
+                    namespace="ns1",
+                    kubectl=fake_kubectl,
+                )
     dry_run.assert_not_called()
     configure.assert_not_called()
 
@@ -248,7 +268,7 @@ def test_ready_failure_blocks_deploy_complete(local_state_root, tmp_path, monkey
         config_run_id,
         **{
             "mws_deploy.apply_config_bundle": lambda **kwargs: {"status": "ok", "apply_results": []},
-            "mws_deploy.pod_readiness_from_context": lambda ctx, ns: {
+            "mws_deploy.pod_readiness_from_context": lambda machine, ctx, ns: {
                 "ready": False,
                 "pods_total": 1,
                 "pods_ready": 0,
@@ -268,7 +288,7 @@ def test_min_access_failure_blocks_deploy_complete(local_state_root, tmp_path, m
         config_run_id,
         **{
             "mws_deploy.apply_config_bundle": lambda **kwargs: {"status": "ok", "apply_results": []},
-            "mws_deploy.pod_readiness_from_context": lambda ctx, ns: {
+            "mws_deploy.pod_readiness_from_context": lambda machine, ctx, ns: {
                 "ready": True,
                 "pods_total": 1,
                 "pods_ready": 1,
@@ -333,7 +353,7 @@ def test_restart_recollects_code_paths(local_state_root, monkeypatch) -> None:
     pods_calls: list[str] = []
     code_calls: list[str] = []
 
-    def fake_pods(ctx, ns):
+    def fake_pods(machine, ctx, ns):
         pods_calls.append(ns)
         return {"ready": True, "pods_total": 1, "pods_ready": 1}
 
@@ -419,19 +439,27 @@ def test_stop_requires_bundle_dir(local_state_root, monkeypatch) -> None:
 
 
 def test_collect_runtime_code_paths_no_pod() -> None:
-    with patch("mws_deploy.shutil.which", return_value="/usr/bin/kubectl"):
-        with patch("mws_deploy._pick_runtime_pod", return_value=None):
-            result = collect_runtime_code_paths(kube_context="ctx-a", namespace="ns1")
+    fake_kubectl = lambda *args: subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+    with patch("mws_deploy._pick_runtime_pod", return_value=None):
+        result = collect_runtime_code_paths(
+            machine=_machine(),
+            kube_context="ctx-a",
+            namespace="ns1",
+            kubectl=fake_kubectl,
+        )
     assert result["status"] == "error"
 
 
 def test_verify_min_service_access_no_endpoints() -> None:
     payload = json.dumps({"items": [{"metadata": {"name": "svc"}, "subsets": []}]})
 
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=payload, stderr="")
+    def fake_kubectl(*args):
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout=payload, stderr="")
 
-    with patch("mws_deploy.shutil.which", return_value="/usr/bin/kubectl"):
-        with patch("mws_deploy.subprocess.run", side_effect=fake_run):
-            result = verify_min_service_access(kube_context="ctx-a", namespace="ns1")
+    result = verify_min_service_access(
+        machine=_machine(),
+        kube_context="ctx-a",
+        namespace="ns1",
+        kubectl=fake_kubectl,
+    )
     assert result["status"] == "error"

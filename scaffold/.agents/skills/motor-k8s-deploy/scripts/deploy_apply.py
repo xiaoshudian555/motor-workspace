@@ -79,6 +79,7 @@ def main() -> int:
     progress("applying immutable config bundle")
     apply_result = apply_config_bundle(
         bundle_dir=bundle_dir,
+        machine=machine,
         kube_context=kube_context,
         namespace=namespace,
     )
@@ -107,7 +108,7 @@ def main() -> int:
         )
         return emit(envelope)
 
-    pods = pod_readiness_from_context(kube_context, namespace)
+    pods = pod_readiness_from_context(machine, kube_context, namespace)
     runner.append(
         {
             "name": "pod_readiness",
@@ -116,13 +117,21 @@ def main() -> int:
         }
     )
     if runner.continue_ok:
-        min_access = verify_min_service_access(kube_context=kube_context, namespace=namespace)
+        min_access = verify_min_service_access(
+            machine=machine,
+            kube_context=kube_context,
+            namespace=namespace,
+        )
         runner.append(min_access)
 
     runtime_paths = {"status": "skipped", "paths": {}}
     code_path_check = {"name": "runtime_code_paths", "status": "skipped", "message": "not reached"}
     if runner.continue_ok:
-        runtime_paths = collect_runtime_code_paths(kube_context=kube_context, namespace=namespace)
+        runtime_paths = collect_runtime_code_paths(
+            machine=machine,
+            kube_context=kube_context,
+            namespace=namespace,
+        )
         if runtime_paths.get("status") == "unavailable":
             runner.append(
                 {

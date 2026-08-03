@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Remote-code-parity helpers: sync local dirty tree to machine fixed directories."""
+"""Remote-code-parity helpers: sync local dirty tree to machine fixed directories.
+
+Transport is git-object incremental (synthetic snapshot commit -> bundle ->
+bare mirror -> worktree materialize). Overlay (python-overlay, not a git repo)
+keeps the plain tarball path.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -39,19 +45,30 @@ OVERLAY_ROOT = LOCAL_ROOT / "python-overlay"
 PARITY_STATE_DIR = LOCAL_ROOT / "parity-state"
 MACHINE_RUNS_DIR = LOCAL_ROOT / "machine-runs"
 REMOTE_LOCK_DIRNAME = ".parity-sync.lock"
+MIRROR_DIRNAME = ".mws-mirrors"
+PARITY_REF = "refs/parity/current"
+PARITY_REMOTE_BRANCH = "parity/current"
+PARITY_LOCAL_REF = "refs/parity/snapshot"
+PARITY_REMOTE_NAME = "parity"
+SNAPSHOT_PARENT_REF = "refs/parity/snapshot-parent"
 
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _git(args: list[str], path: Path) -> subprocess.CompletedProcess[str]:
+def _git(
+    args: list[str],
+    path: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(path), *args],
         check=False,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
     )
 
 
@@ -110,6 +127,46 @@ def _repo_relative_path(path: Path) -> str:
         return str(path)
 
 
+def _working_tree_tree_hash(repo_path: Path) -> str:
+    """Compute the tree hash of the working tree via a temporary index.
+
+    `git read-tree HEAD` + `git add -A` + `git write-tree` reproduces the full
+    working tree (tracked changes and untracked files, respecting .gitignore)
+    without touching the real index. The resulting tree hash is a content
+    digest of the dirty working tree.
+    """
+    index_fd, index_path = tempfile.mkstemp(prefix="mws-parity-index-")
+    os.close(index_fd)
+    env = dict(os.environ)
+    env["GIT_INDEX_FILE"] = index_path
+    env.setdefault("GIT_AUTHOR_NAME", "mws-parity")
+    env.setdefault("GIT_AUTHOR_EMAIL", "mws-parity@localhost")
+    env.setdefault("GIT_COMMITTER_NAME", "mws-parity")
+    env.setdefault("GIT_COMMITTER_EMAIL", "mws-parity@localhost")
+    try:
+        result = _git(["read-tree", "HEAD"], repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"git read-tree failed for {repo_path}: {result.stderr.strip()}"
+            )
+        result = _git(["add", "-A"], repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"git add failed for {repo_path}: {result.stderr.strip()}"
+            )
+        result = _git(["write-tree"], repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"git write-tree failed for {repo_path}: {result.stderr.strip()}"
+            )
+        return result.stdout.strip()
+    finally:
+        try:
+            os.unlink(index_path)
+        except FileNotFoundError:
+            pass
+
+
 def repo_manifest(name: str, path: Path) -> dict[str, Any]:
     if not path.exists():
         raise WorkspaceStateError(f"{name}: submodule not initialized at {path}")
@@ -118,7 +175,17 @@ def repo_manifest(name: str, path: Path) -> dict[str, Any]:
         raise WorkspaceStateError(f"{name}: cannot resolve HEAD")
     status = _git(["status", "--porcelain=v1", "--untracked-files=all"], path)
     tracked_diff = _git(["diff", "--binary", "HEAD"], path)
-    content = compute_repo_content_digest(path)
+    ls = _git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], path)
+    if ls.returncode:
+        raise WorkspaceStateError(f"{name}: git ls-files failed")
+    members = [item for item in ls.stdout.split("\0") if item]
+    tracked = _git(["ls-files", "-z", "--cached"], path)
+    tracked_set = set(tracked.stdout.split("\0")) if tracked.returncode == 0 else set()
+    untracked_hashes: dict[str, str] = {}
+    for relative in members:
+        absolute = path / relative
+        if relative not in tracked_set and absolute.is_file():
+            untracked_hashes[relative] = _sha256_bytes(absolute.read_bytes())
     return {
         "name": name,
         "path": _repo_relative_path(path),
@@ -126,13 +193,9 @@ def repo_manifest(name: str, path: Path) -> dict[str, Any]:
         "dirty": bool(status.stdout.strip()),
         "status_sha256": _sha256_bytes(status.stdout.encode()),
         "tracked_diff_sha256": _sha256_bytes(tracked_diff.stdout.encode()),
-        "file_count": content["file_count"],
-        "content_digest": content["content_digest"],
-        "untracked_files": {
-            rel: digest
-            for rel, digest in content["file_hashes"].items()
-            if _git(["ls-files", "--error-unmatch", rel], path).returncode != 0
-        },
+        "file_count": len(members),
+        "content_digest": _working_tree_tree_hash(path),
+        "untracked_files": untracked_hashes,
     }
 
 
@@ -346,17 +409,6 @@ def _validate_machine_ready_record(
     }
 
 
-def create_repo_tarball(repo_path: Path) -> bytes:
-    members = list_repo_members(repo_path)
-    buffer = BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        for relative in members:
-            absolute = repo_path / relative
-            if absolute.is_file():
-                archive.add(absolute, arcname=relative)
-    return buffer.getvalue()
-
-
 def create_overlay_tarball() -> bytes | None:
     overlay = compute_overlay_content_digest()
     if not overlay["file_hashes"]:
@@ -427,11 +479,252 @@ def _publish_tarball_to_remote(
     }
 
 
+def _temp_git_env() -> tuple[dict[str, str], str]:
+    """Return (env, index_path) with a private GIT_INDEX_FILE so the real index
+    and working tree are never touched by synthetic-snapshot commands."""
+    index_fd, index_path = tempfile.mkstemp(prefix="mws-parity-index-")
+    os.close(index_fd)
+    env = dict(os.environ)
+    env["GIT_INDEX_FILE"] = index_path
+    env.setdefault("GIT_AUTHOR_NAME", "mws-parity")
+    env.setdefault("GIT_AUTHOR_EMAIL", "mws-parity@localhost")
+    env.setdefault("GIT_COMMITTER_NAME", "mws-parity")
+    env.setdefault("GIT_COMMITTER_EMAIL", "mws-parity@localhost")
+    return env, index_path
+
+
+def build_synthetic_snapshot(
+    repo_path: Path,
+    *,
+    parent_commit: str | None = None,
+) -> dict[str, Any]:
+    """Build a synthetic snapshot commit whose tree is the full dirty working
+    tree (tracked changes + untracked files).
+
+    The snapshot is built with a private temporary index, so the local
+    repository's real index and working tree are never mutated. When a parent
+    commit is given the snapshot chains onto it, so `git bundle base..snapshot`
+    transfers only the object delta."""
+    env, index_path = _temp_git_env()
+    try:
+        result = _git(["read-tree", "HEAD"], repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"synthetic snapshot read-tree failed for {repo_path}: {result.stderr.strip()}"
+            )
+        result = _git(["add", "-A"], repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"synthetic snapshot add failed for {repo_path}: {result.stderr.strip()}"
+            )
+        result = _git(["write-tree"], repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"synthetic snapshot write-tree failed for {repo_path}: {result.stderr.strip()}"
+            )
+        tree = result.stdout.strip()
+        commit_args = ["commit-tree", tree, "-m", "mws parity snapshot"]
+        if parent_commit:
+            commit_args += ["-p", parent_commit]
+        result = _git(commit_args, repo_path, env=env)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"synthetic snapshot commit-tree failed for {repo_path}: {result.stderr.strip()}"
+            )
+        snapshot_commit = result.stdout.strip()
+        base = parent_commit or "HEAD"
+        diff_result = _git(
+            ["diff", "--name-only", f"{base}..{snapshot_commit}"], repo_path, env=env
+        )
+        changed_paths: list[str] = []
+        if diff_result.returncode == 0:
+            changed_paths = [line for line in diff_result.stdout.splitlines() if line]
+        return {
+            "commit": snapshot_commit,
+            "tree": tree,
+            "changed_paths": changed_paths,
+        }
+    finally:
+        os.unlink(index_path)
+
+
+def create_incremental_bundle(
+    repo_path: Path,
+    *,
+    base_commit: str | None,
+) -> bytes:
+    """Create a git bundle carrying only the objects reachable from the latest
+    parity snapshot but not from the base snapshot.
+
+    The caller must already have pointed `PARITY_LOCAL_REF` at the new snapshot
+    commit. With no base commit the bundle is the full synthetic tree; with a
+    base it transfers only the object delta."""
+    fd, bundle_path = tempfile.mkstemp(prefix="mws-parity-bundle-", suffix=".bundle")
+    os.close(fd)
+    try:
+        if base_commit:
+            result = _git(
+                ["bundle", "create", bundle_path, f"{base_commit}..{PARITY_LOCAL_REF}"],
+                repo_path,
+            )
+        else:
+            result = _git(["bundle", "create", bundle_path, PARITY_LOCAL_REF], repo_path)
+        if result.returncode:
+            raise WorkspaceStateError(
+                f"git bundle create failed for {repo_path}: {result.stderr.strip() or result.stdout.strip()}"
+            )
+        return Path(bundle_path).read_bytes()
+    finally:
+        Path(bundle_path).unlink(missing_ok=True)
+
+
+def _local_snapshot_commit(repo_path: Path) -> str | None:
+    """Return the last synthetic snapshot commit for the repo, if any."""
+    result = _git(["rev-parse", "--verify", PARITY_LOCAL_REF], repo_path)
+    if result.returncode:
+        return None
+    return result.stdout.strip()
+
+
+def _mirror_has_commit(transport: RemoteTransport, mirror_dir: str, commit: str) -> bool:
+    result = transport.git(mirror_dir, "cat-file", "-e", f"{commit}^{{commit}}")
+    return result.returncode == 0
+
+
+def mirror_dir_for(machine: dict[str, Any], repo_name: str) -> str:
+    paths = build_fixed_source_paths(machine)
+    return f"{paths['remote_workspace_root']}/{MIRROR_DIRNAME}/{repo_name}.git"
+
+
+def _remote_head(transport: RemoteTransport, worktree_dir: str) -> str:
+    result = transport.git(worktree_dir, "rev-parse", "HEAD")
+    if result.returncode:
+        raise WorkspaceStateError(
+            f"cannot resolve remote HEAD at {worktree_dir}: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+    return result.stdout.strip()
+
+
+def ensure_remote_mirror(transport: RemoteTransport, mirror_dir: str) -> None:
+    result = transport.git(mirror_dir, "rev-parse", "--is-bare-repository")
+    if result.returncode == 0 and result.stdout.strip() == "true":
+        return
+    transport.run(f"mkdir -p {shell_quote(mirror_dir)}")
+    init = transport.git(mirror_dir, "init", "--bare")
+    if init.returncode:
+        raise WorkspaceStateError(
+            f"git init --bare failed for {mirror_dir}: "
+            f"{init.stderr.strip() or init.stdout.strip()}"
+        )
+
+
+def publish_bundle_to_mirror(
+    transport: RemoteTransport,
+    *,
+    mirror_dir: str,
+    repo_name: str,
+    bundle: bytes,
+) -> None:
+    digest = _sha256_bytes(bundle)[:12]
+    remote_archive = f"/tmp/mws-parity-{repo_name}-{digest}.bundle"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".bundle") as handle:
+        handle.write(bundle)
+        local_archive = handle.name
+    try:
+        transport.upload_file(local_archive, remote_archive)
+    finally:
+        Path(local_archive).unlink(missing_ok=True)
+
+    refspec = f"{PARITY_LOCAL_REF}:{PARITY_REF}"
+    fetch = transport.git(mirror_dir, "fetch", "--force", remote_archive, refspec)
+    transport.run(f"rm -f {shell_quote(remote_archive)}")
+    if fetch.returncode:
+        raise WorkspaceStateError(
+            f"mirror fetch failed for {repo_name}: "
+            f"{fetch.stderr.strip() or fetch.stdout.strip()}"
+        )
+
+
+def materialize_worktree(
+    transport: RemoteTransport,
+    *,
+    mirror_dir: str,
+    worktree_dir: str,
+) -> None:
+    """Materialize the parity/current snapshot into the fixed worktree dir.
+
+    The worktree is a real git worktree whose origin/remote is the shared
+    mirror. `checkout -f -B` + `reset --hard` + `clean -ffd` makes the fixed
+    directory exactly match the snapshot, self-healing remote drift."""
+    check = transport.run(f"test -d {shell_quote(worktree_dir)}/.git")
+    if check.returncode != 0:
+        transport.run(f"rm -rf {shell_quote(worktree_dir)}")
+        transport.run(f"mkdir -p {shell_quote(worktree_dir)}")
+        init = transport.git(worktree_dir, "init")
+        if init.returncode:
+            raise WorkspaceStateError(
+                f"worktree init failed for {worktree_dir}: "
+                f"{init.stderr.strip() or init.stdout.strip()}"
+            )
+    set_url = transport.git(
+        worktree_dir, "remote", "set-url", PARITY_REMOTE_NAME, mirror_dir
+    )
+    if set_url.returncode:
+        add = transport.git(
+            worktree_dir, "remote", "add", PARITY_REMOTE_NAME, mirror_dir
+        )
+        if add.returncode:
+            raise WorkspaceStateError(
+                f"worktree remote add failed for {worktree_dir}: "
+                f"{add.stderr.strip() or add.stdout.strip()}"
+            )
+
+    fetch = transport.git(
+        worktree_dir,
+        "fetch",
+        "--force",
+        PARITY_REMOTE_NAME,
+        f"{PARITY_REF}:refs/remotes/parity/current",
+    )
+    if fetch.returncode:
+        raise WorkspaceStateError(
+            f"worktree fetch failed for {worktree_dir}: "
+            f"{fetch.stderr.strip() or fetch.stdout.strip()}"
+        )
+    checkout = transport.git(
+        worktree_dir,
+        "checkout",
+        "-f",
+        "-B",
+        PARITY_REMOTE_BRANCH,
+        "refs/remotes/parity/current",
+    )
+    if checkout.returncode:
+        raise WorkspaceStateError(
+            f"worktree checkout failed for {worktree_dir}: "
+            f"{checkout.stderr.strip() or checkout.stdout.strip()}"
+        )
+    reset = transport.git(
+        worktree_dir, "reset", "--hard", "refs/remotes/parity/current"
+    )
+    if reset.returncode:
+        raise WorkspaceStateError(
+            f"worktree reset failed for {worktree_dir}: "
+            f"{reset.stderr.strip() or reset.stdout.strip()}"
+        )
+    clean = transport.git(worktree_dir, "clean", "-ffd")
+    if clean.returncode:
+        raise WorkspaceStateError(
+            f"worktree clean failed for {worktree_dir}: "
+            f"{clean.stderr.strip() or clean.stdout.strip()}"
+        )
+
+
 def _expected_repo_hashes(repo_name: str, repo_path: Path) -> dict[str, str]:
     if repo_name == "python-overlay":
         return compute_overlay_content_digest()["file_hashes"]
     return compute_repo_content_digest(repo_path)["file_hashes"]
-
 
 def _try_no_change_fast_path(
     machine: dict[str, Any],
@@ -447,19 +740,32 @@ def _try_no_change_fast_path(
     paths = build_fixed_source_paths(machine)
     remote_digests: dict[str, str] = {}
     proof: list[dict[str, Any]] = []
-    for name, repo_path in REPO_DIRS.items():
-        remote_dir = paths[REPO_REMOTE_KEYS[name]]
-        expected = _expected_repo_hashes(name, repo_path)
-        item = verify_remote_content(
-            transport,
-            repo_name=name,
-            remote_dir=remote_dir,
-            expected_hashes=expected,
-        )
-        proof.append(item)
-        if not item["verified"]:
+    for name in REPO_DIRS:
+        worktree_dir = paths[REPO_REMOTE_KEYS[name]]
+        expected_commit = prior.get("snapshot_commits", {}).get(name)
+        if not expected_commit:
             return None
-        remote_digests[name] = item["content_digest"]
+        head_result = transport.git(worktree_dir, "rev-parse", "HEAD")
+        status_result = transport.git(worktree_dir, "status", "--porcelain")
+        if (
+            head_result.returncode
+            or head_result.stdout.strip() != expected_commit
+            or status_result.stdout.strip()
+        ):
+            return None
+        observed = expected_commit
+        item = {
+            "name": name,
+            "remote_dir": worktree_dir,
+            "content_digest": expected_commit,
+            "file_count": None,
+            "verified": True,
+            "missing_files": [],
+            "extra_files": [],
+            "mismatched_files": [],
+        }
+        proof.append(item)
+        remote_digests[name] = expected_commit
 
     overlay_dir = paths["python_overlay"]
     overlay_expected = _expected_repo_hashes("python-overlay", OVERLAY_ROOT)
@@ -546,62 +852,75 @@ def sync_workspace_to_remote(
                     return fast
 
             synced: list[dict[str, Any]] = []
-            completed_repos: list[str] = []
-            try:
-                for name, repo_path in REPO_DIRS.items():
-                    remote_dir = paths[REPO_REMOTE_KEYS[name]]
-                    tarball = create_repo_tarball(repo_path)
-                    progress(f"syncing {name} to {remote_dir}")
-                    synced.append(
-                        _publish_tarball_to_remote(
-                            tx,
-                            repo_name=name,
-                            remote_dir=remote_dir,
-                            tarball=tarball,
-                        )
-                    )
-                    completed_repos.append(name)
-
-                overlay_dir = paths["python_overlay"]
-                overlay_tarball = create_overlay_tarball()
-                progress(f"syncing python-overlay to {overlay_dir}")
-                synced.append(
-                    _publish_tarball_to_remote(
-                        tx,
-                        repo_name="python-overlay",
-                        remote_dir=overlay_dir,
-                        tarball=overlay_tarball,
-                        empty_ok=True,
-                    )
+            snapshot_commits: dict[str, str] = {}
+            used_incremental = False
+            for name, repo_path in REPO_DIRS.items():
+                remote_dir = paths[REPO_REMOTE_KEYS[name]]
+                mirror_dir = mirror_dir_for(machine, name)
+                ensure_remote_mirror(tx, mirror_dir)
+                base = _local_snapshot_commit(repo_path)
+                if base and not _mirror_has_commit(tx, mirror_dir, base):
+                    base = None
+                if base:
+                    used_incremental = True
+                snapshot = build_synthetic_snapshot(repo_path, parent_commit=base)
+                _git(["update-ref", PARITY_LOCAL_REF, snapshot["commit"]], repo_path)
+                bundle = create_incremental_bundle(repo_path, base_commit=base)
+                progress(f"syncing {name} to {remote_dir}")
+                publish_bundle_to_mirror(
+                    tx,
+                    mirror_dir=mirror_dir,
+                    repo_name=name,
+                    bundle=bundle,
                 )
-                completed_repos.append("python-overlay")
-            except Exception:
-                for name in completed_repos:
-                    key = REPO_REMOTE_KEYS.get(name)
-                    remote_dir = paths[key] if key else paths.get("python_overlay")
-                    if remote_dir:
-                        tx.run(f"rm -rf {shell_quote(remote_dir)}.staging")
-                raise
+                materialize_worktree(
+                    tx, mirror_dir=mirror_dir, worktree_dir=remote_dir
+                )
+                observed = _remote_head(tx, remote_dir)
+                if observed != snapshot["commit"]:
+                    raise WorkspaceStateError(
+                        f"remote proof failed for {name}: "
+                        f"expected {snapshot['commit']}, got {observed}"
+                    )
+                snapshot_commits[name] = snapshot["commit"]
+                synced.append(
+                    {
+                        "name": name,
+                        "remote_dir": remote_dir,
+                        "snapshot_commit": snapshot["commit"],
+                        "changed_files": len(snapshot["changed_paths"]),
+                        "incremental": base is not None,
+                    }
+                )
+
+            overlay_dir = paths["python_overlay"]
+            overlay_tarball = create_overlay_tarball()
+            progress(f"syncing python-overlay to {overlay_dir}")
+            synced.append(
+                _publish_tarball_to_remote(
+                    tx,
+                    repo_name="python-overlay",
+                    remote_dir=overlay_dir,
+                    tarball=overlay_tarball,
+                    empty_ok=True,
+                )
+            )
 
             proof: list[dict[str, Any]] = []
             remote_digests: dict[str, str] = {}
-            for name, repo_path in REPO_DIRS.items():
+            for name in REPO_DIRS:
                 remote_dir = paths[REPO_REMOTE_KEYS[name]]
-                expected = _expected_repo_hashes(name, repo_path)
-                item = verify_remote_content(
-                    tx,
-                    repo_name=name,
-                    remote_dir=remote_dir,
-                    expected_hashes=expected,
-                )
+                item = {
+                    "name": name,
+                    "remote_dir": remote_dir,
+                    "content_digest": snapshot_commits[name],
+                    "file_count": None,
+                    "verified": True,
+                    "missing_files": [],
+                    "extra_files": [],
+                    "mismatched_files": [],
+                }
                 proof.append(item)
-                if not item["verified"]:
-                    raise WorkspaceStateError(
-                        f"remote proof failed for {name}: "
-                        f"missing={item['missing_files'][:5]} "
-                        f"extra={item['extra_files'][:5]} "
-                        f"mismatched={item['mismatched_files'][:5]}"
-                    )
                 remote_digests[name] = item["content_digest"]
 
             overlay_dir = paths["python_overlay"]
@@ -619,11 +938,14 @@ def sync_workspace_to_remote(
 
             manifest["synced"] = synced
             manifest["remote_proof"] = proof
+            manifest["snapshot_commits"] = snapshot_commits
             manifest["remote_content_digests"] = remote_digests
             manifest["remote_content_digest"] = aggregate_content_digest(
                 {key: digest for key, digest in remote_digests.items()}
             )
-            manifest["sync_mode"] = "full-sync"
+            manifest["sync_mode"] = (
+                "git-incremental" if used_incremental else "git-initial"
+            )
             manifest["pythonpath"] = ":".join(
                 [
                     paths["motor_source"],
@@ -645,6 +967,7 @@ def sync_workspace_to_remote(
                     "local_content_digests": manifest["local_content_digests"],
                     "remote_content_digest": manifest["remote_content_digest"],
                     "remote_content_digests": remote_digests,
+                    "snapshot_commits": snapshot_commits,
                     "machine_ready": machine_ready,
                     "source_dirs": manifest["source_dirs"],
                 },

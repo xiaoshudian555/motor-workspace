@@ -13,10 +13,12 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
+from mws_kubectl import KubectlRunner, build_kubectl_runner, stage_remote_files
 from mws_local_state import WorkspaceStateError
 from repo_paths import MOTOR_ROOT, REPO_ROOT
 from mws_lock import resolve_base_image_ref
 from mws_machine_target import build_fixed_source_paths, machine_ref, pythonpath_for_machine
+from mws_transport import shell_quote
 from mws_run_state import (
     bundle_digest_for_files,
     create_config_bundle,
@@ -72,14 +74,6 @@ def load_profile(profile_path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise WorkspaceStateError(f"{profile_path} must contain an object")
     return data
-
-
-def kubectl_base(profile: dict[str, Any]) -> list[str]:
-    args = ["kubectl"]
-    context = profile.get("kubernetes", {}).get("context")
-    if context:
-        args.extend(["--context", str(context)])
-    return args
 
 
 def _yaml_loader():
@@ -254,6 +248,73 @@ def inject_image_ref(documents: list[dict[str, Any]], image_ref: str) -> list[di
     return patched
 
 
+def inject_node_port_override(
+    documents: list[dict[str, Any]],
+    overrides: dict[int, int],
+) -> list[dict[str, Any]]:
+    """Rewrite Service nodePort values to avoid cluster-wide NodePort conflicts.
+
+    overrides maps the template's original nodePort to the replacement value.
+    Only applies to Services that carry the original nodePort; other docs are
+    left untouched.
+    """
+    patched: list[dict[str, Any]] = []
+    for doc in documents:
+        doc = copy.deepcopy(doc)
+        if doc.get("kind") != "Service":
+            patched.append(doc)
+            continue
+        spec = doc.get("spec")
+        if not isinstance(spec, dict):
+            patched.append(doc)
+            continue
+        ports = spec.get("ports")
+        if not isinstance(ports, list):
+            patched.append(doc)
+            continue
+        changed = False
+        for port in ports:
+            if not isinstance(port, dict):
+                continue
+            node_port = port.get("nodePort")
+            if isinstance(node_port, int) and node_port in overrides:
+                port["nodePort"] = overrides[node_port]
+                changed = True
+        if changed:
+            spec["ports"] = ports
+        patched.append(doc)
+    return patched
+
+
+def _load_node_port_overrides(native_config: dict[str, Any]) -> dict[int, int]:
+    """Read optional node_port_overrides from motor_deploy_config.
+
+    Maps the template's original nodePort to a replacement. Entries must be
+    positive integers.
+    """
+    deploy = native_config.get("user_config.json", {}).get("motor_deploy_config", {})
+    raw = deploy.get("node_port_overrides")
+    if not raw:
+        return {}
+    if not isinstance(raw, dict):
+        raise WorkspaceStateError("motor_deploy_config.node_port_overrides must be an object")
+    overrides: dict[int, int] = {}
+    for key, value in raw.items():
+        try:
+            old_port = int(key)
+            new_port = int(value)
+        except (TypeError, ValueError) as exc:
+            raise WorkspaceStateError(
+                f"motor_deploy_config.node_port_overrides keys/values must be integers: {key}={value}"
+            ) from exc
+        if old_port <= 0 or new_port <= 0:
+            raise WorkspaceStateError(
+                f"motor_deploy_config.node_port_overrides ports must be positive: {old_port}->{new_port}"
+            )
+        overrides[old_port] = new_port
+    return overrides
+
+
 def load_motor_deploy_config(config_dir: Path) -> dict[str, Any]:
     user_config_path = config_dir / "user_config.json"
     if not user_config_path.exists():
@@ -271,6 +332,172 @@ def load_motor_deploy_config(config_dir: Path) -> dict[str, Any]:
         "namespace": namespace,
         "image_name": str(deploy.get("image_name") or deploy.get("image") or "").strip(),
     }
+
+
+def _int_field(deploy: dict[str, Any], key: str) -> int:
+    value = deploy.get(key)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkspaceStateError(
+            f"motor_deploy_config.{key} must be an integer, got {value!r}"
+        ) from exc
+
+
+def _node_selector_hostnames(deploy: dict[str, Any], key: str) -> list[str]:
+    selector = deploy.get(key)
+    if not selector:
+        return []
+    if not isinstance(selector, dict):
+        raise WorkspaceStateError(f"motor_deploy_config.{key} must be an object")
+    hostnames: list[str] = []
+    for selector_key, value in selector.items():
+        if selector_key == "kubernetes.io/hostname":
+            hostnames.append(str(value))
+    if not hostnames:
+        raise WorkspaceStateError(
+            f"motor_deploy_config.{key} has no kubernetes.io/hostname selector; "
+            "cannot derive target node for NPU capacity check"
+        )
+    return hostnames
+
+
+def compute_npu_requirement(native_config: dict[str, Any]) -> dict[str, Any]:
+    """Compute total NPU demand from motor_deploy_config.
+
+    Returns {"total": int, "per_node": {hostname: count}} derived from
+    p/d instance counts and pod NPU numbers, mapped to the node selected by
+    the prefill/decode node selectors.
+    """
+    deploy = native_config.get("user_config.json", {}).get("motor_deploy_config", {})
+    if not isinstance(deploy, dict):
+        raise WorkspaceStateError("user_config.json must contain motor_deploy_config")
+
+    def demand(
+        instances_key: str,
+        pods_per_instance_key: str,
+        npu_per_pod_key: str,
+        selector_key: str,
+    ) -> dict[str, int]:
+        instances = _int_field(deploy, instances_key)
+        pods_per_instance = _int_field(deploy, pods_per_instance_key)
+        npu_per_pod = _int_field(deploy, npu_per_pod_key)
+        per_node = instances * pods_per_instance * npu_per_pod
+        if per_node > 0 and not deploy.get(selector_key):
+            raise WorkspaceStateError(
+                f"motor_deploy_config.{selector_key} is required when {instances_key} > 0 "
+                "for the NPU capacity check"
+            )
+        per_node_map: dict[str, int] = {}
+        for hostname in _node_selector_hostnames(deploy, selector_key):
+            per_node_map[hostname] = per_node
+        return per_node_map
+
+    per_node: dict[str, int] = {}
+    for demand_map in (
+        demand(
+            "p_instances_num",
+            "single_p_instance_pod_num",
+            "p_pod_npu_num",
+            "prefill_node_selector",
+        ),
+        demand(
+            "d_instances_num",
+            "single_d_instance_pod_num",
+            "d_pod_npu_num",
+            "decode_node_selector",
+        ),
+    ):
+        for hostname, count in demand_map.items():
+            per_node[hostname] = per_node.get(hostname, 0) + count
+    return {"total": sum(per_node.values()), "per_node": per_node}
+
+
+def check_node_npu_capacity(
+    *,
+    kube_context: str,
+    namespace: str,
+    per_node_requirement: dict[str, int],
+    machine: dict[str, Any] | None = None,
+    kubectl: KubectlRunner | None = None,
+    npu_resource_name: str = "huawei.com/Ascend910",
+) -> list[dict[str, Any]]:
+    """Verify each selected node has enough allocatable NPUs for the requested count.
+
+    A Pod already scheduled on the node counts against the available pool, so the
+    check compares requested count against (allocatable - allocated) per node.
+    Returns check records; a shortfall or unresolvable node is an error check.
+    """
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
+
+    def summarize(node_name: str) -> tuple[int, int, int]:
+        """Return (allocatable, allocated, available) NPU counts for a node."""
+        allocatable = 0
+        node_result = run_kubectl("get", "node", node_name, "-o", "json")
+        if node_result.returncode == 0 and node_result.stdout.strip():
+            try:
+                node_payload = json.loads(node_result.stdout)
+                raw = node_payload.get("status", {}).get("allocatable", {}).get(npu_resource_name)
+                allocatable = int(raw) if raw is not None else 0
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                allocatable = 0
+        pod_result = run_kubectl(
+            "get", "pods", "-A",
+            "--field-selector",
+            f"spec.nodeName={node_name},status.phase=Running",
+            "-o", "json",
+        )
+        allocated = 0
+        if pod_result.returncode == 0 and pod_result.stdout.strip():
+            try:
+                pods_payload = json.loads(pod_result.stdout)
+            except json.JSONDecodeError:
+                pods_payload = {}
+            for item in pods_payload.get("items", []) if isinstance(pods_payload, dict) else []:
+                if not isinstance(item, dict):
+                    continue
+                for container in item.get("spec", {}).get("containers", []):
+                    if not isinstance(container, dict):
+                        continue
+                    requests = container.get("resources", {}).get("requests", {}) if isinstance(
+                        container.get("resources"), dict
+                    ) else {}
+                    if not isinstance(requests, dict):
+                        continue
+                    raw = requests.get(npu_resource_name)
+                    try:
+                        allocated += int(raw)
+                    except (TypeError, ValueError):
+                        continue
+        return allocatable, allocated, max(allocatable - allocated, 0)
+
+    checks: list[dict[str, Any]] = []
+    for node_name, required in sorted(per_node_requirement.items()):
+        allocatable, allocated, available = summarize(node_name)
+        ok = available >= required
+        checks.append(
+            {
+                "name": f"npu_capacity:{node_name}",
+                "status": "ok" if ok else "error",
+                "message": (
+                    f"node {node_name} has {available} NPU available "
+                    f"(allocatable={allocatable}, allocated={allocated}, required={required})"
+                ),
+            }
+        )
+    if not checks:
+        checks.append(
+            {
+                "name": "npu_capacity",
+                "status": "error",
+                "message": "no node selected by node_selector for NPU capacity check",
+            }
+        )
+    return checks
 
 
 def patch_user_config_copy(
@@ -316,7 +543,23 @@ def collect_generated_manifests(output_dir: Path) -> list[Path]:
     return sorted(output_dir.glob("*.yaml"))
 
 
-def run_deploy_dry_run(config_dir: Path) -> dict[str, Any]:
+def run_deploy_dry_run(
+    config_dir: Path,
+    *,
+    machine: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run `deploy.py --dry-run` and return the generated manifest names.
+
+    When `machine` is given the dry-run executes on the machine host over SSH
+    (config uploaded first, generated manifests fetched back). Otherwise it runs
+    locally.
+    """
+    if machine is None:
+        return _run_deploy_dry_run_local(config_dir)
+    return _run_deploy_dry_run_remote(config_dir, machine)
+
+
+def _run_deploy_dry_run_local(config_dir: Path) -> dict[str, Any]:
     if not DEPLOY_PY.exists():
         return {
             "status": "error",
@@ -350,6 +593,82 @@ def run_deploy_dry_run(config_dir: Path) -> dict[str, Any]:
     }
 
 
+def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dict[str, Any]:
+    """Execute the deployer dry-run on the machine host over SSH."""
+    from mws_transport import SshScpTransport, transport_for_machine
+
+    paths = build_fixed_source_paths(machine)
+    remote_motor = str(paths["motor_source"]).rstrip("/")
+    remote_deployer = f"{remote_motor}/examples/deployer"
+    remote_deploy_py = f"{remote_deployer}/deploy.py"
+    remote_config = f"/tmp/mws-dryrun-config-{os.getpid()}"
+
+    transport = transport_for_machine(machine)
+    if not isinstance(transport, SshScpTransport):
+        raise WorkspaceStateError("remote dry-run requires an SSH transport")
+
+    probe = transport.run(f"test -f {shell_quote(remote_deploy_py)} && echo OK")
+    if probe.returncode != 0 or "OK" not in probe.stdout:
+        return {
+            "status": "error",
+            "reason": f"remote deployer not found: {remote_deploy_py}",
+            "returncode": probe.returncode,
+            "stdout_tail": probe.stdout[-4000:],
+            "stderr_tail": probe.stderr[-4000:],
+            "generated_files": [],
+        }
+
+    cleanup = transport.run(f"rm -rf {shell_quote(remote_config)} && mkdir -p {shell_quote(remote_config)}")
+    if cleanup.returncode:
+        return {
+            "status": "error",
+            "reason": f"remote dry-run config staging failed: {cleanup.stderr.strip() or cleanup.stdout.strip()}",
+            "returncode": cleanup.returncode,
+            "generated_files": [],
+        }
+    for item in sorted(config_dir.iterdir()):
+        if item.is_file():
+            transport.upload_file(str(item), f"{remote_config}/{item.name}")
+
+    remote_output = f"{remote_deployer}/output_yamls"
+    clear = transport.run(
+        f"rm -rf {shell_quote(remote_output)} && mkdir -p {shell_quote(remote_output)}"
+    )
+    if clear.returncode:
+        return {
+            "status": "error",
+            "reason": f"remote output staging failed: {clear.stderr.strip() or clear.stdout.strip()}",
+            "returncode": clear.returncode,
+            "generated_files": [],
+        }
+
+    command = (
+        f"cd {shell_quote(remote_deployer)} && "
+        f"python3 deploy.py --config_dir {shell_quote(remote_config)} --dry-run"
+    )
+    result = transport.run(command)
+
+    remote_files = set(transport.directory_file_hashes(remote_output).keys())
+
+    local_output = OUTPUT_YAMLS
+    local_output.mkdir(parents=True, exist_ok=True)
+    fetched: list[str] = []
+    for name in sorted(remote_files):
+        remote_path = f"{remote_output}/{name}"
+        data = transport.read_bytes(remote_path)
+        (local_output / name).write_bytes(data)
+        fetched.append(name)
+
+    transport.run(f"rm -rf {shell_quote(remote_config)}")
+    return {
+        "status": "ok" if result.returncode == 0 else "error",
+        "returncode": result.returncode,
+        "stdout_tail": result.stdout[-4000:],
+        "stderr_tail": result.stderr[-4000:],
+        "generated_files": fetched,
+    }
+
+
 def process_manifest_documents(
     documents: list[dict[str, Any]],
     *,
@@ -357,11 +676,14 @@ def process_manifest_documents(
     namespace: str,
     base_image_ref: str,
     mount_root: str = "/mnt",
+    node_port_overrides: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     docs = inject_namespace(documents, namespace)
     docs = inject_hostpath_mount(docs, mount_root=mount_root)
     docs = inject_image_ref(docs, base_image_ref)
     docs = inject_pythonpath_env(docs, pythonpath)
+    if node_port_overrides:
+        docs = inject_node_port_override(docs, node_port_overrides)
     return docs
 
 
@@ -373,6 +695,7 @@ def process_manifest_file(
     base_image_ref: str,
     mount_root: str,
     dest_dir: Path,
+    node_port_overrides: dict[int, int] | None = None,
 ) -> Path:
     text = path.read_text(encoding="utf-8")
     docs = load_yaml_documents(text)
@@ -382,6 +705,7 @@ def process_manifest_file(
         namespace=namespace,
         base_image_ref=base_image_ref,
         mount_root=mount_root,
+        node_port_overrides=node_port_overrides,
     )
     out = dest_dir / path.name
     out.write_text(dump_yaml_documents(docs), encoding="utf-8")
@@ -389,37 +713,38 @@ def process_manifest_file(
 
 
 def kubectl_dry_run_and_diff(
-    profile: dict[str, Any],
+    machine: dict[str, Any],
+    kube_context: str,
     manifest_paths: list[Path],
     namespace: str,
 ) -> dict[str, Any]:
-    kubectl = kubectl_base(profile)
-    if not shutil.which("kubectl"):
-        return {"status": "skipped", "reason": "kubectl not found in PATH"}
+    kubectl = build_kubectl_runner(machine, kube_context=kube_context)
     results: dict[str, Any] = {"status": "ok", "manifests": []}
-    for manifest in manifest_paths:
-        item: dict[str, Any] = {"manifest": relative_repo(manifest)}
-        apply_cmd = [*kubectl, "apply", "--dry-run=server", "-f", str(manifest)]
-        if namespace:
-            apply_cmd.extend(["-n", namespace])
-        apply = subprocess.run(apply_cmd, check=False, text=True, capture_output=True)
-        item["server_dry_run"] = {
-            "returncode": apply.returncode,
-            "stdout": apply.stdout[-2000:],
-            "stderr": apply.stderr[-2000:],
-        }
-        diff_cmd = [*kubectl, "diff", "-f", str(manifest)]
-        if namespace:
-            diff_cmd.extend(["-n", namespace])
-        diff = subprocess.run(diff_cmd, check=False, text=True, capture_output=True)
-        item["diff"] = {
-            "returncode": diff.returncode,
-            "stdout": diff.stdout[-2000:],
-            "stderr": diff.stderr[-2000:],
-        }
-        if apply.returncode not in (0,):
-            results["status"] = "warning"
-        results["manifests"].append(item)
+    with stage_remote_files(machine, manifest_paths, prefix="mws-plan-manifests") as staged:
+        for manifest in manifest_paths:
+            remote_manifest = staged[manifest]
+            item: dict[str, Any] = {"manifest": relative_repo(manifest)}
+            apply_args = ["apply", "--dry-run=server", "-f", remote_manifest]
+            if namespace:
+                apply_args.extend(["-n", namespace])
+            apply = kubectl(*apply_args)
+            item["server_dry_run"] = {
+                "returncode": apply.returncode,
+                "stdout": apply.stdout[-2000:],
+                "stderr": apply.stderr[-2000:],
+            }
+            diff_args = ["diff", "-f", remote_manifest]
+            if namespace:
+                diff_args.extend(["-n", namespace])
+            diff = kubectl(*diff_args)
+            item["diff"] = {
+                "returncode": diff.returncode,
+                "stdout": diff.stdout[-2000:],
+                "stderr": diff.stderr[-2000:],
+            }
+            if apply.returncode != 0:
+                results["status"] = "warning"
+            results["manifests"].append(item)
     return results
 
 
@@ -450,7 +775,7 @@ def render_plan(
         base_image_ref=base_image_ref,
     )
 
-    deploy_result = run_deploy_dry_run(staged_config)
+    deploy_result = run_deploy_dry_run(staged_config, machine=machine)
     if deploy_result.get("status") != "ok":
         raise WorkspaceStateError(
             "deployer dry-run failed: "
@@ -480,7 +805,8 @@ def render_plan(
         manifest_files.append(relative_repo(out))
 
     k8s_checks = kubectl_dry_run_and_diff(
-        profile,
+        machine,
+        str(machine.get("kube_context") or ""),
         [REPO_ROOT / path for path in manifest_files],
         namespace,
     )
@@ -522,54 +848,70 @@ def load_plan_from_dir(plan_dir: Path) -> dict[str, Any]:
     return data
 
 
-def apply_from_plan(plan: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    kubectl = kubectl_base(profile)
+def apply_from_plan(
+    plan: dict[str, Any],
+    machine: dict[str, Any],
+    *,
+    kube_context: str = "",
+) -> dict[str, Any]:
+    kubectl = build_kubectl_runner(machine, kube_context=kube_context)
     namespace = str(plan.get("namespace", ""))
     results: list[dict[str, Any]] = []
-    for rel in plan.get("manifest_files", []):
-        manifest = REPO_ROOT / rel
-        cmd = [*kubectl, "apply", "-f", str(manifest)]
-        if namespace:
-            cmd.extend(["-n", namespace])
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
-        results.append(
-            {
-                "manifest": rel,
-                "returncode": result.returncode,
-                "stdout": result.stdout[-2000:],
-                "stderr": result.stderr[-2000:],
-            }
-        )
+    manifests = [REPO_ROOT / rel for rel in plan.get("manifest_files", [])]
+    with stage_remote_files(machine, manifests, prefix="mws-apply-plan") as staged:
+        for rel, manifest in zip(plan.get("manifest_files", []), manifests):
+            args = ["apply", "-f", staged[manifest]]
+            if namespace:
+                args.extend(["-n", namespace])
+            result = kubectl(*args)
+            results.append(
+                {
+                    "manifest": rel,
+                    "returncode": result.returncode,
+                    "stdout": result.stdout[-2000:],
+                    "stderr": result.stderr[-2000:],
+                }
+            )
     ok = all(item["returncode"] == 0 for item in results) if results else False
     return {"status": "ok" if ok else "error", "apply_results": results}
 
 
-def stop_from_plan(plan: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    kubectl = kubectl_base(profile)
+def stop_from_plan(
+    plan: dict[str, Any],
+    machine: dict[str, Any],
+    *,
+    kube_context: str = "",
+) -> dict[str, Any]:
+    kubectl = build_kubectl_runner(machine, kube_context=kube_context)
     namespace = str(plan.get("namespace", ""))
     results: list[dict[str, Any]] = []
-    for rel in reversed(plan.get("manifest_files", [])):
-        manifest = REPO_ROOT / rel
-        cmd = [*kubectl, "delete", "--ignore-not-found", "-f", str(manifest)]
-        if namespace:
-            cmd.extend(["-n", namespace])
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
-        results.append(
-            {
-                "manifest": rel,
-                "returncode": result.returncode,
-                "stdout": result.stdout[-2000:],
-                "stderr": result.stderr[-2000:],
-            }
-        )
+    rel_paths = list(plan.get("manifest_files", []))
+    manifests = [REPO_ROOT / rel for rel in rel_paths]
+    with stage_remote_files(machine, manifests, prefix="mws-stop-plan") as staged:
+        for rel, manifest in reversed(list(zip(rel_paths, manifests))):
+            args = ["delete", "--ignore-not-found", "-f", staged[manifest]]
+            if namespace:
+                args.extend(["-n", namespace])
+            result = kubectl(*args)
+            results.append(
+                {
+                    "manifest": rel,
+                    "returncode": result.returncode,
+                    "stdout": result.stdout[-2000:],
+                    "stderr": result.stderr[-2000:],
+                }
+            )
     ok = all(item["returncode"] == 0 for item in results) if results else False
     return {"status": "ok" if ok else "error", "delete_results": results}
 
 
-def restart_deploy_workloads(plan: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    if not shutil.which("kubectl"):
-        return {"status": "error", "errors": ["kubectl not found in PATH"]}
-    kubectl = kubectl_base(profile)
+def restart_deploy_workloads(
+    plan: dict[str, Any],
+    machine: dict[str, Any],
+    *,
+    kube_context: str = "",
+) -> dict[str, Any]:
+    kubectl = build_kubectl_runner(machine, kube_context=kube_context)
     namespace = str(plan.get("namespace", ""))
     if not namespace:
         return {"status": "error", "errors": ["plan missing namespace"]}
@@ -581,8 +923,7 @@ def restart_deploy_workloads(plan: dict[str, Any], profile: dict[str, Any]) -> d
             continue
         matched = True
         if resource.startswith("deployment/") or resource.startswith("statefulset/"):
-            restart_cmd = [*kubectl, "rollout", "restart", resource, "-n", namespace]
-            result = subprocess.run(restart_cmd, check=False, text=True, capture_output=True)
+            result = kubectl("rollout", "restart", resource, "-n", namespace)
             actions.append(
                 {
                     "action": "rollout_restart",
@@ -593,8 +934,7 @@ def restart_deploy_workloads(plan: dict[str, Any], profile: dict[str, Any]) -> d
             )
             continue
         if resource.startswith("job/") or resource.startswith("ascendjob/"):
-            delete_cmd = [
-                *kubectl,
+            delete_args = [
                 "delete",
                 "pods",
                 "-n",
@@ -603,7 +943,7 @@ def restart_deploy_workloads(plan: dict[str, Any], profile: dict[str, Any]) -> d
                 f"job-name={resource.split('/', 1)[1]}",
                 "--wait=false",
             ]
-            result = subprocess.run(delete_cmd, check=False, text=True, capture_output=True)
+            result = kubectl(*delete_args)
             actions.append(
                 {
                     "action": "delete_pods",
@@ -625,12 +965,16 @@ def restart_deploy_workloads(plan: dict[str, Any], profile: dict[str, Any]) -> d
     return {"status": "error" if failed else "ok", "actions": actions}
 
 
-def pod_readiness_probe(profile: dict[str, Any], namespace: str) -> dict[str, Any]:
-    kubectl = kubectl_base(profile)
-    cmd = [*kubectl, "get", "pods", "-n", namespace, "-o", "json"]
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+def pod_readiness_probe(
+    machine: dict[str, Any],
+    namespace: str,
+    *,
+    kube_context: str = "",
+) -> dict[str, Any]:
+    kubectl = build_kubectl_runner(machine, kube_context=kube_context)
+    result = kubectl("get", "pods", "-n", namespace, "-o", "json")
     if result.returncode:
-        return {"ready": False, "error": result.stderr.strip(), "skipped": not shutil.which("kubectl")}
+        return {"ready": False, "error": result.stderr.strip() or result.stdout.strip()}
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -649,18 +993,21 @@ def pod_readiness_probe(profile: dict[str, Any], namespace: str) -> dict[str, An
     return {"ready": total > 0 and ready == total, "pods_total": total, "pods_ready": ready}
 
 
-def collect_component_status(profile: dict[str, Any], namespace: str) -> dict[str, Any]:
-    kubectl = kubectl_base(profile)
-    if not shutil.which("kubectl"):
-        return {"status": "skipped", "reason": "kubectl not found"}
+def collect_component_status(
+    machine: dict[str, Any],
+    namespace: str,
+    *,
+    kube_context: str = "",
+) -> dict[str, Any]:
+    kubectl = build_kubectl_runner(machine, kube_context=kube_context)
     components = {
-        "pods": [*kubectl, "get", "pods", "-n", namespace, "-o", "wide"],
-        "services": [*kubectl, "get", "svc", "-n", namespace, "-o", "wide"],
-        "jobs": [*kubectl, "get", "jobs", "-n", namespace, "-o", "wide"],
+        "pods": ("get", "pods", "-n", namespace, "-o", "wide"),
+        "services": ("get", "svc", "-n", namespace, "-o", "wide"),
+        "jobs": ("get", "jobs", "-n", namespace, "-o", "wide"),
     }
     out: dict[str, Any] = {"status": "ok", "components": {}}
-    for name, cmd in components.items():
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    for name, args in components.items():
+        result = kubectl(*args)
         out["components"][name] = {
             "returncode": result.returncode,
             "stdout": result.stdout[-4000:],
@@ -669,17 +1016,6 @@ def collect_component_status(profile: dict[str, Any], namespace: str) -> dict[st
         if result.returncode:
             out["status"] = "warning"
     return out
-
-
-def openai_smoke(profile: dict[str, Any], namespace: str) -> dict[str, Any]:
-    if os.environ.get("MWS_SKIP_OPENAI_SMOKE") == "1":
-        return {"status": "skipped", "reason": "MWS_SKIP_OPENAI_SMOKE=1"}
-    if not shutil.which("kubectl"):
-        return {"status": "skipped", "reason": "kubectl not found"}
-    return {
-        "status": "skipped",
-        "reason": "OpenAI smoke requires live Coordinator endpoint; run manually after pods ready",
-    }
 
 
 def resolve_deploy_base_image(config_dir: Path, lock: dict[str, Any] | None = None) -> str:
@@ -692,14 +1028,6 @@ def resolve_deploy_base_image(config_dir: Path, lock: dict[str, Any] | None = No
             if locked and locked != "UNRESOLVED":
                 return str(locked)
         raise
-
-
-def kubectl_base_from_context(kube_context: str = "") -> list[str]:
-    args = ["kubectl"]
-    context = str(kube_context or "").strip()
-    if context:
-        args.extend(["--context", context])
-    return args
 
 
 def deployer_version_token() -> str:
@@ -734,10 +1062,32 @@ def compute_config_fingerprint(
     return digest_json(payload)
 
 
-def verify_namespace_exists(*, kube_context: str, namespace: str) -> dict[str, Any]:
-    kubectl = kubectl_base_from_context(kube_context)
-    cmd = [*kubectl, "get", "namespace", namespace, "-o", "name"]
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+def _resolve_kubectl_runner(
+    *,
+    machine: dict[str, Any] | None,
+    kube_context: str,
+    kubectl: KubectlRunner | None,
+) -> KubectlRunner:
+    if kubectl is not None:
+        return kubectl
+    if machine is None:
+        raise WorkspaceStateError("machine record is required for remote kubectl")
+    return build_kubectl_runner(machine, kube_context=kube_context)
+
+
+def verify_namespace_exists(
+    *,
+    kube_context: str,
+    namespace: str,
+    machine: dict[str, Any] | None = None,
+    kubectl: KubectlRunner | None = None,
+) -> dict[str, Any]:
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
+    result = run_kubectl("get", "namespace", namespace, "-o", "name")
     ok = result.returncode == 0 and namespace in result.stdout
     return {
         "name": "namespace_exists",
@@ -752,8 +1102,14 @@ def verify_manifest_rbac(
     kube_context: str,
     namespace: str,
     manifest_paths: list[Path],
+    machine: dict[str, Any] | None = None,
+    kubectl: KubectlRunner | None = None,
 ) -> list[dict[str, Any]]:
-    kubectl = kubectl_base_from_context(kube_context)
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
     checks: list[dict[str, Any]] = []
     verbs = [
         ("create", "deployments"),
@@ -761,8 +1117,7 @@ def verify_manifest_rbac(
         ("create", "configmaps"),
     ]
     for verb, resource in verbs:
-        cmd = [*kubectl, "auth", "can-i", verb, resource, "-n", namespace]
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        result = run_kubectl("auth", "can-i", verb, resource, "-n", namespace)
         ok = result.stdout.strip().lower() == "yes"
         checks.append(
             {
@@ -787,28 +1142,42 @@ def kubectl_server_side_dry_run(
     kube_context: str,
     manifest_paths: list[Path],
     namespace: str,
+    kubectl: KubectlRunner | None = None,
+    machine: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    if not shutil.which("kubectl"):
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
+
+    def run_checks(targets: dict[Path, str]) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        for manifest in manifest_paths:
+            target = targets[manifest]
+            result = run_kubectl("apply", "--dry-run=server", "-f", target, "-n", namespace)
+            checks.append(
+                {
+                    "name": f"server_side_dry_run:{manifest.name}",
+                    "status": "ok" if result.returncode == 0 else "error",
+                    "message": result.stderr.strip() or result.stdout.strip() or manifest.name,
+                }
+            )
+        return checks
+
+    if machine is None:
+        return run_checks({manifest: str(manifest) for manifest in manifest_paths})
+    try:
+        with stage_remote_files(machine, manifest_paths, prefix="mws-dryrun-manifests") as staged:
+            return run_checks(staged)
+    except WorkspaceStateError as exc:
         return [
             {
                 "name": "server_side_dry_run",
                 "status": "unavailable",
-                "message": "kubectl not found in PATH",
+                "message": str(exc),
             }
         ]
-    kubectl = kubectl_base_from_context(kube_context)
-    checks: list[dict[str, Any]] = []
-    for manifest in manifest_paths:
-        cmd = [*kubectl, "apply", "--dry-run=server", "-f", str(manifest), "-n", namespace]
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
-        checks.append(
-            {
-                "name": f"server_side_dry_run:{manifest.name}",
-                "status": "ok" if result.returncode == 0 else "error",
-                "message": result.stderr.strip() or result.stdout.strip() or manifest.name,
-            }
-        )
-    return checks
 
 
 def _configure_failed(
@@ -849,6 +1218,7 @@ def configure_deploy_bundle(
     deploy_config = load_motor_deploy_config(config_dir)
     namespace = deploy_config["namespace"]
     machine_paths = build_fixed_source_paths(machine)
+    node_port_overrides = _load_node_port_overrides(native_config)
     fingerprint = compute_config_fingerprint(
         native_config=native_config,
         machine_paths=machine_paths,
@@ -894,7 +1264,12 @@ def configure_deploy_bundle(
             "reused": True,
         }
 
-    ns_check = verify_namespace_exists(kube_context=kube_context, namespace=namespace)
+    kubectl_runner = build_kubectl_runner(machine, kube_context=kube_context)
+    ns_check = verify_namespace_exists(
+        kube_context=kube_context,
+        namespace=namespace,
+        kubectl=kubectl_runner,
+    )
     if not runner.append(ns_check):
         return _configure_failed(runner, namespace=namespace)
 
@@ -906,7 +1281,7 @@ def configure_deploy_bundle(
     )
     runner.append({"name": "stage_native_config", "status": "ok", "message": str(staged_config)})
 
-    deploy_result = run_deploy_dry_run(staged_config)
+    deploy_result = run_deploy_dry_run(staged_config, machine=machine)
     if deploy_result.get("status") != "ok":
         runner.append(
             {
@@ -946,6 +1321,7 @@ def configure_deploy_bundle(
             base_image_ref=base_image_ref,
             mount_root=str(mount_root),
             dest_dir=manifests_dir,
+            node_port_overrides=node_port_overrides or None,
         )
         manifest_paths.append(out)
         manifest_files.append(relative_repo(out))
@@ -954,6 +1330,7 @@ def configure_deploy_bundle(
         kube_context=kube_context,
         namespace=namespace,
         manifest_paths=manifest_paths,
+        kubectl=kubectl_runner,
     ):
         if not runner.append(check):
             return _configure_failed(runner, namespace=namespace)
@@ -962,6 +1339,19 @@ def configure_deploy_bundle(
         kube_context=kube_context,
         manifest_paths=manifest_paths,
         namespace=namespace,
+        kubectl=kubectl_runner,
+        machine=machine,
+    ):
+        if not runner.append(check):
+            return _configure_failed(runner, namespace=namespace)
+
+    npu_requirement = compute_npu_requirement(native_config)
+    for check in check_node_npu_capacity(
+        kube_context=kube_context,
+        namespace=namespace,
+        per_node_requirement=npu_requirement["per_node"],
+        machine=machine,
+        kubectl=kubectl_runner,
     ):
         if not runner.append(check):
             return _configure_failed(runner, namespace=namespace)
@@ -1013,26 +1403,33 @@ def load_config_bundle(bundle_dir: Path) -> dict[str, Any]:
 def apply_config_bundle(
     *,
     bundle_dir: Path,
+    machine: dict[str, Any],
     kube_context: str,
     namespace: str,
+    kubectl: KubectlRunner | None = None,
 ) -> dict[str, Any]:
-    kubectl = kubectl_base_from_context(kube_context)
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
     manifest_dir = bundle_dir / "manifests"
     if not manifest_dir.exists():
         raise WorkspaceStateError(f"bundle manifests missing: {manifest_dir}")
     results: list[dict[str, Any]] = []
-    for manifest in sorted(manifest_dir.glob("*.yaml")):
-        cmd = [*kubectl, "apply", "-f", str(manifest), "-n", namespace]
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
-        results.append(
-            {
-                "manifest": manifest.name,
-                "bytes_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
-                "returncode": result.returncode,
-                "stdout": result.stdout[-2000:],
-                "stderr": result.stderr[-2000:],
-            }
-        )
+    manifests = sorted(manifest_dir.glob("*.yaml"))
+    with stage_remote_files(machine, manifests, prefix="mws-apply-bundle") as staged:
+        for manifest in manifests:
+            result = run_kubectl("apply", "-f", staged[manifest], "-n", namespace)
+            results.append(
+                {
+                    "manifest": manifest.name,
+                    "bytes_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                    "returncode": result.returncode,
+                    "stdout": result.stdout[-2000:],
+                    "stderr": result.stderr[-2000:],
+                }
+            )
     ok = all(item["returncode"] == 0 for item in results) if results else False
     return {"status": "ok" if ok else "error", "apply_results": results}
 
@@ -1080,9 +1477,8 @@ def verify_bundle_digest(bundle_dir: Path, expected_digest: str) -> None:
             raise WorkspaceStateError("config bundle content was modified or fingerprint collision detected")
 
 
-def _pick_runtime_pod(kubectl: list[str], namespace: str) -> str | None:
-    cmd = [*kubectl, "get", "pods", "-n", namespace, "-o", "json"]
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+def _pick_runtime_pod(kubectl: KubectlRunner, namespace: str) -> str | None:
+    result = kubectl("get", "pods", "-n", namespace, "-o", "json")
     if result.returncode:
         return None
     try:
@@ -1098,12 +1494,19 @@ def _pick_runtime_pod(kubectl: list[str], namespace: str) -> str | None:
     return None
 
 
-def verify_min_service_access(*, kube_context: str, namespace: str) -> dict[str, Any]:
-    kubectl = kubectl_base_from_context(kube_context)
-    if not shutil.which("kubectl"):
-        return {"name": "min_service_access", "status": "unavailable", "message": "kubectl not found"}
-    cmd = [*kubectl, "get", "endpoints", "-n", namespace, "-o", "json"]
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+def verify_min_service_access(
+    *,
+    machine: dict[str, Any],
+    kube_context: str,
+    namespace: str,
+    kubectl: KubectlRunner | None = None,
+) -> dict[str, Any]:
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
+    result = run_kubectl("get", "endpoints", "-n", namespace, "-o", "json")
     if result.returncode:
         return {
             "name": "min_service_access",
@@ -1135,21 +1538,24 @@ def verify_min_service_access(*, kube_context: str, namespace: str) -> dict[str,
 
 def collect_runtime_code_paths(
     *,
+    machine: dict[str, Any],
     kube_context: str,
     namespace: str,
     pod_name: str | None = None,
+    kubectl: KubectlRunner | None = None,
 ) -> dict[str, Any]:
-    kubectl = kubectl_base_from_context(kube_context)
-    if not shutil.which("kubectl"):
-        return {"status": "unavailable", "reason": "kubectl not found", "paths": {}}
-    target_pod = pod_name or _pick_runtime_pod(kubectl, namespace)
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
+    target_pod = pod_name or _pick_runtime_pod(run_kubectl, namespace)
     if not target_pod:
         return {"status": "error", "reason": "no ready pod found", "paths": {}}
     paths: dict[str, str] = {}
     errors: list[str] = []
     for module, _ in RUNTIME_MODULES:
-        cmd = [
-            *kubectl,
+        args = [
             "exec",
             "-n",
             namespace,
@@ -1159,7 +1565,7 @@ def collect_runtime_code_paths(
             "-c",
             f"import {module}; print(getattr({module}, '__file__', ''))",
         ]
-        result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+        result = run_kubectl(*args)
         value = result.stdout.strip()
         if result.returncode or not value:
             errors.append(f"{module}: {result.stderr.strip() or 'missing __file__'}")
@@ -1201,24 +1607,27 @@ def verify_runtime_code_paths(
 def restart_deploy_workloads_from_context(
     plan: dict[str, Any],
     *,
+    machine: dict[str, Any],
     kube_context: str,
 ) -> dict[str, Any]:
-    profile = {"kubernetes": {"context": kube_context}}
-    return restart_deploy_workloads(plan, profile)
+    return restart_deploy_workloads(plan, machine, kube_context=kube_context)
 
 
 def stop_from_bundle(
     bundle_dir: Path,
     *,
+    machine: dict[str, Any],
     kube_context: str,
     namespace: str,
 ) -> dict[str, Any]:
     plan = bundle_to_plan(bundle_dir)
     plan["namespace"] = namespace or plan.get("namespace", "")
-    profile = {"kubernetes": {"context": kube_context}}
-    return stop_from_plan(plan, profile)
+    return stop_from_plan(plan, machine, kube_context=kube_context)
 
 
-def pod_readiness_from_context(kube_context: str, namespace: str) -> dict[str, Any]:
-    profile = {"kubernetes": {"context": kube_context}}
-    return pod_readiness_probe(profile, namespace)
+def pod_readiness_from_context(
+    machine: dict[str, Any],
+    kube_context: str,
+    namespace: str,
+) -> dict[str, Any]:
+    return pod_readiness_probe(machine, namespace, kube_context=kube_context)

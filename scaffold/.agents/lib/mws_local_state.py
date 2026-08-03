@@ -190,6 +190,19 @@ def validate_machine_record(record: Any, *, where: str = "machine") -> dict[str,
             f"{where}.parity_backend must be one of: {', '.join(PARITY_BACKEND_CHOICES)}"
         )
 
+    source_dirs = record.get("source_dirs")
+    if source_dirs is not None and not isinstance(source_dirs, dict):
+        raise WorkspaceStateError(f"{where}.source_dirs must be an object when present")
+    if source_dirs:
+        for key in ("motor", "vllm", "vllm_ascend", "python_overlay"):
+            value = source_dirs.get(key)
+            if value is None:
+                continue
+            try:
+                validate_remote_workspace_in_mount(mount_root, str(value), label=f"{where}.source_dirs.{key}")
+            except Exception as exc:  # noqa: BLE001
+                raise WorkspaceStateError(str(exc)) from exc
+
     candidate_nodes = record.get("candidate_nodes", [])
     if candidate_nodes is None:
         candidate_nodes = []
@@ -215,6 +228,10 @@ def validate_machine_record(record: Any, *, where: str = "machine") -> dict[str,
         "parity_backend": parity_backend,
         "candidate_nodes": [item.strip() for item in candidate_nodes],
     }
+    if source_dirs:
+        normalized["source_dirs"] = {
+            key: source_dirs[key] for key in ("motor", "vllm", "vllm_ascend", "python_overlay") if source_dirs.get(key)
+        }
     for optional_key in ("created_at", "last_verified_at", "last_verify_errors", "last_repaired_at"):
         if optional_key in record:
             normalized[optional_key] = record[optional_key]

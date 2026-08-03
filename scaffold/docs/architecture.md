@@ -34,10 +34,13 @@ ad hoc remote development.
      Ready, verifies minimal service access, and proves which code Pods actually
      load via runtime `__file__` paths.
 3. Validation consumes a successful deploy run for formal smoke, benchmark,
-   profiling, and diagnosis.
+   profiling, and related pass/fail scenarios (see `docs/validation/`).
+   Diagnosis is a separate cross-cutting failure exit (see `docs/diagnosis/`),
+   invoked after deploy or validation failures—not a validation scenario.
 
 Minimal connectivity/readiness checks belong to deploy acceptance. Formal
-workloads and their pass/fail criteria belong to validation.
+workloads and their pass/fail criteria belong to validation. Evidence
+collection after failure belongs to diagnosis.
 
 ## Shared mount root
 

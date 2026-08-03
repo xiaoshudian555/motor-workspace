@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import tarfile
-from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -15,6 +13,7 @@ LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from git_fixtures import init_repo  # noqa: E402
 from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
 from mws_local_state import upsert_machine  # noqa: E402
 from mws_parity import (  # noqa: E402
@@ -66,37 +65,6 @@ def parity_env(tmp_path: Path, monkeypatch):
     FakeRemoteTransport._shared_parity_locks.clear()
 
 
-def _fake_git_factory(repo: Path):
-    def fake_git(args: list[str], path: Path):
-        if args[:2] == ["rev-parse", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, "deadbeef\n", "")
-        if args[:2] == ["ls-files", "--error-unmatch"]:
-            rel = args[2]
-            tracked = not rel.startswith("untracked-")
-            return subprocess.CompletedProcess(args, 0 if tracked else 1, "", "")
-        if args[:1] == ["status"]:
-            porcelain = ""
-            for child in sorted(path.iterdir()):
-                if child.name == ".git":
-                    continue
-                if child.is_file() and child.name.startswith("dirty-"):
-                    porcelain += f" M {child.name}\n"
-            return subprocess.CompletedProcess(args, 0, porcelain, "")
-        if args[:1] == ["diff"]:
-            return subprocess.CompletedProcess(args, 0, "", "")
-        if args[:1] == ["ls-files"]:
-            names = sorted(
-                p.name
-                for p in path.iterdir()
-                if p.is_file() and p.name != ".git"
-            )
-            payload = "\0".join(names) + ("\0" if names else "")
-            return subprocess.CompletedProcess(args, 0, payload, "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    return fake_git
-
-
 def _bind_repos(monkeypatch, repo: Path) -> None:
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", repo)
     monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", repo)
@@ -104,12 +72,7 @@ def _bind_repos(monkeypatch, repo: Path) -> None:
 
 
 def _setup_repo(tmp_path: Path, *, files: dict[str, str]) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    for name, content in files.items():
-        (repo / name).write_text(content, encoding="utf-8")
-    return repo
+    return init_repo(tmp_path / "repo", files=files)
 
 
 def _sync(
@@ -123,7 +86,6 @@ def _sync(
     skip_fast_path: bool = False,
 ) -> dict:
     repo = _setup_repo(tmp_path, files=repo_files)
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
     fake_root = tmp_path / "remote"
     tx = transport or FakeRemoteTransport(fake_root)
@@ -174,20 +136,21 @@ def test_dirty_and_untracked_files_sync(
     monkeypatch, tmp_path: Path, parity_env: Path
 ) -> None:
     ready = _machine_ready()
-    manifest = _sync(
-        monkeypatch,
-        tmp_path,
-        parity_env,
-        repo_files={
-            "dirty-tracked.py": "changed\n",
-            "untracked-new.py": "new\n",
-        },
+    repo = _setup_repo(tmp_path, files={"base.py": "base\n"})
+    (repo / "base.py").write_text("changed\n", encoding="utf-8")
+    (repo / "untracked-new.py").write_text("new\n", encoding="utf-8")
+    _bind_repos(monkeypatch, repo)
+    fake_root = tmp_path / "remote"
+    tx = FakeRemoteTransport(fake_root)
+    manifest = sync_workspace_to_remote(
+        _machine(),
+        transport=tx,
         machine_ready=ready,
     )
     motor_repo = manifest["repositories"][0]
     assert motor_repo["dirty"] is True
     assert "untracked-new.py" in motor_repo["untracked_files"]
-    assert manifest["sync_mode"] == "full-sync"
+    assert manifest["sync_mode"] == "git-initial"
 
 
 def test_delete_removes_remote_file(
@@ -195,7 +158,6 @@ def test_delete_removes_remote_file(
 ) -> None:
     ready = _machine_ready()
     repo = _setup_repo(tmp_path, files={"keep.py": "keep\n", "drop.py": "drop\n"})
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
     fake_root = tmp_path / "remote"
     tx = FakeRemoteTransport(fake_root)
@@ -223,13 +185,12 @@ def test_no_change_fast_path_skips_resync(
 ) -> None:
     ready = _machine_ready()
     repo = _setup_repo(tmp_path, files={"stable.py": "stable\n"})
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
     fake_root = tmp_path / "remote"
     tx = FakeRemoteTransport(fake_root)
 
     first = sync_workspace_to_remote(_machine(), transport=tx, machine_ready=ready)
-    assert first["sync_mode"] == "full-sync"
+    assert first["sync_mode"] == "git-initial"
     upload_count = len(tx.uploads)
 
     second = sync_workspace_to_remote(_machine(), transport=tx, machine_ready=ready)
@@ -242,7 +203,6 @@ def test_remote_drift_forces_resync(
 ) -> None:
     ready = _machine_ready()
     repo = _setup_repo(tmp_path, files={"stable.py": "stable\n"})
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
     fake_root = tmp_path / "remote"
     tx = FakeRemoteTransport(fake_root)
@@ -252,7 +212,7 @@ def test_remote_drift_forces_resync(
     drifted.write_text("drift\n", encoding="utf-8")
 
     manifest = sync_workspace_to_remote(_machine(), transport=tx, machine_ready=ready)
-    assert manifest["sync_mode"] == "full-sync"
+    assert manifest["sync_mode"] == "git-incremental"
     assert drifted.read_text(encoding="utf-8") == "stable\n"
 
 
@@ -261,7 +221,6 @@ def test_partial_failure_does_not_publish_complete_state(
 ) -> None:
     ready = _machine_ready()
     repo = _setup_repo(tmp_path, files={"file.py": "x\n"})
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
     fake_root = tmp_path / "remote"
 
@@ -282,7 +241,6 @@ def test_concurrent_sync_second_fails_on_lock(
 ) -> None:
     ready = _machine_ready()
     repo = _setup_repo(tmp_path, files={"file.py": "x\n"})
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
 
     lock_path = "/mnt/motor-workspace/.parity-sync.lock"
@@ -306,7 +264,6 @@ def test_mid_failure_manifest_not_ok(
 ) -> None:
     ready = _machine_ready()
     repo = _setup_repo(tmp_path, files={"file.py": "x\n"})
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
     _bind_repos(monkeypatch, repo)
 
     class BrokenTransport(FakeRemoteTransport):
@@ -326,35 +283,9 @@ def test_machine_ready_missing(parity_env: Path) -> None:
         load_machine_ready_evidence("dev1")
 
 
-def test_create_repo_tarball_includes_tracked_and_untracked(
-    monkeypatch, tmp_path: Path
-) -> None:
-    from mws_parity import create_repo_tarball  # noqa: E402
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / "tracked.py").write_text("t\n", encoding="utf-8")
-    (repo / "untracked.py").write_text("u\n", encoding="utf-8")
-
-    def fake_git(args: list[str], path: Path):
-        if args[:1] == ["ls-files"]:
-            return subprocess.CompletedProcess(args, 0, "tracked.py\0untracked.py\0", "")
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    monkeypatch.setattr("mws_parity._git", fake_git)
-    data = create_repo_tarball(repo)
-    with tarfile.open(fileobj=BytesIO(data), mode="r:gz") as archive:
-        names = set(archive.getnames())
-    assert names == {"tracked.py", "untracked.py"}
-
-
 def test_build_source_manifest_has_content_digest(monkeypatch, tmp_path: Path) -> None:
     repo = _setup_repo(tmp_path, files={"a.py": "a\n"})
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "motor", repo)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm", repo)
-    monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, "vllm_ascend", repo)
-    monkeypatch.setattr("mws_parity._git", _fake_git_factory(repo))
+    _bind_repos(monkeypatch, repo)
     manifest = build_source_manifest(_machine())
     assert manifest["local_content_digest"]
     assert manifest["local_content_digests"]["motor"]

@@ -18,6 +18,7 @@ def default_machine_ready_checks() -> list[dict[str, Any]]:
         {"name": "remote_workspace_root", "status": "ok", "message": "", "evidence": "/mnt/motor-workspace"},
         {"name": "parity_tool:tar", "status": "ok", "message": "", "evidence": "/usr/bin/tar"},
         {"name": "parity_tool:mkdir", "status": "ok", "message": "", "evidence": "/usr/bin/mkdir"},
+        {"name": "parity_tool:git", "status": "ok", "message": "", "evidence": "/usr/bin/git"},
         {"name": "shared_hostpath_root", "status": "ok", "message": "", "evidence": "/mnt"},
         {"name": "parity_backend", "status": "ok", "message": "", "evidence": "shared-hostpath"},
     ]
