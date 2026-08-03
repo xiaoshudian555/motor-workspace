@@ -20,8 +20,8 @@
 - 在未固定影响输出的输入和配置时声称结果发生回归。
 - 验证特性开关的业务生效方式（例如 API key 拒识、metrics 暴露）；该责任属于
   [`../functional/`](../functional/)。
-- 用 smoke 的最小 HTTP/SSE 断言代替本场景的完整协议/一致性/精度结论；smoke
-  只提供 gate 级子集。
+- 用 Functional `inference-request` 的最小 HTTP/SSE 断言代替本场景的完整协议、
+  一致性或精度结论；该 case 只证明请求走通并产生输出。
 
 ## 交付
 

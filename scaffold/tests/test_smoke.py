@@ -19,8 +19,6 @@ from mws_smoke import (  # noqa: E402
     discover_coordinator_services,
     resolve_model_name,
     resolve_smoke_context,
-    validate_non_stream_response,
-    validate_stream_response,
     wait_for_readiness,
 )
 from mws_state import atomic_write_json  # noqa: E402
@@ -191,6 +189,41 @@ def test_discover_coordinator_services_ignores_controller_mgmt(monkeypatch) -> N
     assert resolved["mgmt"]["name"] == "mindie-motor-coordinator-mgmt"
 
 
+def test_smoke_can_resolve_management_service_without_inference_service() -> None:
+    payload = {
+        "items": [
+            {
+                "metadata": {
+                    "name": "mindie-motor-coordinator-mgmt",
+                    "labels": {"app": "mindie-motor-coordinator"},
+                },
+                "spec": {
+                    "ports": [{"port": 1026, "targetPort": 1026}],
+                    "selector": {"app": "mindie-motor-coordinator"},
+                },
+            }
+        ]
+    }
+
+    def fake_kubectl(*args):
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    resolved = discover_coordinator_services(
+        machine=_machine(),
+        kube_context="ctx-a",
+        namespace="ns1",
+        roles=("mgmt",),
+        kubectl=fake_kubectl,
+    )
+
+    assert set(resolved) == {"mgmt"}
+
+
 def test_wait_for_readiness_requires_ready_true() -> None:
     responses = iter(
         [
@@ -202,33 +235,7 @@ def test_wait_for_readiness_requires_ready_true() -> None:
     assert result["json"]["ready"] is True
 
 
-def test_validate_non_stream_response_requires_generated_output() -> None:
-    summary = validate_non_stream_response(
-        {
-            "status": 200,
-            "body": json.dumps(
-                {"choices": [{"text": "MOTOR_SMOKE_OK"}], "usage": {"completion_tokens": 3}}
-            ),
-        }
-    )
-    assert summary["output_chars"] == len("MOTOR_SMOKE_OK")
-    with pytest.raises(WorkspaceStateError, match="no generated output"):
-        validate_non_stream_response({"status": 200, "body": '{"choices":[{"text":""}]}'})
-
-
-def test_validate_stream_response_requires_output_and_done() -> None:
-    body = (
-        'data: {"choices":[{"text":"MOTOR"}]}\n\n'
-        'data: {"choices":[{"text":"_SMOKE_OK"}]}\n\n'
-        "data: [DONE]\n\n"
-    )
-    summary = validate_stream_response({"status": 200, "body": body})
-    assert summary == {"events": 2, "choices_seen": 2, "output_chars": 14, "done": True}
-    with pytest.raises(WorkspaceStateError, match="missing data"):
-        validate_stream_response({"status": 200, "body": body.replace("data: [DONE]", "")})
-
-
-def test_smoke_script_writes_ready_validation_run(tmp_path, monkeypatch) -> None:
+def test_smoke_script_stops_at_coordinator_readiness(tmp_path, monkeypatch) -> None:
     script = SCAFFOLD / ".agents/skills/motor-smoke/scripts/smoke_run.py"
     spec = importlib.util.spec_from_file_location("smoke_run_test", script)
     module = importlib.util.module_from_spec(spec)
@@ -253,7 +260,6 @@ def test_smoke_script_writes_ready_validation_run(tmp_path, monkeypatch) -> None
     }
     services = {
         "mgmt": {"name": "mindie-motor-coordinator-mgmt", "port": 1026},
-        "infer": {"name": "mindie-motor-coordinator-infer", "port": 1025},
     }
 
     class FakeForward:
@@ -267,20 +273,6 @@ def test_smoke_script_writes_ready_validation_run(tmp_path, monkeypatch) -> None
         def __exit__(self, exc_type, exc, tb):
             self.log = "closed"
 
-    responses = iter(
-        [
-            {
-                "status": 200,
-                "body": json.dumps(
-                    {"choices": [{"text": "MOTOR_SMOKE_OK"}], "usage": {"completion_tokens": 3}}
-                ),
-            },
-            {
-                "status": 200,
-                "body": 'data: {"choices":[{"text":"MOTOR_SMOKE_OK"}]}\n\ndata: [DONE]\n\n',
-            },
-        ]
-    )
     monkeypatch.setattr(module, "resolve_smoke_context", lambda **kwargs: context)
     monkeypatch.setattr(module, "get_machine", lambda alias: _machine())
     monkeypatch.setattr(module, "discover_coordinator_services", lambda **kwargs: services)
@@ -289,7 +281,6 @@ def test_smoke_script_writes_ready_validation_run(tmp_path, monkeypatch) -> None
         "ensure_service_endpoints",
         lambda **kwargs: {
             "mgmt": {"service": services["mgmt"]["name"], "ready_addresses": 1},
-            "infer": {"service": services["infer"]["name"], "ready_addresses": 1},
         },
     )
     monkeypatch.setattr(module, "PortForward", FakeForward)
@@ -302,7 +293,11 @@ def test_smoke_script_writes_ready_validation_run(tmp_path, monkeypatch) -> None
             "json": {"status": "ok", "ready": True},
         },
     )
-    monkeypatch.setattr(module, "request_json", lambda **kwargs: next(responses))
+    monkeypatch.setattr(
+        module,
+        "request_json",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("readiness is stubbed")),
+    )
     out_dir = tmp_path / "validation-runs" / "smoke-test"
     out_dir.mkdir(parents=True)
     monkeypatch.setattr(module, "validation_run_dir", lambda run_id: out_dir)
@@ -326,12 +321,10 @@ def test_smoke_script_writes_ready_validation_run(tmp_path, monkeypatch) -> None
     assert captured["payload"]["status"] == "ready"
     assert [check["name"] for check in captured["payload"]["checks"]] == [
         "deploy_context",
-        "coordinator_services",
-        "motor_readiness",
-        "non_stream_inference",
-        "stream_inference",
+        "coordinator_service",
+        "coordinator_readiness",
     ]
     saved = json.loads((out_dir / "run.json").read_text(encoding="utf-8"))
     assert saved["status"] == "ready"
-    assert (out_dir / "non-stream-response.json").exists()
-    assert (out_dir / "stream-response.sse").exists()
+    assert not (out_dir / "non-stream-response.json").exists()
+    assert not (out_dir / "stream-response.sse").exists()

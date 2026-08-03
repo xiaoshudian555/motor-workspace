@@ -46,8 +46,8 @@ validation 失败 ─┘
 | 触发来源或失败面 | 目标诊断入口（规划） | 当前状态 |
 |---|---|---|
 | Deploy apply / Ready / runtime source proof 失败 | `motor-diagnosis`（deploy 采集） | 部分实现：Pod、Event、context、manifest |
-| [`smoke`](../validation/smoke/) 失败 | client + Motor readiness/推理响应诊断 | 缺：客户端响应与 validation 时间范围联动 |
-| [`functional`](../validation/functional/) 失败 | 特性行为证据（日志 / metrics / tracing） | 未落地 |
+| [`smoke`](../validation/smoke/) 失败 | Coordinator management Service + readiness 响应诊断 | 缺：readiness 响应与服务端日志时间范围联动 |
+| [`functional`](../validation/functional/) 失败 | inference 客户端响应 + 特性行为证据（日志 / metrics / tracing） | 未落地 |
 | [`routing-topology`](../validation/routing-topology/) 失败 | 实例选择 / 路由表 / 流量迁移时间线 | 未落地 |
 | [`correctness`](../validation/correctness/) 失败 | 输出 diff、基线、容差与采样配置取证 | 未落地 |
 | [`benchmark`](../validation/benchmark/) / [`stress-capacity`](../validation/stress-capacity/) 失败或异常 | 客户端指标 + Motor/Engine metrics + 资源曲线 | 未落地 |

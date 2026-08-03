@@ -3,8 +3,12 @@
 ## 负责
 
 - 围绕本次改动选择功能 case，而不是无目标地发送请求。
-- 验证特性开关打开后的业务行为：API key、TLS、metrics、tracing、参数透传和
-  典型请求组合是否按设计生效。
+- 承接原 Smoke 中的真实 non-stream/stream inference 请求，证明 Coordinator
+  Ready 后业务请求确实能走通。
+- 第一优先级验证 metrics 和 tracing：接口/数据是否暴露、单次受控请求能否关联到
+  预期 metric 变化和 trace 证据。
+- 后续再扩 TLS、参数透传、overload control 等功能行为；API key 当前无人使用，
+  明确延后，不作为近期建设重点。
 - 验证 streaming / non-streaming 等模式下，目标功能的正向与关键失败路径。
 - 对 overload control：只验证启用后的拒识码、限流响应形态等行为是否正确。
 - 保存客户端结果，并用日志、metrics 或 tracing 证明功能确实生效。
@@ -28,10 +32,10 @@ catalog，把口头目标解析成 feature/case ID，再生成一次运行对应
   → mws.result.v1 checks + artifacts
 ```
 
-当前 catalog 先为 API key、TLS、metrics、tracing、参数透传和 overload-control
-预留 case。dispatcher 只是显式的 `adapter -> handler` 字典，不引入插件注册中心或
-第二套状态模型。尚未实现的 adapter 必须返回 `unavailable`，不能把“成功生成 spec”
-当成“功能验证通过”。
+当前 catalog 以 metrics、tracing 和 `inference-request` 为前排能力；TLS、参数透传、
+overload-control 和 API key 作为后续项。dispatcher 只是显式的
+`adapter -> handler` 字典，不引入插件注册中心或第二套状态模型。尚未实现的
+adapter 必须返回 `unavailable`，不能把“成功生成 spec”当成“功能验证通过”。
 
 入口：
 
@@ -40,8 +44,29 @@ python3 scaffold/.agents/skills/motor-functional/scripts/compile_spec.py \
   --machine <alias> \
   --deploy-run-id <id> \
   --request '<用户原始描述>' \
-  --feature api-key
+  --feature metrics
 ```
+
+当前已能执行从 Smoke 移入的真实推理请求：
+
+```bash
+python3 scaffold/.agents/skills/motor-functional/scripts/functional_run.py \
+  --machine <alias> \
+  --deploy-run-id <id> \
+  --request '验证真实推理请求' \
+  --feature inference-request
+```
+
+## Metrics、Tracing 与负载监控的边界
+
+Functional 只证明功能语义：metrics 端点和目标 series 存在、单次受控请求引起预期
+变化；请求能够通过 correlation ID 找到对应 trace。这类检查负载极小，不用于分析
+CPU/NPU、内存、通信、吞吐或延迟瓶颈。
+
+在持续或可控 workload 下采集资源曲线、Motor metrics、请求 tracing、NPU/CPU
+profiler 并做性能归因，属于 [`../profiling/`](../profiling/)。如果目的是寻找饱和点
+或最大稳定负载，则属于 [`../stress-capacity/`](../stress-capacity/)；如果目的是性能
+基线比较，则属于 [`../benchmark/`](../benchmark/)。
 
 ## 不负责
 
@@ -53,6 +78,8 @@ python3 scaffold/.agents/skills/motor-functional/scripts/compile_spec.py \
   [`../correctness/`](../correctness/)。
 - 在升压曲线上寻找 overload 触发点、饱和区或压力解除后的恢复；该责任属于
   [`../stress-capacity/`](../stress-capacity/)。
+- 在负载下持续监控 CPU/NPU、内存、通信和请求阶段并做瓶颈归因；该责任属于
+  [`../profiling/`](../profiling/)。
 - 给出性能是否退化的结论。
 
 ## 交付

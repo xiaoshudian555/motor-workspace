@@ -1,13 +1,13 @@
 ---
 name: motor-smoke
-description: Validate a successful Motor deploy with Motor-aware readiness and real non-stream/stream inference. Use after motor-k8s-deploy when users ask whether a service really started, request smoke validation, or need a minimal post-deploy inference check.
+description: Validate that a successful Motor deploy has a live Coordinator management Service whose GET /readiness body reports ready=true. Use for the minimal post-deploy Coordinator readiness gate; real inference requests belong to motor-functional.
 ---
 
 # motor-smoke
 
-Consume a successful `deploy-complete` run and produce a run-scoped
-`motor-smoke` validation result. Read `references/motor-readiness.md` before
-changing pass criteria or substituting another probe endpoint.
+Consume a successful `deploy-complete` run and produce a run-scoped readiness
+result. Read `references/motor-readiness.md` before changing the readiness
+criterion.
 
 ```bash
 python3 .agents/skills/motor-smoke/scripts/smoke_run.py \
@@ -15,34 +15,19 @@ python3 .agents/skills/motor-smoke/scripts/smoke_run.py \
   --deploy-run-id <id>
 ```
 
-If Motor API-key authentication is enabled, put the plaintext key in
-`MOTOR_SMOKE_API_KEY`; the key is never written to artifacts or stdout.
-
-For TLS, provide a locally readable CA and, when required, a client certificate:
-
-```bash
-python3 .agents/skills/motor-smoke/scripts/smoke_run.py \
-  --machine <alias> --deploy-run-id <id> \
-  --ca-file <ca.pem> \
-  --client-cert-file <client.pem> --client-key-file <client-key.pem>
-```
-
 ## Pass criteria
 
-Require all of the following:
+Require both:
 
-1. Verify that the exact Coordinator inference and management Services have ready endpoints.
-2. Require management `GET /readiness` to return HTTP 200 with JSON `ready=true`.
-3. Require a non-streaming `POST /v1/completions` to return generated output.
-4. Require a streaming request to return valid JSON SSE choice events, generated output,
-   and `data: [DONE]`.
+1. The Coordinator management Service has a ready endpoint.
+2. Management `GET /readiness` returns HTTP 200 with JSON `ready=true`.
 
 Pod `Ready`, TCP connect, `/startup`, `/liveness`, `/health`, and `/v1/models`
-alone do not pass this skill. See `references/motor-readiness.md`.
+do not replace the readiness-body check.
 
-Write artifacts under
-`.motor-workspace-local/validation-runs/{smoke_run_id}/`. The workflow does not
-restart, scale, reconfigure, or otherwise mutate the deployment. Clean up its
-temporary port-forward processes on exit. `kubectl port-forward` runs on the
-selected remote machine; an SSH local-forward tunnel exposes only its temporary
-loopback listener to the smoke client on the development host.
+Do not send inference requests in this skill. Non-stream/stream inference,
+metrics, tracing, and feature behavior belong to `motor-functional`.
+
+Write artifacts under `.motor-workspace-local/validation-runs/{smoke_run_id}/`.
+The remote machine runs `kubectl port-forward`; an SSH tunnel exposes its
+temporary loopback listener locally. Clean up the forward on exit.

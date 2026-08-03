@@ -126,6 +126,10 @@ class RemoteTransport(ABC):
 
 class SshScpTransport(RemoteTransport):
     SSH_COMMAND_TIMEOUT_SECONDS = 60
+    # sshd on some hosts throttles new auth during fail2ban backoff or flood
+    # windows; retry transport-level timeouts so command execution survives.
+    SSH_RUN_ATTEMPTS = 4
+    SSH_RETRY_BACKOFF_SECONDS = 1.5
 
     def __init__(self, machine: dict[str, Any]) -> None:
         host = require_hostname(str(machine["host"]), label="host")
@@ -183,23 +187,34 @@ class SshScpTransport(RemoteTransport):
 
     def run(self, remote_command: str) -> subprocess.CompletedProcess[str]:
         command = self._ssh(remote_command)
-        try:
-            return subprocess.run(
-                command,
-                check=False,
-                text=True,
-                capture_output=True,
-                timeout=self.SSH_COMMAND_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            return subprocess.CompletedProcess(
-                args=command,
-                returncode=124,
-                stdout=exc.stdout or "",
-                stderr=(
-                    f"SSH command timed out after {self.SSH_COMMAND_TIMEOUT_SECONDS}s"
-                ),
-            )
+        last: subprocess.CompletedProcess[str] | None = None
+        for attempt in range(self.SSH_RUN_ATTEMPTS):
+            try:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    text=True,
+                    capture_output=True,
+                    timeout=self.SSH_COMMAND_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                result = subprocess.CompletedProcess(
+                    args=command,
+                    returncode=124,
+                    stdout=exc.stdout or "",
+                    stderr=(
+                        f"SSH command timed out after {self.SSH_COMMAND_TIMEOUT_SECONDS}s"
+                    ),
+                )
+            last = result
+            # Timeout/transport failures are retried; business-level non-zero
+            # exit codes are returned to the caller untouched.
+            if result.returncode != 124:
+                return result
+            if attempt < self.SSH_RUN_ATTEMPTS - 1:
+                time.sleep(self.SSH_RETRY_BACKOFF_SECONDS * (2**attempt))
+        assert last is not None
+        return last
 
     def upload_file(self, local_path: str, remote_path: str) -> None:
         data = Path(local_path).read_bytes()
@@ -231,8 +246,8 @@ class SshScpTransport(RemoteTransport):
         """Upload bytes via a scp subprocess.
 
         scp transfers over its own file channel and does not depend on local ssh
-        stdin EOF forwarding, which is unreliable over `bash -c` wrapped remote
-        commands. This is the primary file transport for uploads.
+        stdin EOF forwarding. Retry counts mirror SSH_RUN_ATTEMPTS so throttled
+        auth windows do not abort the transfer.
         """
         local_tmp = (
             f"/tmp/mws-upload-{hashlib.sha256(remote_path.encode()).hexdigest()[:12]}.in"
@@ -243,7 +258,7 @@ class SshScpTransport(RemoteTransport):
             self.SSH_COMMAND_TIMEOUT_SECONDS + len(data) // (256 * 1024),
         )
         try:
-            for attempt in range(3):
+            for attempt in range(self.SSH_RUN_ATTEMPTS):
                 try:
                     result = subprocess.run(
                         self._scp_argv(local_tmp, remote_path),
@@ -252,8 +267,8 @@ class SshScpTransport(RemoteTransport):
                         timeout=upload_timeout,
                     )
                 except subprocess.TimeoutExpired:
-                    if attempt < 2:
-                        time.sleep(1.5 * (attempt + 1))
+                    if attempt < self.SSH_RUN_ATTEMPTS - 1:
+                        time.sleep(self.SSH_RETRY_BACKOFF_SECONDS * (2**attempt))
                         continue
                     raise WorkspaceStateError(
                         f"scp upload timed out after {upload_timeout}s for {remote_path}"
@@ -262,11 +277,11 @@ class SshScpTransport(RemoteTransport):
                     return
                 stderr = result.stderr.decode(errors="replace") if result.stderr else ""
                 stdout = result.stdout.decode(errors="replace") if result.stdout else ""
-                if attempt >= 2:
+                if attempt >= self.SSH_RUN_ATTEMPTS - 1:
                     raise WorkspaceStateError(
                         f"scp upload failed: {stderr.strip() or stdout.strip()}"
                     )
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(self.SSH_RETRY_BACKOFF_SECONDS * (2**attempt))
         finally:
             try:
                 Path(local_tmp).unlink()

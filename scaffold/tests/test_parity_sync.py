@@ -195,6 +195,38 @@ def test_ssh_command_is_quoted() -> None:
     assert cmd[-3:] == ["bash", "-c", shlex.quote(script)]
 
 
+def test_run_retries_timeout_then_succeeds(monkeypatch) -> None:
+    attempts = {"n": 0}
+
+    def flaky_run(cmd, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise subprocess.TimeoutExpired(cmd, 60)
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr("mws_transport.subprocess.run", flaky_run)
+    monkeypatch.setattr(SshScpTransport, "SSH_RETRY_BACKOFF_SECONDS", 0)
+    transport = SshScpTransport({"host": "dev1", "user": "root", "port": 22})
+    result = transport.run("echo hi")
+    assert result.returncode == 0
+    assert result.stdout == "ok"
+    assert attempts["n"] == 3
+
+
+def test_run_does_not_retry_business_exit_code(monkeypatch) -> None:
+    attempts = {"n": 0}
+
+    def failing_run(cmd, **kwargs):
+        attempts["n"] += 1
+        return subprocess.CompletedProcess(cmd, 1, "", "no such resource")
+
+    monkeypatch.setattr("mws_transport.subprocess.run", failing_run)
+    transport = SshScpTransport({"host": "dev1", "user": "root", "port": 22})
+    result = transport.run("kubectl get pod x")
+    assert result.returncode == 1
+    assert attempts["n"] == 1
+
+
 def test_sync_failure_does_not_report_ok(tmp_path: Path, monkeypatch) -> None:
     state_root = tmp_path / "state"
     state_root.mkdir()

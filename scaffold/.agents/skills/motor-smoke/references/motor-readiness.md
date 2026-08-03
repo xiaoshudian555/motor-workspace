@@ -1,16 +1,15 @@
-# Motor 就绪语义
+# Motor Coordinator 就绪语义
 
-本 Smoke 的判定来自当前 Motor 实现，而不是通用 Kubernetes 经验：
+本 Smoke 只判断 Coordinator readiness，不判断推理请求功能：
 
 - `Coordinator /startup` 只说明管理进程开始启动。
 - `/liveness` 只检查 Daemon/心跳存活。
 - `/readiness` 在实例不足时仍可能返回 HTTP 200，但响应体为 `ready=false`；
-  Motor 的 `probe.py` 只检查 HTTP 状态码，因此 Pod `Ready` 不能单独证明推理可用。
-- `/health` 是 observability 进程存活信号，不检查 scheduler 和推理实例。
-- `/v1/models` 依赖 AIGW model 配置，未配置时会返回 503，不能作为通用前置条件。
-- `/v1/completions` 会先检查 scheduler 的 `InstanceReadiness.is_run()`，再进入真实
-  request handler 和 engine 链路。因此必须至少完成一条正式推理请求。
+  Motor 的 `probe.py` 只检查 HTTP 状态码，因此必须解析响应体并要求
+  `ready=true`。
+- `/health` 是 observability 进程存活信号，不替代 Coordinator readiness。
+- `/v1/models` 依赖可选 AIGW 配置，不作为通用 readiness 条件。
 
-默认同时执行 non-streaming 和 streaming，是为了分别证明完整 JSON 返回路径和
-SSE 增量返回/结束路径；它们仍属于最小拉起验证，不替代功能、正确性或性能测试。
-
+真实 non-stream/stream inference 已移到 `motor-functional` 的
+`inference-request` cases。Smoke 成功只表示 Coordinator 自己报告 ready，不表示
+任意业务接口、协议、metrics 或 tracing 已验证通过。

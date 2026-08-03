@@ -1,14 +1,6 @@
 {
   "schema_version": "mws.functional.catalog.v1",
   "features": {
-    "api-key": {
-      "aliases": ["api key", "apikey", "鉴权"],
-      "default_cases": ["api-key.valid", "api-key.missing", "api-key.invalid"]
-    },
-    "tls": {
-      "aliases": ["https", "证书", "双向认证", "mtls"],
-      "default_cases": ["tls.valid-client", "tls.invalid-client"]
-    },
     "metrics": {
       "aliases": ["metric", "prometheus", "指标"],
       "default_cases": ["metrics.exposed", "metrics.request-updated"]
@@ -17,6 +9,14 @@
       "aliases": ["trace", "链路追踪", "链路"],
       "default_cases": ["tracing.request-correlated"]
     },
+    "inference-request": {
+      "aliases": ["推理请求", "请求打通", "curl通", "curl 通", "inference request"],
+      "default_cases": ["inference-request.non-stream", "inference-request.stream"]
+    },
+    "tls": {
+      "aliases": ["https", "证书", "双向认证", "mtls"],
+      "default_cases": ["tls.valid-client", "tls.invalid-client"]
+    },
     "parameter-passthrough": {
       "aliases": ["参数透传", "透传", "passthrough"],
       "default_cases": ["parameter-passthrough.effective"]
@@ -24,9 +24,48 @@
     "overload-control": {
       "aliases": ["overload", "限流", "拒识", "过载控制"],
       "default_cases": ["overload-control.rejection-shape"]
+    },
+    "api-key": {
+      "aliases": ["api key", "apikey", "鉴权"],
+      "default_cases": ["api-key.valid", "api-key.missing", "api-key.invalid"]
     }
   },
   "cases": {
+    "metrics.exposed": {
+      "feature": "metrics",
+      "adapter": "metrics-query",
+      "intent": "Configured Motor metrics are exposed.",
+      "expected": {"metrics_present": true},
+      "evidence": ["metrics_snapshot"]
+    },
+    "metrics.request-updated": {
+      "feature": "metrics",
+      "adapter": "metrics-query",
+      "intent": "A single controlled request updates the expected metric series.",
+      "expected": {"delta": "positive"},
+      "evidence": ["metrics_before", "request", "metrics_after"]
+    },
+    "tracing.request-correlated": {
+      "feature": "tracing",
+      "adapter": "trace-query",
+      "intent": "A controlled request can be correlated to its trace evidence.",
+      "expected": {"trace_correlated": true},
+      "evidence": ["request", "trace"]
+    },
+    "inference-request.non-stream": {
+      "feature": "inference-request",
+      "adapter": "inference-http",
+      "intent": "A real non-stream request reaches Motor and returns generated output.",
+      "expected": {"http_status": 200, "generated_output": true},
+      "evidence": ["request", "response"]
+    },
+    "inference-request.stream": {
+      "feature": "inference-request",
+      "adapter": "inference-http",
+      "intent": "A real stream request reaches Motor and returns generated SSE output.",
+      "expected": {"http_status": 200, "choice_events": true, "done": true},
+      "evidence": ["request", "response"]
+    },
     "api-key.valid": {
       "feature": "api-key",
       "adapter": "openai-http",
@@ -61,27 +100,6 @@
       "intent": "A client with invalid trust or certificate material is rejected.",
       "expected": {"handshake": "rejected"},
       "evidence": ["tls_summary"]
-    },
-    "metrics.exposed": {
-      "feature": "metrics",
-      "adapter": "metrics-query",
-      "intent": "Configured Motor metrics are exposed.",
-      "expected": {"metrics_present": true},
-      "evidence": ["metrics_snapshot"]
-    },
-    "metrics.request-updated": {
-      "feature": "metrics",
-      "adapter": "metrics-query",
-      "intent": "A controlled request updates the expected metric series.",
-      "expected": {"delta": "positive"},
-      "evidence": ["metrics_before", "request", "metrics_after"]
-    },
-    "tracing.request-correlated": {
-      "feature": "tracing",
-      "adapter": "trace-query",
-      "intent": "A controlled request can be correlated to its trace evidence.",
-      "expected": {"trace_correlated": true},
-      "evidence": ["request", "trace"]
     },
     "parameter-passthrough.effective": {
       "feature": "parameter-passthrough",

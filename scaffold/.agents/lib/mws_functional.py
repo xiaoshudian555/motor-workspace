@@ -216,3 +216,85 @@ def dispatch_validation_spec(
             record = {"name": case_id, "status": "error", "message": str(exc)}
         checks.append(normalize_check(record))
     return checks
+
+
+def validate_non_stream_response(response: dict[str, Any]) -> dict[str, Any]:
+    if response.get("status") != 200:
+        raise WorkspaceStateError(
+            f"non-stream inference returned HTTP {response.get('status')}: "
+            f"{str(response.get('body'))[:500]}"
+        )
+    try:
+        body = json.loads(str(response.get("body") or ""))
+    except json.JSONDecodeError as exc:
+        raise WorkspaceStateError("non-stream inference response is not JSON") from exc
+    choices = body.get("choices") if isinstance(body, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise WorkspaceStateError("non-stream inference response has no choices")
+    fragments: list[str] = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        if isinstance(choice.get("text"), str):
+            fragments.append(choice["text"])
+        message = choice.get("message")
+        if isinstance(message, dict):
+            for key in ("content", "reasoning_content"):
+                if isinstance(message.get(key), str):
+                    fragments.append(message[key])
+    usage = body.get("usage") if isinstance(body, dict) and isinstance(body.get("usage"), dict) else {}
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    if not any(fragment for fragment in fragments) and completion_tokens < 1:
+        raise WorkspaceStateError("non-stream inference returned no generated output")
+    return {
+        "choices": len(choices),
+        "completion_tokens": completion_tokens,
+        "output_chars": sum(len(fragment) for fragment in fragments),
+    }
+
+
+def validate_stream_response(response: dict[str, Any]) -> dict[str, Any]:
+    if response.get("status") != 200:
+        raise WorkspaceStateError(
+            f"stream inference returned HTTP {response.get('status')}: "
+            f"{str(response.get('body'))[:500]}"
+        )
+    events = 0
+    choices_seen = 0
+    output_chars = 0
+    done = False
+    for line in str(response.get("body") or "").splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            done = True
+            continue
+        if not data:
+            continue
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise WorkspaceStateError("stream inference contains invalid SSE JSON") from exc
+        events += 1
+        choices = event.get("choices") if isinstance(event, dict) else None
+        if not isinstance(choices, list):
+            continue
+        choices_seen += len(choices)
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("text"), str):
+                output_chars += len(choice["text"])
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                for key in ("content", "reasoning_content"):
+                    if isinstance(delta.get(key), str):
+                        output_chars += len(delta[key])
+    if not done:
+        raise WorkspaceStateError("stream inference response is missing data: [DONE]")
+    if events < 1 or choices_seen < 1:
+        raise WorkspaceStateError("stream inference response has no choice events")
+    if output_chars < 1:
+        raise WorkspaceStateError("stream inference returned no generated output")
+    return {"events": events, "choices_seen": choices_seen, "output_chars": output_chars, "done": done}

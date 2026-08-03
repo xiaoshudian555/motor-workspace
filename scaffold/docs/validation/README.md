@@ -64,7 +64,7 @@ deploy-complete
 
 | 目录 | 核心问题 |
 |---|---|
-| [`smoke/`](smoke/) | 服务能否完成最小但正式的推理闭环 |
+| [`smoke/`](smoke/) | Coordinator management `/readiness` 是否报告 `ready=true` |
 | [`functional/`](functional/) | 目标接口和功能行为是否符合预期 |
 | [`routing-topology/`](routing-topology/) | 请求是否在指定拓扑中走到正确实例和角色 |
 | [`correctness/`](correctness/) | 协议、token、输出和模型精度是否正确 |
@@ -88,7 +88,7 @@ workload 形态。
 | 有意扩缩容 / 受控摘除后的流量迁移与路由收敛 | [`routing-topology/`](routing-topology/)（主动） | [`reliability/`](reliability/) |
 | 故障注入触发的隔离、降级、重拉起与恢复 | [`reliability/`](reliability/)（被动） | [`routing-topology/`](routing-topology/) |
 | 过载解除后的业务/资源回到稳定态 | [`stress-capacity/`](stress-capacity/) | [`reliability/`](reliability/)（那是故障恢复） |
-| smoke 对 HTTP/SSE/结构的最小断言 | [`smoke/`](smoke/)（gate 级子集） | 不替代 [`correctness/`](correctness/) |
+| 真实 non-stream/stream 请求能否走通并产生输出 | [`functional/`](functional/) 的 `inference-request` | [`smoke/`](smoke/) 只判断 Coordinator readiness；完整协议合规仍归 [`correctness/`](correctness/) |
 | 长稳中观察到的重启/扩缩容后脏状态 | [`stability/`](stability/)（副作用观察） | 不是 routing/reliability 的验收主责 |
 | 验证失败后的证据收集与分层定位 | [`../diagnosis/`](../diagnosis/) | 任一 validation 场景本身 |
 
@@ -98,7 +98,7 @@ workload 形态。
 
 | 打流方式 | 主要服务的场景 |
 |---|---|
-| 少量固定请求 | smoke、functional、correctness |
+| 少量固定请求 | functional、correctness |
 | 特征化请求集 | routing-topology、functional、correctness |
 | 固定 QPS 或固定并发 | benchmark |
 | 阶梯升压、突发流量 | stress-capacity |
@@ -132,6 +132,7 @@ workload 形态。
 ```text
 所有远端代码改动
   → smoke
+  → functional / inference-request
   → 与改动直接相关的 functional / routing-topology / correctness
 
 性能热路径改动
@@ -154,8 +155,8 @@ workload 形态。
 ## 现状
 | 场景 | motor-workspace 状态 | Active skill | 现有脚本/可复用资产 | 主要缺口 |
 |---|---|---|---|---|
-| Smoke | 已实现，本地验证完成，待真实集群验收 | `motor-smoke` | [`smoke_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-smoke/scripts/smoke_run.py:42) 消费成功的 `deploy-complete`，校验 config/bundle、发现 Coordinator Service、解析 `/readiness` 的 `ready=true`，执行 stream/non-stream 真实推理并落盘 validation run；公共实现见 [`mws_smoke.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/lib/mws_smoke.py:87)，契约测试见 [`test_smoke.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/tests/test_smoke.py:217) | 尚缺真实 Ascend/K8s 环境的端到端执行证据，不影响功能实现状态 |
-| Functional | 编排骨架已实现，真实 adapter 待补 | `motor-functional` | [`case-catalog.json`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/references/case-catalog.json) 提供 feature/case 映射；[`mws_functional.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/lib/mws_functional.py) 负责 spec compiler 和显式 dispatcher；Motor 现有 HTTP/router/metrics pytest 可作为后续 case 语义参考 | 尚未实现连接已部署 Motor 的 HTTP/TLS/metrics/tracing/load adapter，当前不能给出功能通过结论 |
+| Smoke | Coordinator readiness 已实现，本地验证完成，待真实集群验收 | `motor-smoke` | [`smoke_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-smoke/scripts/smoke_run.py) 消费成功的 `deploy-complete`，发现 management Service、解析 `/readiness` 的 `ready=true` 并落盘 validation run | 尚缺真实 Ascend/K8s 环境端到端证据；不再承担 inference 请求 |
+| Functional | 编排骨架和真实 inference-request adapter 已实现；metrics/tracing 待补 | `motor-functional` | [`case-catalog.json`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/references/case-catalog.json) 提供 feature/case 映射；[`functional_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/scripts/functional_run.py) 承接原 Smoke 的 non-stream/stream 真实请求；[`mws_functional.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/lib/mws_functional.py) 负责 spec compiler、dispatcher 和响应判定 | 第一优先缺口是已部署 Motor 的 metrics-query 与 trace-query adapter；API key 延后 |
 | Routing Topology | 仅有 source 测试资产 | 无 | [`test_unified_pd_router.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/router/test_unified_pd_router.py)、[`test_router_pd_hybrid.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/router/test_router_pd_hybrid.py)、[`test_kv_cache_affinity.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/scheduler/test_kv_cache_affinity.py) | 缺真实多实例/PD 拓扑打流、实例选择证据和扩缩容前后验证 |
 | Correctness | 仅有 source 测试资产 | 无 | vLLM Ascend 有 [`test_lm_eval_correctness.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/vllm-ascend/tests/e2e/models/test_lm_eval_correctness.py)；Motor 有 [`test_precision_e2e_chain.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/sampling/test_precision_e2e_chain.py) | 缺连接 Motor deploy endpoint 的 correctness adapter、基线、容差和 run 结果 |
 | Benchmark | 部分实现 | `motor-benchmark` | [`SKILL.md`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-benchmark/SKILL.md) 和 [`bench_plan.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-benchmark/scripts/bench_plan.py:17) 只校验 deploy run/machine；vLLM Ascend 有 [`run-performance-benchmarks.sh`](/home/h00906152/projects/pymotor/motor-workspace/sources/vllm-ascend/benchmarks/scripts/run-performance-benchmarks.sh)，vLLM 有 [`benchmark_serving.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/vllm/benchmarks/benchmark_serving.py) | 没有真实请求、指标采集、基线比较和 benchmark run 落盘；仓库技术债也明确记录了这个缺口 |

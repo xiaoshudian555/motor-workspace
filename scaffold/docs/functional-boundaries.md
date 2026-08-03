@@ -292,7 +292,8 @@ Agent 工作流入口
 | `motor-deploy-preflight`（目标 skill） | 第二部分第一步 | 独立检查 K8s 与 MindCluster 基础环境，交付 `deploy-environment-ready` |
 | `motor-deploy-configure`（目标 skill） | 第二部分第二步 | 生成或复用配置，完成替换、dry-run 和配置—代码对应验证，交付 `deploy-config-ready` |
 | `motor-k8s-deploy` | 第二部分第三步 | 原样 apply 配置包，等待 Ready 并证明 Pod 运行目标代码 |
-| `motor-smoke` | 第三部分 | 校验 Motor readiness 响应体并完成最小 non-stream/stream 正式推理闭环 |
+| `motor-smoke` | 第三部分 | 只校验 Coordinator management readiness 响应体为 `ready=true` |
+| `motor-functional` | 第三部分 | 执行真实 inference 请求并验证 metrics、tracing 等功能语义 |
 | `motor-benchmark` | 第三部分 | 对成功 deploy run 执行正式 benchmark |
 | `motor-diagnosis` | 跨闭环失败处理（见 [diagnosis/](diagnosis/)，不属于 validation 场景） | 收集 run-scoped 证据，可被 Deploy 或 Validation 调用；后续按失败面扩展为 skill 族 |
 

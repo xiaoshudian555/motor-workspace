@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Motor-aware post-deploy smoke validation helpers."""
+"""Shared Motor validation target access and Coordinator readiness helpers."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def _api_key_config(user_config: dict[str, Any]) -> dict[str, Any]:
     return dict(config) if isinstance(config, dict) else {}
 
 
-def resolve_smoke_context(*, machine_alias: str, deploy_run_id: str) -> dict[str, Any]:
+def resolve_validation_context(*, machine_alias: str, deploy_run_id: str) -> dict[str, Any]:
     """Resolve and integrity-check a successful deploy plus its Motor request config."""
     deploy_run = load_deploy_run(deploy_run_id, allow_failed=False)
     recorded_machine = str(deploy_run.get("machine") or deploy_run.get("alias") or "")
@@ -132,6 +132,14 @@ def resolve_smoke_context(*, machine_alias: str, deploy_run_id: str) -> dict[str
     }
 
 
+def resolve_smoke_context(*, machine_alias: str, deploy_run_id: str) -> dict[str, Any]:
+    """Compatibility name for the shared post-deploy validation context."""
+    return resolve_validation_context(
+        machine_alias=machine_alias,
+        deploy_run_id=deploy_run_id,
+    )
+
+
 def _service_score(item: dict[str, Any], role: str) -> int:
     metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     spec = item.get("spec") if isinstance(item.get("spec"), dict) else {}
@@ -156,6 +164,7 @@ def discover_coordinator_services(
     machine: dict[str, Any],
     kube_context: str,
     namespace: str,
+    roles: tuple[str, ...] = ("infer", "mgmt"),
     kubectl: KubectlRunner | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Find the live Coordinator inference and management Services by Motor ports and identity."""
@@ -172,7 +181,11 @@ def discover_coordinator_services(
         raise WorkspaceStateError("kubectl Services response has no items array")
 
     resolved: dict[str, dict[str, Any]] = {}
-    for role, expected_port in COORDINATOR_PORTS.items():
+    unknown_roles = [role for role in roles if role not in COORDINATOR_PORTS]
+    if unknown_roles:
+        raise WorkspaceStateError(f"unknown Coordinator service role(s): {unknown_roles}")
+    for role in roles:
+        expected_port = COORDINATOR_PORTS[role]
         candidates: list[tuple[int, str, dict[str, Any]]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -330,83 +343,3 @@ def wait_for_readiness(
         f"Coordinator readiness did not reach ready=true within {timeout:g}s; "
         f"last_status={last.get('status')} last_body={str(last.get('body'))[:500]}"
     )
-
-
-def validate_non_stream_response(response: dict[str, Any]) -> dict[str, Any]:
-    if response.get("status") != 200:
-        raise WorkspaceStateError(
-            f"non-stream inference returned HTTP {response.get('status')}: {str(response.get('body'))[:500]}"
-        )
-    try:
-        body = json.loads(str(response.get("body") or ""))
-    except json.JSONDecodeError as exc:
-        raise WorkspaceStateError("non-stream inference response is not JSON") from exc
-    choices = body.get("choices") if isinstance(body, dict) else None
-    if not isinstance(choices, list) or not choices:
-        raise WorkspaceStateError("non-stream inference response has no choices")
-    fragments: list[str] = []
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-        if isinstance(choice.get("text"), str):
-            fragments.append(choice["text"])
-        message = choice.get("message")
-        if isinstance(message, dict):
-            for key in ("content", "reasoning_content"):
-                if isinstance(message.get(key), str):
-                    fragments.append(message[key])
-    usage = body.get("usage") if isinstance(body, dict) and isinstance(body.get("usage"), dict) else {}
-    completion_tokens = int(usage.get("completion_tokens") or 0)
-    if not any(fragment for fragment in fragments) and completion_tokens < 1:
-        raise WorkspaceStateError("non-stream inference returned no generated output")
-    return {
-        "choices": len(choices),
-        "completion_tokens": completion_tokens,
-        "output_chars": sum(len(fragment) for fragment in fragments),
-    }
-
-
-def validate_stream_response(response: dict[str, Any]) -> dict[str, Any]:
-    if response.get("status") != 200:
-        raise WorkspaceStateError(
-            f"stream inference returned HTTP {response.get('status')}: {str(response.get('body'))[:500]}"
-        )
-    events = 0
-    choices_seen = 0
-    output_chars = 0
-    done = False
-    for line in str(response.get("body") or "").splitlines():
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
-            done = True
-            continue
-        if not data:
-            continue
-        try:
-            event = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise WorkspaceStateError("stream inference contains invalid SSE JSON") from exc
-        events += 1
-        choices = event.get("choices") if isinstance(event, dict) else None
-        if not isinstance(choices, list):
-            continue
-        choices_seen += len(choices)
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            if isinstance(choice.get("text"), str):
-                output_chars += len(choice["text"])
-            delta = choice.get("delta")
-            if isinstance(delta, dict):
-                for key in ("content", "reasoning_content"):
-                    if isinstance(delta.get(key), str):
-                        output_chars += len(delta[key])
-    if not done:
-        raise WorkspaceStateError("stream inference response is missing data: [DONE]")
-    if events < 1 or choices_seen < 1:
-        raise WorkspaceStateError("stream inference response has no choice events")
-    if output_chars < 1:
-        raise WorkspaceStateError("stream inference returned no generated output")
-    return {"events": events, "choices_seen": choices_seen, "output_chars": output_chars, "done": done}

@@ -1,6 +1,6 @@
 ---
 name: motor-functional
-description: Compile a user's natural-language Motor functional validation goal into catalog-backed cases and a deterministic validation spec. Use for deployed Motor feature checks such as API key, TLS, metrics, tracing, parameter passthrough, or overload-control response behavior.
+description: Compile and run catalog-backed Motor functional validation from a user's natural-language goal. Use for real non-stream/stream inference requests and deployed feature behavior such as metrics, tracing, TLS, parameter passthrough, overload control, or later API-key checks.
 ---
 
 # motor-functional
@@ -16,7 +16,7 @@ features or cases.
    Use feature defaults when the user asks for the whole feature.
 3. Ask only when ambiguity changes deployment mutation, risk, cost, or the pass
    criterion. Otherwise choose safe catalog defaults.
-4. Compile the spec:
+4. Compile the spec, or execute currently supported cases:
 
 ```bash
 python3 .agents/skills/motor-functional/scripts/compile_spec.py \
@@ -24,6 +24,14 @@ python3 .agents/skills/motor-functional/scripts/compile_spec.py \
   --deploy-run-id <id> \
   --request '<user wording>' \
   --feature api-key
+```
+
+```bash
+python3 .agents/skills/motor-functional/scripts/functional_run.py \
+  --machine <alias> \
+  --deploy-run-id <id> \
+  --request '验证真实推理请求' \
+  --feature inference-request
 ```
 
 Use repeated `--case` arguments to narrow the feature defaults. Use `--output`
@@ -37,8 +45,14 @@ to save an immutable resolved spec for a future functional run.
 
 ## Current boundary
 
-- This first version compiles and dispatches specs; real HTTP, TLS, metrics,
-  tracing, and load adapters are not implemented yet.
+- Real non-stream/stream inference request cases are implemented here after
+  Coordinator readiness. Metrics and tracing are the next implementation
+  priorities. API-key validation is explicitly deferred.
+- Functional metrics checks prove endpoint/series behavior under a single
+  controlled request. Resource monitoring and performance attribution under
+  sustained load belong to Profiling, not Functional.
+- TLS, metrics, tracing, parameter-passthrough, overload, and API-key adapters
+  remain unavailable until their concrete handlers are added.
 - Never report an unimplemented adapter as passed; dispatch records it as
   `unavailable`.
 - Do not put plaintext keys, tokens, or private keys in the spec. Refer to an

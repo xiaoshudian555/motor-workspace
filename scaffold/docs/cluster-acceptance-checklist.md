@@ -42,8 +42,9 @@ motor-smoke                        → motor-smoke validation run
 2. **Configure**：Motor 原生 `user_config.json` / `env.json` 生成不可变 bundle；namespace 已存在；server-side dry-run 通过；manifest hostPath/`PYTHONPATH` 与 parity 固定路径一致。
 3. **Apply**：bundle digest/fingerprint 与 config run 匹配；关键 Pod Ready；最小服务可访问。
 4. **Runtime proof**：Pod 内 `motor`、`vllm`、`vllm_ascend` 加载路径与当前 parity 固定目录一致。
-5. **Smoke**：Coordinator `/readiness` 响应体为 `ready=true`，并完成 non-stream 与 stream 两条真实推理请求；Pod Ready、TCP 可连或 `/health` 单独成功均不算通过。
-6. **Diagnosis（失败路径，见 [diagnosis/](diagnosis/)，非 validation 场景）**：能从 deploy run + config/bundle 收集 pods/events，**不依赖** legacy `plan_dir`。
+5. **Smoke**：Coordinator management `/readiness` 响应体为 `ready=true`；Pod Ready、TCP 可连或 `/health` 单独成功均不算通过。
+6. **Functional / inference-request**：完成 non-stream 与 stream 两条真实推理请求并保存响应证据；metrics/tracing 是下一优先能力。
+7. **Diagnosis（失败路径，见 [diagnosis/](diagnosis/)，非 validation 场景）**：能从 deploy run + config/bundle 收集 pods/events，**不依赖** legacy `plan_dir`。
 
 ## 明确不算验收通过的情况
 

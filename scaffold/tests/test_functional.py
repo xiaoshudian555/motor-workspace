@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from mws_functional import (  # noqa: E402
     compile_validation_spec,
     dispatch_validation_spec,
     load_case_catalog,
+    validate_non_stream_response,
+    validate_stream_response,
     write_validation_spec,
 )
 from mws_local_state import WorkspaceStateError  # noqa: E402
@@ -115,3 +118,137 @@ def test_catalog_cases_have_feature_owners_and_adapters() -> None:
     for case_id, case in catalog["cases"].items():
         assert case["feature"] in catalog["features"], case_id
         assert case["adapter"], case_id
+
+
+def test_validate_non_stream_response_requires_generated_output() -> None:
+    summary = validate_non_stream_response(
+        {
+            "status": 200,
+            "body": json.dumps(
+                {
+                    "choices": [{"text": "MOTOR_FUNCTIONAL_OK"}],
+                    "usage": {"completion_tokens": 3},
+                }
+            ),
+        }
+    )
+    assert summary["output_chars"] == len("MOTOR_FUNCTIONAL_OK")
+    with pytest.raises(WorkspaceStateError, match="no generated output"):
+        validate_non_stream_response({"status": 200, "body": '{"choices":[{"text":""}]}'})
+
+
+def test_validate_stream_response_requires_output_and_done() -> None:
+    body = (
+        'data: {"choices":[{"text":"MOTOR"}]}\n\n'
+        'data: {"choices":[{"text":"_FUNCTIONAL_OK"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    summary = validate_stream_response({"status": 200, "body": body})
+    assert summary == {"events": 2, "choices_seen": 2, "output_chars": 19, "done": True}
+    with pytest.raises(WorkspaceStateError, match="missing data"):
+        validate_stream_response({"status": 200, "body": body.replace("data: [DONE]", "")})
+
+
+def test_functional_run_owns_real_inference_requests(tmp_path, monkeypatch) -> None:
+    script = SCAFFOLD / ".agents/skills/motor-functional/scripts/functional_run.py"
+    module_spec = importlib.util.spec_from_file_location("functional_run_test", script)
+    module = importlib.util.module_from_spec(module_spec)
+    assert module_spec.loader is not None
+    module_spec.loader.exec_module(module)
+
+    context = {
+        "machine": "dev1",
+        "deploy_run_id": "deploy-1",
+        "config_run_id": "cfg-1",
+        "workflow_run_id": "wf-1",
+        "bundle_dir": "bundle",
+        "bundle_digest": "abc",
+        "namespace": "ns1",
+        "kube_context": "ctx-a",
+        "model": "qwen-functional",
+        "mgmt_tls_enabled": False,
+        "infer_tls_enabled": False,
+        "api_key_enabled": False,
+        "api_key_header": "Authorization",
+        "api_key_prefix": "Bearer ",
+    }
+    services = {
+        "infer": {"name": "mindie-motor-coordinator-infer", "port": 1025},
+    }
+
+    class FakeForward:
+        def __init__(self, *args, **kwargs):
+            self.local_port = 18000 + int(args[4])
+            self.log = "closed"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.log = "closed"
+
+    responses = iter(
+        [
+            {
+                "status": 200,
+                "body": json.dumps(
+                    {
+                        "choices": [{"text": "MOTOR_FUNCTIONAL_OK"}],
+                        "usage": {"completion_tokens": 3},
+                    }
+                ),
+            },
+            {
+                "status": 200,
+                "body": (
+                    'data: {"choices":[{"text":"MOTOR_FUNCTIONAL_OK"}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            },
+        ]
+    )
+    monkeypatch.setattr(module, "resolve_validation_context", lambda **kwargs: context)
+    monkeypatch.setattr(module, "get_machine", lambda alias: {"alias": alias})
+    monkeypatch.setattr(module, "discover_coordinator_services", lambda **kwargs: services)
+    monkeypatch.setattr(
+        module,
+        "ensure_service_endpoints",
+        lambda **kwargs: {
+            "infer": {"service": services["infer"]["name"], "ready_addresses": 1}
+        },
+    )
+    monkeypatch.setattr(module, "PortForward", FakeForward)
+    monkeypatch.setattr(module, "request_json", lambda **kwargs: next(responses))
+    out_dir = tmp_path / "validation-runs" / "functional-test"
+    out_dir.mkdir(parents=True)
+    monkeypatch.setattr(module, "validation_run_dir", lambda run_id: out_dir)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(script),
+            "--machine",
+            "dev1",
+            "--deploy-run-id",
+            "deploy-1",
+            "--functional-run-id",
+            "functional-test",
+            "--request",
+            "验证推理请求",
+            "--feature",
+            "inference-request",
+        ],
+    )
+    captured = {}
+    monkeypatch.setattr(module, "emit_result", lambda payload: captured.setdefault("payload", payload) and 0)
+
+    assert module.main() == 0
+    assert captured["payload"]["status"] == "ready"
+    assert [check["name"] for check in captured["payload"]["checks"]] == [
+        "deploy_context",
+        "inference_service",
+        "inference-request.non-stream",
+        "inference-request.stream",
+    ]
+    assert (out_dir / "cases/inference-request.non-stream/response.json").exists()
+    assert (out_dir / "cases/inference-request.stream/response.sse").exists()

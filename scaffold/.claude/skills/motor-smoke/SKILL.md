@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-smoke/SKILL.md. Do not edit. -->
 ---
 name: motor-smoke
-description: Validate a successful Motor deploy with Motor-aware readiness and real non-stream/stream inference. Use after motor-k8s-deploy when users ask whether a service really started, request smoke validation, or need a minimal post-deploy inference check.
+description: Validate that a successful Motor deploy has a live Coordinator management Service whose GET /readiness body reports ready=true. Use for the minimal post-deploy Coordinator readiness gate; real inference requests belong to motor-functional.
 ---
 
 # motor-smoke
