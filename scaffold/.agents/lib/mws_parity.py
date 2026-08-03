@@ -1009,3 +1009,115 @@ def sync_workspace_fanout(
     if targets and targets[0]["status"] == "ok":
         overall.update(targets[0]["manifest"])
     return overall
+
+
+def prove_identity_parity(
+    machine: dict[str, Any],
+    *,
+    transport: RemoteTransport | None = None,
+    machine_ready: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Prove source readiness for the remote-native topology via identity.
+
+    In remote-native the Agent runs on the target host and its working tree
+    *is* the machine's fixed source paths that Pods load via hostPath +
+    PYTHONPATH. This proves identity: each local source repo resolves to the
+    machine's fixed source dir, the fixed dirs exist, and content digests are
+    captured as evidence. Nothing is copied or overwritten.
+
+    Fails closed: local repo not at the fixed path, fixed dir missing, or
+    machine mismatch never publishes a ready proof.
+    """
+    validate_machine_transport_fields(machine)
+    machine_alias = str(machine.get("alias") or machine.get("host"))
+    if machine_ready is None:
+        raise WorkspaceStateError(
+            f"machine-ready evidence required for identity parity on {machine_alias!r}; "
+            "run machine-management verify first"
+        )
+    paths = build_fixed_source_paths(machine)
+    tx = transport or transport_for_machine(machine)
+    lock_path = remote_lock_path(machine)
+
+    expected = {
+        "motor": paths["motor_source"],
+        "vllm": paths["vllm_source"],
+        "vllm_ascend": paths["vllm_ascend_source"],
+    }
+
+    progress(f"identity parity target host={machine.get('host')} source_mode=identity")
+
+    with file_lock(local_parity_lock_path(machine_alias)):
+        tx.acquire_parity_lock(lock_path)
+        try:
+            local_digests: dict[str, str] = {}
+            repo_evidence: list[dict[str, Any]] = []
+            for name in ("motor", "vllm", "vllm_ascend"):
+                local_repo = REPO_DIRS[name]
+                fixed_dir = Path(expected[name])
+                if local_repo.resolve() != fixed_dir.resolve():
+                    raise WorkspaceStateError(
+                        f"identity parity failed for {name}: local source repo {local_repo} "
+                        f"does not resolve to fixed source dir {fixed_dir}; this topology "
+                        "requires the Agent working tree to be the machine fixed source paths"
+                    )
+                probe = tx.run(f"test -d {shell_quote(str(fixed_dir))}")
+                if probe.returncode != 0:
+                    raise WorkspaceStateError(
+                        f"identity parity failed for {name}: fixed source dir missing: {fixed_dir}"
+                    )
+                manifest_item = repo_manifest(name, local_repo)
+                repo_evidence.append(manifest_item)
+                local_digests[name] = manifest_item["content_digest"]
+
+            local_bundle = dict(local_digests)
+            identity_manifest = {
+                "schema_version": 2,
+                "kind": "parity-complete",
+                "status": "ready",
+                "source_mode": "identity",
+                "created_at": utc_now_iso(),
+                "machine": machine_ref(machine),
+                "mount_root": paths["mount_root"],
+                "remote_workspace_root": paths["remote_workspace_root"],
+                "source_dirs": {
+                    "motor": paths["motor_source"],
+                    "vllm": paths["vllm_source"],
+                    "vllm_ascend": paths["vllm_ascend_source"],
+                    "python_overlay": paths["python_overlay"],
+                },
+                "repositories": repo_evidence,
+                "local_content_digest": aggregate_content_digest(local_bundle),
+                "local_content_digests": local_bundle,
+                "remote_content_digest": aggregate_content_digest(local_bundle),
+                "remote_content_digests": local_bundle,
+                "content_digests": local_bundle,
+                "machine_ready": machine_ready,
+                "pythonpath": ":".join(
+                    [
+                        paths["motor_source"],
+                        paths["vllm_source"],
+                        paths["vllm_ascend_source"],
+                        paths["python_overlay"],
+                    ]
+                ),
+                "target": machine.get("host"),
+                "sync_mode": "identity",
+            }
+
+            save_parity_state(
+                machine_alias,
+                {
+                    "machine_alias": machine_alias,
+                    "updated_at": identity_manifest["created_at"],
+                    "local_content_digest": identity_manifest["local_content_digest"],
+                    "remote_content_digest": identity_manifest["remote_content_digest"],
+                    "remote_content_digests": local_bundle,
+                    "snapshot_commits": {},
+                    "machine_ready": machine_ready,
+                    "source_dirs": identity_manifest["source_dirs"],
+                },
+            )
+            return identity_manifest
+        finally:
+            tx.release_parity_lock(lock_path)

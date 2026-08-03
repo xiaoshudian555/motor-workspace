@@ -34,22 +34,22 @@
     "metrics.exposed": {
       "feature": "metrics",
       "adapter": "metrics-query",
-      "intent": "Configured Motor metrics are exposed.",
-      "expected": {"metrics_present": true},
+      "intent": "Coordinator observability /metrics exposes Prometheus families and samples.",
+      "expected": {"http_status": 200, "prometheus_data": true},
       "evidence": ["metrics_snapshot"]
     },
     "metrics.request-updated": {
       "feature": "metrics",
       "adapter": "metrics-query",
       "intent": "A single controlled request updates the expected metric series.",
-      "expected": {"delta": "positive"},
+      "expected": {"metric": "vllm:request_success_total", "delta": "positive"},
       "evidence": ["metrics_before", "request", "metrics_after"]
     },
     "tracing.request-correlated": {
       "feature": "tracing",
       "adapter": "trace-query",
-      "intent": "A controlled request can be correlated to its trace evidence.",
-      "expected": {"trace_correlated": true},
+      "intent": "A controlled request with an injected W3C traceparent can be correlated to Tempo trace evidence.",
+      "expected": {"backend": "tempo", "trace_id": "matched", "request_id": "correlated"},
       "evidence": ["request", "trace"]
     },
     "inference-request.non-stream": {

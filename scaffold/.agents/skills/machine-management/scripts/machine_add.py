@@ -28,6 +28,11 @@ def main() -> int:
         choices=["shared-hostpath", "node-local-hostpath"],
         default="shared-hostpath",
     )
+    parser.add_argument(
+        "--executor",
+        choices=["ssh", "native"],
+        default="ssh",
+    )
     parser.add_argument("--candidate-nodes", default="")
     args = parser.parse_args()
 
@@ -46,6 +51,7 @@ def main() -> int:
         "remote_workspace_root": remote_workspace_root,
         "kube_context": args.kube_context,
         "parity_backend": args.parity_backend,
+        "executor": args.executor,
         "candidate_nodes": nodes,
         "created_at": utc_now_iso(),
     }

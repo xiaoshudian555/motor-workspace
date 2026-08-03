@@ -34,6 +34,21 @@ python3 .agents/skills/motor-functional/scripts/functional_run.py \
   --feature inference-request
 ```
 
+Metrics and tracing use the same entrypoint. Metrics discovers the Coordinator
+observability Service on port `1027`; tracing queries the repository's existing
+Tempo stack on port `3200` at the configured OTLP export host by default. The
+agent may pass `--tempo-host` when the Tempo query host differs from the OTLP
+collector host:
+
+```bash
+python3 .agents/skills/motor-functional/scripts/functional_run.py \
+  --machine <alias> \
+  --deploy-run-id <id> \
+  --request '验证 metrics 和 tracing' \
+  --feature metrics \
+  --feature tracing
+```
+
 Use repeated `--case` arguments to narrow the feature defaults. Use `--output`
 to save an immutable resolved spec for a future functional run.
 
@@ -45,14 +60,17 @@ to save an immutable resolved spec for a future functional run.
 
 ## Current boundary
 
-- Real non-stream/stream inference request cases are implemented here after
-  Coordinator readiness. Metrics and tracing are the next implementation
-  priorities. API-key validation is explicitly deferred.
+- Real non-stream/stream inference, Coordinator Prometheus metrics, and
+  Tempo-backed tracing correlation cases are implemented here after Coordinator
+  readiness. API-key feature validation is explicitly deferred.
 - Functional metrics checks prove endpoint/series behavior under a single
   controlled request. Resource monitoring and performance attribution under
   sustained load belong to Profiling, not Functional.
-- TLS, metrics, tracing, parameter-passthrough, overload, and API-key adapters
-  remain unavailable until their concrete handlers are added.
+- Tracing injects a sampled W3C `traceparent` and requires both enabled Motor
+  tracing and a queryable Tempo backend. Disabled tracing, zero remote-parent
+  sampling, or a missing Tempo backend is recorded as `unavailable`.
+- TLS, parameter-passthrough, overload, and API-key adapters remain unavailable
+  until their concrete handlers are added.
 - Never report an unimplemented adapter as passed; dispatch records it as
   `unavailable`.
 - Do not put plaintext keys, tokens, or private keys in the spec. Refer to an

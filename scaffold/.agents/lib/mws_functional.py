@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import math
+import re
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,6 +22,13 @@ DEFAULT_CATALOG_PATH = (
 )
 
 CaseHandler = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+
+REQUEST_SUCCESS_METRIC = "vllm:request_success_total"
+_PROMETHEUS_SAMPLE_RE = re.compile(
+    r"^(?P<name>[A-Za-z_:][A-Za-z0-9_:]*)(?:\{.*\})?\s+"
+    r"(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[+-]?Inf|NaN)"
+    r"(?:\s+\d+)?$"
+)
 
 
 def load_case_catalog(path: Path = DEFAULT_CATALOG_PATH) -> dict[str, Any]:
@@ -298,3 +308,176 @@ def validate_stream_response(response: dict[str, Any]) -> dict[str, Any]:
     if output_chars < 1:
         raise WorkspaceStateError("stream inference returned no generated output")
     return {"events": events, "choices_seen": choices_seen, "output_chars": output_chars, "done": done}
+
+
+def parse_prometheus_samples(text: str) -> dict[str, list[float]]:
+    """Parse the numeric samples needed by Functional without normalizing Motor metric names."""
+    samples: dict[str, list[float]] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _PROMETHEUS_SAMPLE_RE.match(line)
+        if match is None:
+            continue
+        value = float(match.group("value"))
+        samples.setdefault(match.group("name"), []).append(value)
+    return samples
+
+
+def validate_metrics_response(response: dict[str, Any]) -> dict[str, Any]:
+    if response.get("status") != 200:
+        raise WorkspaceStateError(
+            f"metrics endpoint returned HTTP {response.get('status')}: "
+            f"{str(response.get('body'))[:500]}"
+        )
+    body = str(response.get("body") or "")
+    families = {
+        line.split()[2]
+        for line in body.splitlines()
+        if line.startswith("# TYPE ") and len(line.split()) >= 4
+    }
+    samples = parse_prometheus_samples(body)
+    if not families or not samples:
+        raise WorkspaceStateError("metrics endpoint returned no Prometheus metric families/samples")
+    motor_families = {
+        name for name in families if name.startswith(("motor:", "vllm:"))
+    }
+    if not motor_families:
+        raise WorkspaceStateError("metrics endpoint returned no Motor/vLLM metric families")
+    return {
+        "http_status": 200,
+        "content_type": str(response.get("content_type") or ""),
+        "family_count": len(families),
+        "sample_count": sum(len(values) for values in samples.values()),
+        "motor_family_count": len(motor_families),
+    }
+
+
+def prometheus_metric_total(response: dict[str, Any], metric_name: str) -> float:
+    validate_metrics_response(response)
+    values = parse_prometheus_samples(str(response.get("body") or "")).get(metric_name)
+    if not values:
+        raise WorkspaceStateError(f"metrics endpoint has no {metric_name!r} samples")
+    finite_values = [value for value in values if math.isfinite(value)]
+    if not finite_values:
+        raise WorkspaceStateError(f"metric {metric_name!r} has no finite samples")
+    return sum(finite_values)
+
+
+def wait_for_metric_increase(
+    request: Callable[[], dict[str, Any]],
+    *,
+    metric_name: str,
+    before: float,
+    timeout: float,
+    interval: float = 1.0,
+) -> tuple[dict[str, Any], float]:
+    deadline = time.monotonic() + timeout
+    last_total = before
+    last_response: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last_response = request()
+        last_total = prometheus_metric_total(last_response, metric_name)
+        if last_total > before:
+            return last_response, last_total
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+    raise WorkspaceStateError(
+        f"metric {metric_name!r} did not increase within {timeout:g}s; "
+        f"before={before:g} last={last_total:g}"
+    )
+
+
+def validate_tempo_trace_response(
+    response: dict[str, Any], *, expected_trace_id: str
+) -> dict[str, Any]:
+    if response.get("status") != 200:
+        raise WorkspaceStateError(
+            f"Tempo trace query returned HTTP {response.get('status')}: "
+            f"{str(response.get('body'))[:500]}"
+        )
+    try:
+        payload = json.loads(str(response.get("body") or ""))
+    except json.JSONDecodeError as exc:
+        raise WorkspaceStateError("Tempo trace query response is not JSON") from exc
+
+    spans: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if str(value.get("traceId") or "").lower() == expected_trace_id.lower():
+                spans.append(value)
+            for nested in value.values():
+                walk(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                walk(nested)
+
+    walk(payload)
+    if not spans:
+        raise WorkspaceStateError(
+            f"Tempo response contains no spans for trace id {expected_trace_id}"
+        )
+
+    request_ids: list[str] = []
+    for span in spans:
+        attributes = span.get("attributes")
+        if not isinstance(attributes, list):
+            continue
+        for attribute in attributes:
+            if not isinstance(attribute, dict) or attribute.get("key") != "requestId":
+                continue
+            value = attribute.get("value")
+            if isinstance(value, dict) and isinstance(value.get("stringValue"), str):
+                request_ids.append(value["stringValue"])
+    correlated_ids = [
+        request_id
+        for request_id in request_ids
+        if request_id.lower().startswith(f"{expected_trace_id.lower()}-")
+    ]
+    if not correlated_ids:
+        raise WorkspaceStateError(
+            "Tempo trace has the injected trace id but no correlated Motor requestId attribute"
+        )
+    return {
+        "trace_id": expected_trace_id,
+        "span_count": len(spans),
+        "span_names": sorted(
+            {str(span.get("name")) for span in spans if span.get("name")}
+        ),
+        "correlated_request_ids": sorted(set(correlated_ids)),
+    }
+
+
+def wait_for_tempo_trace(
+    request: Callable[[], dict[str, Any]],
+    *,
+    expected_trace_id: str,
+    timeout: float,
+    interval: float = 1.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    deadline = time.monotonic() + timeout
+    last_status = 0
+    last_body = "no response"
+    while time.monotonic() < deadline:
+        try:
+            response = request()
+            last_status = int(response.get("status") or 0)
+            last_body = str(response.get("body") or "")
+            if last_status == 200:
+                try:
+                    summary = validate_tempo_trace_response(
+                        response, expected_trace_id=expected_trace_id
+                    )
+                except WorkspaceStateError as exc:
+                    # Tempo can expose a trace before every related span is searchable.
+                    last_body = str(exc)
+                else:
+                    return response, summary
+        except (OSError, TimeoutError) as exc:
+            last_body = str(exc)
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+    raise WorkspaceStateError(
+        f"trace {expected_trace_id} did not become queryable in Tempo within {timeout:g}s; "
+        f"last_status={last_status} last_body={last_body[:500]}"
+    )

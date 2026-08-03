@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -144,6 +145,7 @@ class SshScpTransport(RemoteTransport):
         remote_command: str,
         *,
         local_forward: tuple[int, str, int] | None = None,
+        no_command: bool = False,
     ) -> list[str]:
         command = [
             "ssh",
@@ -164,22 +166,26 @@ class SshScpTransport(RemoteTransport):
         ]
         if local_forward is not None:
             local_port, remote_host, remote_port = local_forward
+            forward_host = f"[{remote_host}]" if ":" in remote_host else remote_host
             command.extend(
                 [
                     "-o",
                     "ExitOnForwardFailure=yes",
                     "-L",
-                    f"127.0.0.1:{local_port}:{remote_host}:{remote_port}",
+                    f"127.0.0.1:{local_port}:{forward_host}:{remote_port}",
                 ]
             )
-        command.extend(
-            [
-                self.target,
-                "bash",
-                "-c",
-                shell_quote(remote_command),
-            ]
-        )
+        if no_command:
+            command.extend(["-N", self.target])
+        else:
+            command.extend(
+                [
+                    self.target,
+                    "bash",
+                    "-c",
+                    shell_quote(remote_command),
+                ]
+            )
         return command
 
     def _ssh(self, remote_command: str) -> list[str]:
@@ -328,6 +334,72 @@ class SshScpTransport(RemoteTransport):
     def kubectl(self, *args: str) -> subprocess.CompletedProcess[str]:
         argv = " ".join(shell_quote(arg) for arg in args)
         return self.run(f"kubectl {argv}")
+
+
+class NativeTransport(RemoteTransport):
+    """Execute commands and file operations directly on the current host.
+
+    Used by the remote-native topology where the Agent runs on the target
+    Linux host. It shares the exact `RemoteTransport` contract with
+    `SshScpTransport`, so workflow business code does not branch on topology.
+    """
+
+    COMMAND_TIMEOUT_SECONDS = 600
+
+    def __init__(self, machine: dict[str, Any]) -> None:
+        self.host = str(machine.get("host", "localhost"))
+        self.alias = str(machine.get("alias") or self.host)
+        self.mount_root = str(machine.get("mount_root", "/mnt"))
+        self.remote_workspace_root = str(
+            machine.get("remote_workspace_root") or f"{self.mount_root}/motor-workspace"
+        )
+        self._safe_registered: set[str] = set()
+
+    def run(self, remote_command: str) -> subprocess.CompletedProcess[str]:
+        try:
+            result = subprocess.run(
+                ["bash", "-c", remote_command],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=self.COMMAND_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return subprocess.CompletedProcess(
+                args=remote_command,
+                returncode=124,
+                stdout=exc.stdout or "",
+                stderr=f"native command timed out after {self.COMMAND_TIMEOUT_SECONDS}s",
+            )
+        return result
+
+    def upload_file(self, local_path: str, remote_path: str) -> None:
+        path = validate_remote_posix_path(remote_path, label="remote_path")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_path, target)
+
+    def upload_bytes(self, remote_path: str, data: bytes) -> None:
+        path = validate_remote_posix_path(remote_path, label="remote_path")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    def read_bytes(self, remote_path: str) -> bytes:
+        path = validate_remote_posix_path(remote_path, label="remote_path")
+        return Path(path).read_bytes()
+
+    def git(self, repo_dir: str, *args: str) -> subprocess.CompletedProcess[str]:
+        repo = validate_remote_posix_path(repo_dir, label="repo_dir")
+        argv = " ".join(shell_quote(arg) for arg in args)
+        return self.run(f"git -C {shell_quote(repo)} {argv}")
+
+    def kubectl(self, *args: str) -> subprocess.CompletedProcess[str]:
+        argv = " ".join(shell_quote(arg) for arg in args)
+        return self.run(f"kubectl {argv}")
+
+    def __repr__(self) -> str:
+        return f"NativeTransport(alias={self.alias!r}, host={self.host!r})"
 
 
 class FakeRemoteTransport(RemoteTransport):
@@ -502,6 +574,8 @@ def transport_for_machine(
 ) -> RemoteTransport:
     if fake_root is not None:
         return FakeRemoteTransport(fake_root, node=node or machine.get("host", "fake-node"))
+    if machine.get("executor") == "native":
+        return NativeTransport(machine)
     return SshScpTransport(machine)
 
 

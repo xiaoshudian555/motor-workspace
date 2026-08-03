@@ -9,6 +9,7 @@ import ssl
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from mws_deploy import load_config_bundle, verify_bundle_digest
 from mws_kubectl import KubectlRunner, RemoteKubectlPortForward, build_kubectl_runner
@@ -16,7 +17,7 @@ from mws_local_state import WorkspaceStateError, get_machine
 from mws_run_state import load_deploy_run, load_run, relative_repo
 from repo_paths import REPO_ROOT
 
-COORDINATOR_PORTS = {"infer": 1025, "mgmt": 1026}
+COORDINATOR_PORTS = {"infer": 1025, "mgmt": 1026, "obs": 1027}
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
@@ -82,6 +83,21 @@ def _api_key_config(user_config: dict[str, Any]) -> dict[str, Any]:
     return dict(config) if isinstance(config, dict) else {}
 
 
+def _tracer_config(user_config: dict[str, Any]) -> dict[str, Any]:
+    coordinator = user_config.get("motor_coordinator_config")
+    if not isinstance(coordinator, dict):
+        return {}
+    config = coordinator.get("tracer_config")
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _endpoint_host(endpoint: str) -> str:
+    if not endpoint:
+        return ""
+    parsed = urlsplit(endpoint if "://" in endpoint else f"//{endpoint}")
+    return str(parsed.hostname or "")
+
+
 def resolve_validation_context(*, machine_alias: str, deploy_run_id: str) -> dict[str, Any]:
     """Resolve and integrity-check a successful deploy plus its Motor request config."""
     deploy_run = load_deploy_run(deploy_run_id, allow_failed=False)
@@ -114,6 +130,8 @@ def resolve_validation_context(*, machine_alias: str, deploy_run_id: str) -> dic
     if not namespace:
         raise WorkspaceStateError(f"deploy run {deploy_run_id} missing namespace evidence")
     auth = _api_key_config(user_config)
+    tracer = _tracer_config(user_config)
+    trace_endpoint = str(tracer.get("endpoint") or "").strip()
     return {
         "machine": machine_alias,
         "deploy_run_id": deploy_run_id,
@@ -129,6 +147,11 @@ def resolve_validation_context(*, machine_alias: str, deploy_run_id: str) -> dic
         "api_key_enabled": bool(auth.get("enable_api_key")),
         "api_key_header": str(auth.get("header_name") or "Authorization"),
         "api_key_prefix": str(auth.get("key_prefix") or "Bearer "),
+        "tracing_enabled": bool(trace_endpoint),
+        "tracing_export_host": _endpoint_host(trace_endpoint),
+        "tracing_remote_parent_sampled": float(
+            tracer.get("remote_parent_sampled", 1.0)
+        ),
     }
 
 
@@ -167,7 +190,7 @@ def discover_coordinator_services(
     roles: tuple[str, ...] = ("infer", "mgmt"),
     kubectl: KubectlRunner | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Find the live Coordinator inference and management Services by Motor ports and identity."""
+    """Find live Coordinator Services by their Motor port and role identity."""
     run_kubectl = kubectl or build_kubectl_runner(machine, kube_context=kube_context)
     result = run_kubectl("get", "services", "-n", namespace, "-o", "json")
     if result.returncode:

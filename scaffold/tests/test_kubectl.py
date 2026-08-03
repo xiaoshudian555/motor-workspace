@@ -10,11 +10,12 @@ LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
 from mws_kubectl import (  # noqa: E402
+    RemoteHostPortForward,
     RemoteKubectlPortForward,
     build_kubectl_runner,
     stage_remote_files,
 )
-from mws_transport import SshScpTransport  # noqa: E402
+from mws_transport import NativeTransport, SshScpTransport  # noqa: E402
 
 
 def _machine() -> dict:
@@ -120,3 +121,97 @@ def test_port_forward_runs_remote_kubectl_behind_ssh_tunnel(monkeypatch) -> None
     assert "127.0.0.1:18080:127.0.0.1:19090" in command
     assert "exec kubectl --context ctx-a port-forward" in command[-1]
     assert "19090:1025" in command[-1]
+
+
+def test_port_forward_native_runs_local_kubectl_without_ssh(monkeypatch) -> None:
+    machine = {**_machine(), "executor": "native"}
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.running = True
+
+        def poll(self):
+            return None if self.running else 0
+
+        def terminate(self) -> None:
+            self.running = False
+
+        def kill(self) -> None:
+            self.running = False
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda m: NativeTransport(m))
+    monkeypatch.setattr("mws_kubectl._allocate_local_port", lambda: 18082)
+    monkeypatch.setattr(
+        "mws_kubectl.socket.create_connection",
+        lambda *args, **kwargs: nullcontext(),
+    )
+    monkeypatch.setattr("mws_kubectl.subprocess.Popen", fake_popen)
+
+    with RemoteKubectlPortForward(
+        machine, "ctx-a", "ns1", "coordinator-infer", 1025
+    ) as forward:
+        assert forward.local_port == 18082
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[0] == "kubectl"
+    assert "port-forward" in command
+    assert "18082:1025" in command
+
+
+def test_remote_host_port_forward_native_maps_local_to_remote(monkeypatch) -> None:
+    machine = {**_machine(), "executor": "native"}
+    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda m: NativeTransport(m))
+
+    with RemoteHostPortForward(machine, 3200) as forward:
+        # native: no tunnel, local port is the remote port directly
+        assert forward.local_port == 3200
+
+
+def test_remote_host_port_forward_uses_ssh_no_command_tunnel(monkeypatch) -> None:
+    transport = SshScpTransport(_machine())
+    monkeypatch.setattr("mws_kubectl.transport_for_machine", lambda machine: transport)
+    monkeypatch.setattr("mws_kubectl._allocate_local_port", lambda: 18081)
+    monkeypatch.setattr(
+        "mws_kubectl.socket.create_connection",
+        lambda *args, **kwargs: nullcontext(),
+    )
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.running = True
+
+        def poll(self):
+            return None if self.running else 0
+
+        def terminate(self) -> None:
+            self.running = False
+
+        def kill(self) -> None:
+            self.running = False
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        return FakeProcess()
+
+    monkeypatch.setattr("mws_kubectl.subprocess.Popen", fake_popen)
+
+    with RemoteHostPortForward(_machine(), 3200) as forward:
+        assert forward.local_port == 18081
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert "127.0.0.1:18081:127.0.0.1:3200" in command
+    assert "-N" in command

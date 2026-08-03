@@ -19,6 +19,7 @@ INVENTORY_FILENAME = "machine-inventory.json"
 PROFILE_SCHEMA_VERSION = 1
 INVENTORY_SCHEMA_VERSION = 1
 PARITY_BACKEND_CHOICES = ("shared-hostpath", "node-local-hostpath")
+EXECUTOR_CHOICES = ("ssh", "native")
 WORKSPACE_ID_PREFIX = "mws-"
 USERNAME_PATTERN = re.compile(r"^[a-z0-9]{3,32}$")
 RANDOM_ALPHABET = string.digits
@@ -190,6 +191,12 @@ def validate_machine_record(record: Any, *, where: str = "machine") -> dict[str,
             f"{where}.parity_backend must be one of: {', '.join(PARITY_BACKEND_CHOICES)}"
         )
 
+    executor = record.get("executor", "ssh")
+    if executor not in EXECUTOR_CHOICES:
+        raise WorkspaceStateError(
+            f"{where}.executor must be one of: {', '.join(EXECUTOR_CHOICES)}"
+        )
+
     source_dirs = record.get("source_dirs")
     if source_dirs is not None and not isinstance(source_dirs, dict):
         raise WorkspaceStateError(f"{where}.source_dirs must be an object when present")
@@ -226,6 +233,7 @@ def validate_machine_record(record: Any, *, where: str = "machine") -> dict[str,
         "remote_workspace_root": remote_workspace_root,
         "kube_context": kube_context or "",
         "parity_backend": parity_backend,
+        "executor": executor,
         "candidate_nodes": [item.strip() for item in candidate_nodes],
     }
     if source_dirs:

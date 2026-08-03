@@ -594,8 +594,8 @@ def _run_deploy_dry_run_local(config_dir: Path) -> dict[str, Any]:
 
 
 def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dict[str, Any]:
-    """Execute the deployer dry-run on the machine host over SSH."""
-    from mws_transport import SshScpTransport, transport_for_machine
+    """Execute the deployer dry-run on the machine host over SSH or natively."""
+    from mws_transport import NativeTransport, SshScpTransport, transport_for_machine
 
     paths = build_fixed_source_paths(machine)
     remote_motor = str(paths["motor_source"]).rstrip("/")
@@ -604,8 +604,8 @@ def _run_deploy_dry_run_remote(config_dir: Path, machine: dict[str, Any]) -> dic
     remote_config = f"/tmp/mws-dryrun-config-{os.getpid()}"
 
     transport = transport_for_machine(machine)
-    if not isinstance(transport, SshScpTransport):
-        raise WorkspaceStateError("remote dry-run requires an SSH transport")
+    if not isinstance(transport, (SshScpTransport, NativeTransport)):
+        raise WorkspaceStateError("remote dry-run requires an SSH or native transport")
 
     probe = transport.run(f"test -f {shell_quote(remote_deploy_py)} && echo OK")
     if probe.returncode != 0 or "OK" not in probe.stdout:

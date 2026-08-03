@@ -142,6 +142,17 @@ def test_validate_remote_workspace_in_mount_rejects_escape() -> None:
 def test_validate_machine_record_normalizes_defaults() -> None:
     record = validate_machine_record(_machine(remote_workspace_root=""))
     assert record["remote_workspace_root"] == "/mnt/motor-workspace"
+    assert record["executor"] == "ssh"
+
+
+def test_validate_machine_record_accepts_native_executor() -> None:
+    record = validate_machine_record(_machine(executor="native"))
+    assert record["executor"] == "native"
+
+
+def test_validate_machine_record_rejects_unknown_executor() -> None:
+    with pytest.raises(WorkspaceStateError):
+        validate_machine_record(_machine(executor="podman"))
 
 
 def test_upsert_and_remove_roundtrip(inventory_paths) -> None:
