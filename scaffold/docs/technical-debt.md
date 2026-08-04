@@ -528,35 +528,31 @@ R1 关闭记录（2026-08-03）：
 - 真实环境复验：apply 后 `kubectl get deploy -A | grep <job_id>` 只出现在目标
   namespace。
 
-遗留（本轮不封闭，属 TD-A3-02/TD-A3-06 范围）：
+遗留（本轮不封闭，仅剩 run-scoped 资源登记/清理一项，归 TD-A3-06）：
 
-- bundle 自包含（ConfigMap 纳入 bundle）与 run-scoped 资源登记/清理，仍待
-  独立整改，见下两条。
+- 主路径的 `motor-config` 错位问题已随 A3-01（job_id == namespace 恒等）消失；
+  upstream 在拉起时自建 ConfigMap 到 job_id namespace，Deployment 可正常挂载。
+- `_apply_bundle_direct`（upstream deployer 不可用时的 fallback）直接 apply
+  bundle，无 upstream 创建 ConfigMap，bundle 里也没有——该 fallback 路径的
+  bundle 自包含缺口仍存在，已标注，不作为主路径验收项。
 
-### TD-A3-02（P0）：config bundle 不自包含，upstream 运行时生成的 ConfigMap 不在 bundle 内
+### TD-A3-02（关闭）：bundle 不自包含导致 `motor-config` 缺失——已由 TD-A3-01 解决，非独立技术债
 
-现状：
+关闭理由（2026-08-04 复核，与 A3-01 修复联动）：
 
-- `configure_deploy_bundle` 只收集 4 份 workload manifest（Controller、
-  Coordinator、P/D vLLM）；upstream full deploy 运行时另外生成 `motor-config`
-  与 `job-summary-*` ConfigMap，不进 bundle。
-- 实际后果（已发生）：bundle apply 到 `mindie-motor-hxy` 后 4 个 Pod 因
-  `ConfigMap "motor-config" not found` 停在 `ContainerCreating`；该 ConfigMap
-  被 upstream 生成在旧 namespace，需人工复制。
-- bundle 当前承诺的 immutable/自包含/可逆因此不成立：apply 对 upstream 运行时
-  产物有隐含依赖。
+- 该条是 A3-01（namespace 语义双轨）的症状而非独立根因。A3-01 修复前，
+  upstream 把 `motor-config` 创建在旧 namespace（job_id），而 workspace
+  overlay apply 到新 namespace（显式 namespace），两处错位导致 Pod
+  `ContainerCreating`。A3-01 修复 `job_id == namespace` 恒等后，upstream 在
+  拉起时自建 `motor-config` 到正确 namespace，主路径问题消失。
+- `motor-config` 是 upstream `create_motor_config_configmap` 在非 dry-run 阶段
+  用 `kubectl create configmap --from-file=...` 运行时创建的，dry-run 既不产
+  YAML 也不执行创建，configure 阶段不可见——因此"预生成 ConfigMap 进 bundle"
+  方案不成立，也不再需要。
+- 剩余边界：`_apply_bundle_direct`（upstream 不可用 fallback）缺 ConfigMap，
+  stop 清理需知道 ConfigMap 存在（归 TD-A3-06 run-scoped 资源登记）。
 
-目标：
-
-- bundle 纳入 `motor-config`、`job-summary-*` 等 upstream 运行时 ConfigMap
-  （dry-run 阶段预生成并收集，或 apply 阶段生成后立即登记）；
-- bundle manifest 清单与实际 apply 的资源清单一一对应，apply 不依赖 bundle
-  之外的任何运行时生成物。
-
-验收：
-
-- 全新 namespace 仅 apply bundle 即可让 Pod 越过 ConfigMap 挂载阶段；
-- bundle 内有资源清单文件，stop 可完全按清单反删（见 TD-A3-06）。
+处理：本条标记关闭；剩余边界分别由 fallback 注释说明和 TD-A3-06 承担。
 
 ### TD-A3-03（P1）：环境契约是单代硬编码，不支持 AscendJob / InferServiceSet 两代链路二选一
 
@@ -648,31 +644,47 @@ R1 关闭记录（2026-08-03）：
 - 真实环境：A3 上 31015/31017/31027 场景重放，configure 直接产出可用映射，
   不需要人工试错。
 
-### TD-A3-06（P1）：stop 清理语义不对等——只反删 bundle manifest，run-scoped 资源无登记无确认
+### TD-A3-06（已落地）：stop 清理语义不对等——改为复用 upstream `delete.sh`
 
-现状：
+现状（修复前）：
 
 - `stop_from_plan`（`mws_deploy.py:1049`）只对 bundle 内 manifest 反序
   `kubectl delete --ignore-not-found`；upstream 运行时生成的 `motor-config`、
   `job-summary-*` ConfigMap、日志采集进程等不在清单中，stop 成功后仍有残留。
   本次实际靠人工补删 ConfigMap 才把 namespace 清到只剩默认资源。
 - 删除成功只看 kubectl 返回码，不轮询确认资源实际消失。
+- 根因：workspace 只继承了 upstream 的生成能力（deploy.py），没继承配套的
+  清理能力（`delete.sh`）。upstream `delete.sh` 本身是完整的：删
+  `output_yamls/*.yaml` workload、等 Pod 终止（超时 force-delete）、删
+  `motor-config` ConfigMap、sed 还原启动脚本 patch、`pkill` log_monitor。
 
-目标：
+已落地（2026-08-04）：
+
+- 新增 `mws_deploy.stop_via_upstream_delete_sh`：在远端 deployer 目录执行
+  `bash delete.sh <namespace>`（namespace == job_id，与 A3-01 对齐）；
+  `deploy_stop.py` 主路径改用它，`stop_from_bundle` 降级为 fallback。
+- 测试：`test_deploy_runtime.py` 新增两条用例（正常执行 delete.sh /
+  delete.sh 缺失时 fail）。
+
+目标（完成定义）：
 
 - deploy 阶段登记 upstream 与 workspace 实际创建的全部 run-scoped 资源
-  （kind/name/namespace），delete 使用统一资源清单；
-- `motor-config`、`job-summary-*` 等 ConfigMap 纳入清理范围；
-- 日志采集/监控辅助进程在 delete 前停止，避免删后继续生成残留；
-- delete 后轮询确认 Pod/ReplicaSet/Service/ConfigMap 消失，不能只看返回码；
+  （kind/name/namespace），delete 使用统一资源清单；——由 delete.sh 替代，
+  不再自建清单；
+- `motor-config`、`job-summary-*` 等 ConfigMap 纳入清理范围；——delete.sh
+  已覆盖 `motor-config`；
+- 日志采集/监控辅助进程在 delete 前停止；——delete.sh `pkill log_monitor`；
+- delete 后轮询确认 Pod/ReplicaSet/Service/ConfigMap 消失；——delete.sh
+  等 Pod 终止 + force-delete 兜底；
 - namespace 删除保持独立、明确授权的 destructive 操作，普通 stop 不得隐式
   执行。
 
-验收：
+遗留：
 
-- fixture：清单驱动的 delete 覆盖 ConfigMap 类资源；删除后确认失败时 stop
-  不报 ok；
-- 真实环境：A3 上 stop 后目标 namespace 仅剩 `kube-root-ca.crt` 与
+- `job-summary-*` ConfigMap 由 upstream log 采集运行时创建，delete.sh 只显式
+  删 `motor-config`；若 real 环境确认 `job-summary-*` 残留，需在 delete.sh
+  覆盖或 stop 后补一条清理。尚未在真实环境复验。
+- 真实环境复验：A3 上 stop 后目标 namespace 仅剩 `kube-root-ca.crt` 与
   `default` ServiceAccount，无需人工补删。
 
 ### TD-A3-07（P3）：环境与依赖治理记录项

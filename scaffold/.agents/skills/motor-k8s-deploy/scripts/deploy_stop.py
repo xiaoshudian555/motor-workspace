@@ -11,7 +11,10 @@ sys.path.insert(0, str(LIB))
 
 from repo_paths import REPO_ROOT  # noqa: E402
 
-from mws_deploy import stop_from_bundle  # noqa: E402
+from mws_deploy import (  # noqa: E402
+    stop_from_bundle,
+    stop_via_upstream_delete_sh,
+)
 from mws_local_state import get_machine  # noqa: E402
 from mws_result import build_result_envelope, emit_result, progress, utc_now_iso  # noqa: E402
 from mws_run_state import deploy_run_dir, load_deploy_run  # noqa: E402
@@ -57,13 +60,29 @@ def main() -> int:
     if not bundle_dir.is_absolute():
         bundle_dir = REPO_ROOT / bundle_ref
     namespace = str(run_record.get("namespace") or "")
-    progress("stopping run-scoped deployment")
-    result = stop_from_bundle(
-        bundle_dir,
+    progress("stopping run-scoped deployment via upstream delete.sh")
+    result = stop_via_upstream_delete_sh(
         machine=machine,
         kube_context=kube_context,
         namespace=namespace,
     )
+    if result.get("status") != "ok":
+        progress(
+            "upstream delete.sh failed; falling back to bundle manifest deletion"
+        )
+        if bundle_dir.is_dir():
+            fallback = stop_from_bundle(
+                bundle_dir,
+                machine=machine,
+                kube_context=kube_context,
+                namespace=namespace,
+            )
+            if fallback.get("status") == "ok":
+                result = {
+                    **result,
+                    "status": "ok",
+                    "fallback_used": True,
+                }
     stop_ok = result["status"] == "ok"
     envelope = build_result_envelope(
         kind="deploy-stop",

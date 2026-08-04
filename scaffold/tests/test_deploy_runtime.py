@@ -22,6 +22,7 @@ from mws_deploy import (  # noqa: E402
     apply_config_bundle,
     collect_runtime_code_paths,
     pod_readiness_from_context,
+    stop_via_upstream_delete_sh,
     verify_min_service_access,
     verify_runtime_code_paths,
 )
@@ -439,6 +440,54 @@ def test_stop_requires_bundle_dir(local_state_root, monkeypatch) -> None:
         spec.loader.exec_module(module)
         module.main()
     assert "bundle_dir missing" in captured["payload"]["errors"][0]
+
+
+def _fake_adapter(*, ok: bool) -> object:
+    class _Fake:
+        def run(self, command: str):
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0 if ok else 1,
+                stdout="OK" if ok and "test -f" in command else "ran delete.sh",
+                stderr="",
+            )
+
+    return _Fake()
+
+
+def test_stop_via_upstream_delete_sh_runs_delete_sh(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _Recording:
+        def run(self, command: str):
+            calls.append(command)
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout="OK" if "test -f" in command else "deleted", stderr=""
+            )
+
+    monkeypatch.setattr("mws_execution.execution_adapter_for_machine", lambda machine: _Recording())
+    result = stop_via_upstream_delete_sh(
+        machine=_machine(),
+        kube_context="ctx-a",
+        namespace="ns1",
+    )
+    assert result["status"] == "ok"
+    assert any("delete.sh" in c and "ns1" in c for c in calls)
+    assert any("test -f" in c for c in calls)
+
+
+def test_stop_via_upstream_delete_sh_fails_when_missing(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mws_execution.execution_adapter_for_machine",
+        lambda machine: _fake_adapter(ok=False),
+    )
+    result = stop_via_upstream_delete_sh(
+        machine=_machine(),
+        kube_context="ctx-a",
+        namespace="ns1",
+    )
+    assert result["status"] == "error"
+    assert "delete.sh" in result.get("reason", "")
 
 
 def test_collect_runtime_code_paths_no_pod() -> None:

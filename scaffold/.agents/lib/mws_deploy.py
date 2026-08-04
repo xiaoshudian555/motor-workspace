@@ -1913,6 +1913,62 @@ def stop_from_bundle(
     return stop_from_plan(plan, machine, kube_context=kube_context)
 
 
+def stop_via_upstream_delete_sh(
+    *,
+    machine: dict[str, Any],
+    kube_context: str,
+    namespace: str,
+) -> dict[str, Any]:
+    """Stop a Motor deployment by running the upstream deployer's delete.sh.
+
+    The upstream delete.sh is the authoritative cleanup for a run: it removes
+    the workload YAMLs under the deployer's output_yamls/, waits for pods to
+    terminate (with a force-delete fallback), deletes the motor-config
+    ConfigMap, reverts the startup script patches, and stops the log_monitor
+    background process. Workspace's own bundle-based deletion only covers the
+    manifests collected in the bundle, so it cannot clean up these runtime
+    resources; delegate to delete.sh instead.
+    """
+    from mws_execution import execution_adapter_for_machine
+
+    paths = build_fixed_source_paths(machine)
+    remote_motor = str(paths["motor_source"]).rstrip("/")
+    remote_deployer = f"{remote_motor}/examples/deployer"
+    remote_delete_sh = f"{remote_deployer}/delete.sh"
+    namespace_arg = str(namespace or "").strip()
+
+    adapter = execution_adapter_for_machine(machine)
+
+    probe = adapter.run(f"test -f {shell_quote(remote_delete_sh)} && echo OK")
+    if probe.returncode != 0 or "OK" not in probe.stdout:
+        return {
+            "status": "error",
+            "reason": f"remote delete.sh not found: {remote_delete_sh}",
+            "returncode": probe.returncode,
+            "stdout_tail": probe.stdout[-2000:],
+            "stderr_tail": probe.stderr[-2000:],
+        }
+
+    if not namespace_arg:
+        return {
+            "status": "error",
+            "reason": "stop_via_upstream_delete_sh requires a namespace",
+            "returncode": None,
+        }
+
+    command = (
+        f"cd {shell_quote(remote_deployer)} && bash {shell_quote(remote_delete_sh)} "
+        f"{shell_quote(namespace_arg)}"
+    )
+    result = adapter.run(command)
+    return {
+        "status": "ok" if result.returncode == 0 else "error",
+        "returncode": result.returncode,
+        "stdout_tail": result.stdout[-4000:],
+        "stderr_tail": result.stderr[-4000:],
+    }
+
+
 def pod_readiness_from_context(
     machine: dict[str, Any],
     kube_context: str,
