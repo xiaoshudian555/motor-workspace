@@ -46,19 +46,21 @@ deploy-complete
 “拉起服务”属于第二层；“服务拉起后执行指定 workload 并给出可判断结果”属于
 第三层。
 
-## NodePort 冲突默认策略（决策已确认，实现待落地）
+## NodePort 冲突默认策略（决策已确认，preflight 已落地自动避让）
 
-部署配置生成（第二层 configure）时若检测到 NodePort 被集群现有服务占用，
-默认自动 fallback 调整端口，不再中断询问用户：
+部署配置生成前（preflight 阶段）检测到 NodePort 被集群现有服务占用时，
+自动 fallback 调整端口，不再中断询问用户：
 
-- **configure 阶段**：自动探测被占用端口 → 分配空闲 NodePort → 通过
-  `node_port_overrides` 注入 manifest，并把生效映射写入配置包/bundle。
+- **preflight 阶段**：读 `motor_deploy_config.node_port_overrides` 目标端口 →
+  `kubectl get services -A` 探测集群级占用 → 冲突自动分配空闲端口 → 更新映射
+  写回 `user_config.json`。范围内无空闲端口才 fail closed。
+- **configure 阶段**：消费写回后的 `node_port_overrides` 注入 manifest，生效
+  映射进入配置包/bundle。
 - **验证请求端口跟随**：任何直接访问 NodePort 的验证请求（包括确认拉起成功
   的探测）必须使用映射后的新端口，从 bundle 的端口映射读取，不得用旧端口
   请求——否则验证会拿到失败/误判结果。
-- **当前状态**：决策已确认，自动化实现待后续落地。现阶段仍需人工在
-  `user_config.json` 的 `motor_deploy_config.node_port_overrides` 里声明映射，
-  且验证请求要手工改用映射后的端口。
+- **当前状态**：配置声明的端口自动避让已落地；模板默认端口（未声明
+  `node_port_overrides` 时）的 render 后冲突处理仍属 configure 待办。
 
 ## 场景目录
 

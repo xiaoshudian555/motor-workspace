@@ -23,8 +23,10 @@ description: Validate K8s API and MindCluster base environment before deploy con
   - `image_name`：镜像引用合法性 + 每个可调度节点该镜像的覆盖度探测
     （缺失节点记 warning + 证据；逐节点可拉取性验证仍属 configure/deploy）
   - `node_port_overrides`：目标 NodePort 的范围校验（默认 30000-32767）、本批
-    唯一性、`kubectl get services -A` 集群级占用探测，冲突 fail closed 并给出
-    建议端口；未声明时记 warning（模板默认端口归 configure 处理）
+    唯一性、`kubectl get services -A` 集群级占用探测。冲突时**自动避让**：分配
+    空闲端口并把更新后的映射写回 `user_config.json`（configure 直接消费新端
+    口）；范围内无空闲端口才 fail closed。未声明时记 warning（模板默认端口归
+    configure 处理）
   配置在前是 3+3 真实顺序，preflight 需要这三个字段才能按配置自适应。
 
 **不消费**：parity-complete、`user_config.json` 的其余字段（namespace、模型、
@@ -43,12 +45,17 @@ P/D 实例数等）、render 后的 manifest。
   证据
 
 可选版本信息读取失败记 `warning` 并继续；API 不可达、权限不足、必需组件缺失、
-镜像引用非法、NodePort 越界/重复/冲突为 `error`/`unavailable` 并立即中断。
-`--config-dir` 提供了但 `user_config.json` 缺失或 `deploy_mode` 非法时 fail
-closed；未提供 `--config-dir` 时只跑基础检查集并在结果中标注。
+镜像引用非法、NodePort 越界/重复/无空闲端口为 `error`/`unavailable` 并立即
+中断。NodePort 集群占用默认自动避让并写回配置，不中断。`--config-dir` 提供
+了但 `user_config.json` 缺失或 `deploy_mode` 非法时 fail closed；未提供
+`--config-dir` 时只跑基础检查集并在结果中标注。
 
 **不做**：namespace RBAC、业务 Pod readiness、apply、创建 namespace、诊断 Pod、
 配置 dry-run manifest、跨 workflow 复用历史 environment-ready。
+
+> **副作用**：NodePort 冲突自动避让时，preflight 会把更新后的
+> `node_port_overrides` 写回 `--config-dir/user_config.json`（用户配置的
+> 唯一修改点）。其余检查保持只读。
 
 ## Entry point
 

@@ -70,7 +70,7 @@ def run_environment_preflight_checks(
         raw_mode = deploy_config.get("deploy_mode")
         deploy_mode = str(raw_mode).strip() if raw_mode else None
     image_name = str((deploy_config or {}).get("image_name") or "").strip()
-    node_port_targets = _node_port_targets_from_config(deploy_config)
+    node_port_overrides = _node_port_overrides_from_config(deploy_config)
 
     if not machine_context:
         runner.append(
@@ -360,14 +360,22 @@ def run_environment_preflight_checks(
         )
 
     if not runner.stopped_at and deploy_config is not None:
-        _run_node_port_checks(
+        node_port_overrides = _run_node_port_checks(
             runner,
             kubectl,
-            targets=node_port_targets,
+            overrides=node_port_overrides,
             port_range=contract.get("node_port_range", NODEPORT_DEFAULT_RANGE),
+            auto_avoid=True,
         )
 
-    return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
+    return _finalize(
+        runner,
+        machine_context,
+        contract,
+        inventory_alias,
+        deploy_mode,
+        node_port_overrides=node_port_overrides,
+    )
 
 
 def _finalize(
@@ -376,6 +384,7 @@ def _finalize(
     contract: dict[str, Any],
     alias: str,
     deploy_mode: str | None = None,
+    node_port_overrides: dict[int, int] | None = None,
 ) -> dict[str, Any]:
     ready = runner.stopped_at is None and not runner.errors
     return {
@@ -387,6 +396,7 @@ def _finalize(
         "stopped_at": runner.stopped_at,
         "kube_context": kube_context,
         "deploy_mode": deploy_mode,
+        "node_port_overrides": node_port_overrides,
         "environment_contract": {
             "schema_version": contract.get("schema_version"),
             "name": contract.get("name"),
@@ -394,34 +404,36 @@ def _finalize(
     }
 
 
-def _node_port_targets_from_config(deploy_config: dict[str, Any] | None) -> list[int]:
-    """Extract the effective NodePort targets from motor_deploy_config.
+def _node_port_overrides_from_config(deploy_config: dict[str, Any] | None) -> dict[int, int]:
+    """Extract the node_port_overrides map (template original -> replacement).
 
-    The targets are the replacement values of `node_port_overrides` (template
-    original -> replacement). preflight validates exactly what the deploy would
-    request; the template default ports (e.g. 31015/31017/31027) are not read
-    here because they are configure-render products and the override map is the
-    config-driven source of truth. Returns [] when no overrides are declared.
+    The map is the config-driven source of truth for what the deploy requests.
+    Returns {} when no overrides are declared. Entries must be positive ints.
     """
     if not deploy_config:
-        return []
+        return {}
     raw = deploy_config.get("node_port_overrides")
     if not raw:
-        return []
+        return {}
     if not isinstance(raw, dict):
         raise WorkspaceStateError(
             "motor_deploy_config.node_port_overrides must be an object"
         )
-    targets: list[int] = []
+    overrides: dict[int, int] = {}
     for key, value in raw.items():
         try:
+            old_port = int(key)
             new_port = int(value)
         except (TypeError, ValueError) as exc:
             raise WorkspaceStateError(
-                f"motor_deploy_config.node_port_overrides values must be integers: {key}={value}"
+                f"motor_deploy_config.node_port_overrides keys/values must be integers: {key}={value}"
             ) from exc
-        targets.append(new_port)
-    return sorted(targets)
+        if old_port <= 0 or new_port <= 0:
+            raise WorkspaceStateError(
+                f"motor_deploy_config.node_port_overrides ports must be positive: {old_port}->{new_port}"
+            )
+        overrides[old_port] = new_port
+    return overrides
 
 
 def _run_image_checks(
@@ -593,18 +605,22 @@ def _run_node_port_checks(
     runner: CheckRunner,
     kubectl: Any,
     *,
-    targets: list[int],
+    overrides: dict[int, int],
     port_range: Any,
-) -> None:
-    """Validate configured NodePort targets: range, uniqueness, cluster usage.
+    auto_avoid: bool = True,
+) -> dict[int, int]:
+    """Validate configured NodePort targets and auto-avoid cluster conflicts.
 
     NodePorts are cluster-wide (not namespace-scoped), so usage is collected
-    from all Services across namespaces. Conflicts fail closed with a suggested
-    free port. When no overrides are declared the check records a warning: the
-    template default ports cannot be validated here and are configure's
-    responsibility.
+    from all Services across namespaces. When a target is occupied and
+    `auto_avoid` is set, preflight assigns a free port, records the change in
+    the check evidence, and returns the updated map so the caller can write it
+    back into the config. Without auto_avoid, a conflict fails closed with a
+    suggested free port. When no overrides are declared the check records a
+    warning: the template default ports cannot be validated here and are
+    configure's responsibility.
     """
-    if not targets:
+    if not overrides:
         runner.append(
             {
                 "name": "node_port_conflict",
@@ -616,22 +632,21 @@ def _run_node_port_checks(
                 ),
             }
         )
-        return
+        return {}
 
     lo, hi = _normalize_port_range(port_range)
+    targets = list(overrides.values())
     out_of_range = [p for p in targets if p < lo or p > hi]
     if out_of_range:
         runner.append(
             {
                 "name": "node_port_range",
                 "status": "error",
-                "message": (
-                    f"NodePort {out_of_range} outside legal range [{lo}, {hi}]"
-                ),
+                "message": f"NodePort {out_of_range} outside legal range [{lo}, {hi}]",
                 "evidence": ",".join(str(p) for p in out_of_range),
             }
         )
-        return
+        return overrides
     runner.append(
         {
             "name": "node_port_range",
@@ -650,7 +665,7 @@ def _run_node_port_checks(
                 "message": f"duplicate target NodePorts in config: {sorted(duplicates)}",
             }
         )
-        return
+        return overrides
     runner.append(
         {
             "name": "node_port_unique",
@@ -669,7 +684,7 @@ def _run_node_port_checks(
                 "evidence": services.stderr.strip(),
             }
         )
-        return
+        return overrides
     try:
         usage = _parse_service_node_ports(services.stdout)
     except (ValueError, TypeError) as exc:
@@ -680,10 +695,46 @@ def _run_node_port_checks(
                 "message": f"could not parse services list: {exc}",
             }
         )
-        return
+        return overrides
 
     conflicts = [p for p in targets if p in usage]
     if conflicts:
+        if auto_avoid:
+            adjusted = _assign_free_ports(
+                overrides, used=set(usage), lo=lo, hi=hi
+            )
+            if adjusted is not None:
+                changed = {
+                    old: new
+                    for old, new in adjusted.items()
+                    if overrides.get(old) != new
+                }
+                evidence = ",".join(
+                    f"{old}->{new}" for old, new in sorted(changed.items())
+                ) or "none"
+                runner.append(
+                    {
+                        "name": "node_port_conflict",
+                        "status": "ok",
+                        "message": (
+                            f"auto-avoided occupied NodePorts {sorted(conflicts)}; "
+                            "wrote updated node_port_overrides to config"
+                        ),
+                        "evidence": evidence,
+                    }
+                )
+                return adjusted
+            runner.append(
+                {
+                    "name": "node_port_conflict",
+                    "status": "error",
+                    "message": (
+                        f"no free NodePort in [{lo}, {hi}] after {len(conflicts)} "
+                        f"conflicts; enlarge the range or free ports"
+                    ),
+                }
+            )
+            return overrides
         occupied_by = [
             f"{p}->{','.join(sorted(usage[p]))}" for p in sorted(conflicts)
         ]
@@ -700,7 +751,7 @@ def _run_node_port_checks(
                 "evidence": ",".join(str(p) for p in sorted(conflicts)),
             }
         )
-        return
+        return overrides
     runner.append(
         {
             "name": "node_port_conflict",
@@ -708,6 +759,36 @@ def _run_node_port_checks(
             "message": "target NodePorts free cluster-wide",
         }
     )
+    return overrides
+
+
+def _assign_free_ports(
+    overrides: dict[int, int],
+    *,
+    used: set[int],
+    lo: int,
+    hi: int,
+) -> dict[int, int] | None:
+    """Return an override map where every target is free; None if impossible.
+
+    Preserves the template original -> replacement keys, only replacing values
+    that collide with the cluster `used` set. Allocates greedily from `lo`
+    upward, never picking a port already taken by the cluster or by another
+    entry in the same map (a NodePort must stay unique cluster-wide).
+    """
+    result: dict[int, int] = {}
+    busy = set(used)
+    for old, new in overrides.items():
+        if new in busy:
+            replacement = _suggest_free_port(lo, hi, busy)
+            if replacement is None:
+                return None
+            result[old] = replacement
+            busy.add(replacement)
+        else:
+            result[old] = new
+            busy.add(new)
+    return result
 
 
 def _normalize_port_range(port_range: Any) -> tuple[int, int]:

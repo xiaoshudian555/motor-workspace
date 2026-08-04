@@ -83,6 +83,12 @@ def main() -> int:
         contract=contract,
         deploy_config=deploy_config,
     )
+    write_back = _apply_node_port_auto_avoid(
+        config_dir=args.config_dir,
+        deploy_config=deploy_config,
+        resolved_overrides=payload.get("node_port_overrides"),
+        progress=progress,
+    )
     envelope = build_environment_result_envelope(
         run_id=environment_run_id,
         workflow_run_id=workflow_run_id,
@@ -99,6 +105,7 @@ def main() -> int:
                 "alias": alias,
                 "machine_run_id": machine_ready["machine_run_id"],
                 "deploy_mode": (deploy_config or {}).get("deploy_mode"),
+                "node_port_overrides": write_back or {},
             },
         )
     return emit(envelope)
@@ -135,6 +142,44 @@ def _read_native_deploy_config(config_dir: str) -> dict[str, Any] | None:
                 f"infer_service_set/multi_deployment/single_container, got: {mode!r}"
             )
     return deploy
+
+
+def _apply_node_port_auto_avoid(
+    *,
+    config_dir: str,
+    deploy_config: dict[str, Any] | None,
+    resolved_overrides: dict[str, Any] | None,
+    progress,
+) -> dict[int, int] | None:
+    """Write auto-avoided NodePort mappings back into the native config.
+
+    When preflight resolved node_port_overrides to free ports (conflict
+    auto-avoid), this persists the updated map into user_config.json so
+    motor-deploy-configure consumes the new ports. Returns the effective map
+    (or None when nothing to write).
+    """
+    if not config_dir or not resolved_overrides or deploy_config is None:
+        return None
+    path = Path(config_dir) / "user_config.json"
+    if not path.exists():
+        raise WorkspaceStateError(f"user_config.json not found for write-back: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorkspaceStateError(f"user_config.json is not valid JSON: {path}") from exc
+    deploy = data.setdefault("motor_deploy_config", {})
+    if not isinstance(deploy, dict):
+        raise WorkspaceStateError(f"motor_deploy_config is not an object: {path}")
+    effective = {str(k): v for k, v in sorted(resolved_overrides.items())}
+    deploy["node_port_overrides"] = {
+        str(k): int(v) for k, v in effective.items()
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    progress(
+        f"wrote auto-avoided node_port_overrides to {path}: "
+        f"{','.join(f'{k}->{v}' for k, v in effective.items())}"
+    )
+    return {int(k): int(v) for k, v in effective.items()}
 
 
 if __name__ == "__main__":

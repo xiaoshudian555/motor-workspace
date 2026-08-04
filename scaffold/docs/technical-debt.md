@@ -664,18 +664,20 @@ R1 关闭记录（2026-08-03）：
   upstream 单项配置 `coordinator_infer_node_port: "-"` 只覆盖 Coordinator
   infer 一个端口，不是全局方案。
 
-已落地（2026-08-04，preflight 前置校验部分）：
+已落地（2026-08-04，preflight 前置校验 + 自动避让部分）：
 
 - `motor-deploy-preflight` 读 `motor_deploy_config.node_port_overrides` 的目标
   端口集，做三段校验：`node_port_range`（默认 30000-32767，契约
   `node_port_range` 可覆盖，越界 fail closed）、`node_port_unique`（本批重复
   fail closed）、`node_port_conflict`（`kubectl get services -A` 集群级占用
-  探测，NodePort 不按 namespace 隔离；冲突 fail closed 并在消息中给出建议
-  空闲端口）。未声明 overrides 时记 warning：模板默认端口
-  （31015/31017/31027）是 configure render 产物，由 configure 承担
+  探测，NodePort 不按 namespace 隔离）。
+- 冲突时**自动避让**：分配空闲端口并把更新后的映射写回 `user_config.json`
+  （仅修改 `node_port_overrides` 一处，其余字段保留），configure 直接消费新
+  端口；范围内无空闲端口才 fail closed。未声明 overrides 时记 warning：模板
+  默认端口（31015/31017/31027）是 configure render 产物，由 configure 承担
   render-time 冲突处理。
-- 测试：`test_environment_preflight.py` 新增越界/重复/占用/全部空闲/未声明
-  五条用例。
+- 测试：`test_environment_preflight.py` 新增越界/重复/自动避让/无空闲端口/
+  全部空闲/未声明六条用例，外加写回辅助函数两条用例。
 
 目标：
 
@@ -683,17 +685,18 @@ R1 关闭记录（2026-08-03）：
   services -A` 探测集群级占用（NodePort 不按 namespace 隔离）；——preflight
   已覆盖配置声明的端口，模板默认端口部分仍归 configure
 - 冲突时给出避让建议（自动选空闲端口）或要求显式 overrides，fail closed；
-  ——preflight 已给出建议端口并 fail closed，自动选择空闲端口写入配置待落地
+  ——配置声明端口的自动避让已落地，模板默认端口避让待落地
 - 校验目标端口在合法 NodePort 范围内、且本批 manifest 内不重复；——preflight
   已覆盖配置声明的端口
-- 避让映射写入 bundle 证据，不停留在未跟踪本地副本；——不变，仍待落地
+- 避让映射写入 bundle 证据，不停留在未跟踪本地副本；——写回
+  `user_config.json` 已落地，bundle 证据随 configure 产出
 
 验收：
 
 - fixture：占用端口被探测并触发自动避让/报错；范围外端口被拒；——preflight
-  占用报错+范围拒绝已落地，自动避让待落地
-- 真实环境：A3 上 31015/31017/31027 场景重放，preflight 直接命中冲突并给出
-  建议端口，configure 不再依赖人工试错。
+  占用自动避让+范围拒绝已落地，模板默认端口自动避让待落地
+- 真实环境：A3 上 31015/31017/31027 场景重放，preflight 直接命中冲突并自动
+  写回可用端口，configure 不再依赖人工试错。
 
 ### TD-A3-06（已落地）：stop 清理语义不对等——改为复用 upstream `delete.sh`
 

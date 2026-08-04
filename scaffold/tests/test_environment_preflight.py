@@ -402,17 +402,41 @@ def test_node_port_duplicate_fails() -> None:
     assert check["status"] == "error"
 
 
-def test_node_port_conflict_fails_with_suggestion() -> None:
+def test_node_port_conflict_auto_avoids() -> None:
     side_effect = _kubectl_side_effect(service_node_ports={32015: ["ns/svc-a"]})
     result = _run(
         _deploy_config(node_port_overrides={"31015": 32015, "31017": 32017}),
         side_effect=side_effect,
     )
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
+    assert check["status"] == "ok"
+    assert "auto-avoided" in check["message"]
+    resolved = result.get("node_port_overrides")
+    assert resolved is not None
+    assert resolved[31015] != 32015  # 被占用端口被避让
+    assert resolved[31015] not in (32015, 32017)  # 不与集群占用/本批重复
+    assert resolved[31017] == 32017  # 空闲端口保持不变
+
+
+def test_node_port_no_free_port_fails() -> None:
+    # 范围极窄（30000-30002），全部被集群占用，避让失败必须 fail closed
+    contract = _contract(node_port_range=[30000, 30002])
+    side_effect = _kubectl_side_effect(
+        service_node_ports={30000: ["ns/a"], 30001: ["ns/b"], 30002: ["ns/c"]}
+    )
+    runner_patch, avail_patch = _patch_kubectl(side_effect)
+    with runner_patch, avail_patch:
+        result = run_environment_preflight_checks(
+            machine=_machine(),
+            machine_ready=_machine_ready(),
+            contract=contract,
+            deploy_config=_deploy_config(node_port_overrides={"31015": 30000}),
+        )
     assert result["ready"] is False
     check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
     assert check["status"] == "error"
-    assert "32015" in check["message"]
-    assert "suggestion" in check["message"].lower() or "free port" in check["message"].lower()
+    assert "no free NodePort" in check["message"]
 
 
 def test_node_port_all_free_ok() -> None:
@@ -424,3 +448,64 @@ def test_node_port_all_free_ok() -> None:
     assert result["ready"] is True
     check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
     assert check["status"] == "ok"
+    resolved = result.get("node_port_overrides")
+    assert resolved == {31015: 32015, 31017: 32017}
+
+
+# --- write-back helper ---
+
+
+def _import_preflight_script():
+    import importlib.util
+
+    script = (
+        SCAFFOLD
+        / ".agents/skills/motor-deploy-preflight/scripts/environment_preflight.py"
+    )
+    spec = importlib.util.spec_from_file_location("environment_preflight_test", script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_apply_node_port_auto_avoid_writes_config(tmp_path) -> None:
+    module = _import_preflight_script()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "user_config.json").write_text(
+        json.dumps(
+            {
+                "motor_deploy_config": {
+                    "deploy_mode": "infer_service_set",
+                    "job_id": "test-job",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    messages: list[str] = []
+
+    result = module._apply_node_port_auto_avoid(
+        config_dir=str(config_dir),
+        deploy_config={"node_port_overrides": {31015: 32015}},
+        resolved_overrides={31015: 32115},
+        progress=lambda msg: messages.append(msg),
+    )
+
+    assert result == {31015: 32115}
+    data = json.loads((config_dir / "user_config.json").read_text(encoding="utf-8"))
+    assert data["motor_deploy_config"]["node_port_overrides"] == {"31015": 32115}
+    assert data["motor_deploy_config"]["job_id"] == "test-job"  # 其余字段保留
+    assert messages and "wrote auto-avoided node_port_overrides" in messages[0]
+
+
+def test_apply_node_port_auto_avoid_skips_without_config() -> None:
+    module = _import_preflight_script()
+    result = module._apply_node_port_auto_avoid(
+        config_dir="",
+        deploy_config={"node_port_overrides": {31015: 32015}},
+        resolved_overrides={31015: 32115},
+        progress=lambda msg: None,
+    )
+    assert result is None
