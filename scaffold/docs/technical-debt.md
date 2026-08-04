@@ -479,6 +479,209 @@ R1 关闭记录（2026-08-03）：
 
 ---
 
+## 2026-08-04 A3 真实部署暴露的技术债（90.90.97.30，`kubernetes-admin@kubernetes`）
+
+以下条目来自 2026-08-04 在 A3 集群的首次真实 configure/apply/stop 全流程运行
+（configure run `config-20260804T035253Z-f4bcd295`、deploy run
+`deploy-20260804T065907Z-16a52dae`）。这不是 fixture 结论，是真实环境证据；
+每条均可落到代码与验收动作。本节编号接 P2 之后，优先级独立评估。
+
+### TD-A3-01（P0）：apply 编排与 upstream deployer 的 namespace 语义双轨，一次 apply 可落到两个 namespace
+
+现状：
+
+- workspace 侧 `load_motor_deploy_config`（`mws_deploy.py:392`）支持显式
+  `namespace`，缺省回退 `job_id`；configure 的 bundle 按显式 namespace 生成与
+  dry-run。
+- 但 apply 阶段 `_run_deploy_full_remote`（`mws_deploy.py:792`）把整个部署
+  委托给 upstream `deploy.py --nostep --auto_log_collect`，upstream 在
+  `controller.py`/`coordinator.py`/`engine.py`/`k8s_utils.py` 中直接使用
+  `motor_deploy_config.job_id` 作为 namespace，不消费显式 `namespace`。
+- 实际后果（已发生）：运行时配置 `namespace: mindie-motor-hxy` 时，workspace
+  bundle 正确 apply 到新 namespace，upstream 同时按 `job_id:
+  mindie-pd-precision-fi` 在旧 namespace 又创建一套同名 Controller/
+  Coordinator/P/D vLLM 资源。
+- 本轮绕过方式是人工把 `job_id` 与 `namespace` 改成同值；这不是修复，配置
+  层面两个字段语义仍然可以分叉。
+
+目标（两条路线待讨论定夺，见本节末尾）：
+
+- 路线 A：workspace 编排接管 apply——upstream 只负责生成 manifest，apply/
+  ConfigMap/log 采集由 workspace 按 bundle 执行，upstream full deploy 不再
+  进入默认链路；
+- 路线 B：继续委托 upstream，但强制 `job_id == namespace` 写入 bundle 契约，
+  configure 时校验一致否则 fail closed，并把 upstream 产生的全部资源登记进
+  run 证据。
+
+验收：
+
+- 显式 namespace 与 job_id 不一致的配置在 configure 阶段即失败或被规范化，
+  不可能到达 apply；
+- 一次 apply 的资源只落在一个 namespace，run 证据包含目标 namespace 的
+  全量资源清单；
+- 真实环境复验：apply 后 `kubectl get deploy -A | grep <job_id>` 只出现在
+  目标 namespace。
+
+### TD-A3-02（P0）：config bundle 不自包含，upstream 运行时生成的 ConfigMap 不在 bundle 内
+
+现状：
+
+- `configure_deploy_bundle` 只收集 4 份 workload manifest（Controller、
+  Coordinator、P/D vLLM）；upstream full deploy 运行时另外生成 `motor-config`
+  与 `job-summary-*` ConfigMap，不进 bundle。
+- 实际后果（已发生）：bundle apply 到 `mindie-motor-hxy` 后 4 个 Pod 因
+  `ConfigMap "motor-config" not found` 停在 `ContainerCreating`；该 ConfigMap
+  被 upstream 生成在旧 namespace，需人工复制。
+- bundle 当前承诺的 immutable/自包含/可逆因此不成立：apply 对 upstream 运行时
+  产物有隐含依赖。
+
+目标：
+
+- bundle 纳入 `motor-config`、`job-summary-*` 等 upstream 运行时 ConfigMap
+  （dry-run 阶段预生成并收集，或 apply 阶段生成后立即登记）；
+- bundle manifest 清单与实际 apply 的资源清单一一对应，apply 不依赖 bundle
+  之外的任何运行时生成物。
+
+验收：
+
+- 全新 namespace 仅 apply bundle 即可让 Pod 越过 ConfigMap 挂载阶段；
+- bundle 内有资源清单文件，stop 可完全按清单反删（见 TD-A3-06）。
+
+### TD-A3-03（P1）：环境契约是单代硬编码，不支持 AscendJob / InferServiceSet 两代链路二选一
+
+现状：
+
+- `environment-contract.yaml` 把 `ascendjobs.mindxdl.gitee.com` 写为硬性必需；
+  `mws_environment.py:155` 只支持 `required_api_resources` 平铺列表逐项检查，
+  无 one-of 语义；`component_patterns` 同样逐项硬性匹配（含 `ascend-operator`）。
+- 实际集群证据：A3 集群存在 `podgroups.scheduling.volcano.sh`、
+  `inferservices[ets].mindcluster.huawei.com` 与 infer-operator-manager Pod，
+  不存在 ascendjobs 与 ascend-operator。`deploy_mode: multi_deployment` 生成
+  普通 Deployment，本就不需要 AscendJob。preflight 在
+  `api_resource:ascendjobs` 误报停止。
+- `scaffold/profiles/a2-dev.yaml` 的 `mindcluster` 段是第二份硬编码
+  （ascendjobs/podgroups + ascend-operator），两处需同步改。
+
+目标：
+
+- 契约 schema 升级支持"组内任一满足"（one-of）：workload API 组
+  （ascendjobs | inferservicesets）、operator 组件组
+  （ascend-operator | infer-operator）；
+- podgroups（volcano）与 noded/clusterd/ascend-device-plugin 保持硬性；
+- `a2-dev.yaml` 与契约 YAML 同源或同步更新；
+- preflight 结果明确记录实际命中的是哪一代链路。
+
+验收：
+
+- fixture：AscendJob-only 集群与 InferServiceSet-only 集群各一条 preflight
+  通过用例；两者都缺时 fail closed；
+- 真实环境：A3 集群 preflight 通过且证据记录命中 infer 链路。
+
+### TD-A3-04（P1）：部署前验证断层——API server 接受 YAML 不代表节点能跑
+
+现状（三个子项，均可独立落地）：
+
+1. 逐节点镜像存在性/可拉取性无检查。实际后果（已发生）：apply 成功但新
+   ReplicaSet 因 `registry-1.docker.io Gateway Time-out` 出现
+   `ErrImagePull`/`ImagePullBackOff`，旧 ReplicaSet 保留，滚动更新卡死。
+   `motor-deploy-configure` 只做 manifest/RBAC/server-side dry-run，
+   `motor-k8s-deploy` 在 apply 后才观察 Pod Ready。
+2. preflight 只验证 MindCluster 组件名称存在，不验证 Deployment/Pod 健康；
+   实际集群 clusterd 有 Failed/Pending Pod、noded 有 Pending Pod 时 preflight
+   仍报 ok。
+3. NPU 容量校验被 `prefill_node_selector`/`decode_node_selector` 缺失阻断后，
+   靠 `--skip-npu-check` 绕过继续，配置完整性问题被消解为"跑通流程"。
+
+目标：
+
+- configure（或独立 preflight 子检查）对目标镜像做逐节点存在性检查：记录
+  节点、镜像引用、image ID/digest、检查时间；任一候选节点无镜像且无法证明
+  可拉取时，apply 前 fail closed；
+- preflight 组件检查从"名字存在"升级为"关键组件 Ready"（至少 clusterd、
+  noded、device-plugin、operator、volcano 的 Pod 健康）；
+- 缺 selector 的配置要么补全后校验容量，要么显式声明跳过且 run 证据中标记
+  容量未验证，不得静默通过。
+
+验收：
+
+- fixture：镜像缺失节点被检出并阻断 apply；组件非 Ready 时 preflight 报
+  error/warning；
+- 真实环境：A3 上镜像检查输出逐节点证据表；容量未验证的 run 证据中带显式
+  标记。
+
+### TD-A3-05（P2）：NodePort 治理缺失——无占用探测、无范围校验、无自动分配
+
+现状：
+
+- workspace 只有 `inject_node_port_override`（`mws_deploy.py:325`）与
+  `_load_node_port_overrides`（`mws_deploy.py:363`）：用户预先给映射，改写
+  manifest。不查询集群 Service、不校验 NodePort 范围、不自动分配。
+- 冲突实际靠 server-side dry-run 撞错发现（`31027`/`31015`/`31017` 分别被
+  集群现有 Service 占用），人工避让到 `32027`/`32015`/`32017` 才通过；
+  映射只存在于本地未跟踪运行时副本。
+- `scaffold/docs/validation/README.md` 已写明自动 fallback "实现待落地"；
+  upstream 单项配置 `coordinator_infer_node_port: "-"` 只覆盖 Coordinator
+  infer 一个端口，不是全局方案。
+
+目标：
+
+- configure 阶段扫描 manifest 中全部 nodePort，`kubectl get services -A`
+  探测集群级占用（NodePort 不按 namespace 隔离）；
+- 冲突时给出避让建议（自动选空闲端口）或要求显式 overrides，fail closed；
+- 校验目标端口在合法 NodePort 范围内、且本批 manifest 内不重复；
+- 避让映射写入 bundle 证据，不停留在未跟踪本地副本。
+
+验收：
+
+- fixture：占用端口被探测并触发自动避让/报错；范围外端口被拒；
+- 真实环境：A3 上 31015/31017/31027 场景重放，configure 直接产出可用映射，
+  不需要人工试错。
+
+### TD-A3-06（P1）：stop 清理语义不对等——只反删 bundle manifest，run-scoped 资源无登记无确认
+
+现状：
+
+- `stop_from_plan`（`mws_deploy.py:1049`）只对 bundle 内 manifest 反序
+  `kubectl delete --ignore-not-found`；upstream 运行时生成的 `motor-config`、
+  `job-summary-*` ConfigMap、日志采集进程等不在清单中，stop 成功后仍有残留。
+  本次实际靠人工补删 ConfigMap 才把 namespace 清到只剩默认资源。
+- 删除成功只看 kubectl 返回码，不轮询确认资源实际消失。
+
+目标：
+
+- deploy 阶段登记 upstream 与 workspace 实际创建的全部 run-scoped 资源
+  （kind/name/namespace），delete 使用统一资源清单；
+- `motor-config`、`job-summary-*` 等 ConfigMap 纳入清理范围；
+- 日志采集/监控辅助进程在 delete 前停止，避免删后继续生成残留；
+- delete 后轮询确认 Pod/ReplicaSet/Service/ConfigMap 消失，不能只看返回码；
+- namespace 删除保持独立、明确授权的 destructive 操作，普通 stop 不得隐式
+  执行。
+
+验收：
+
+- fixture：清单驱动的 delete 覆盖 ConfigMap 类资源；删除后确认失败时 stop
+  不报 ok；
+- 真实环境：A3 上 stop 后目标 namespace 仅剩 `kube-root-ca.crt` 与
+  `default` ServiceAccount，无需人工补删。
+
+### TD-A3-07（P3）：环境与依赖治理记录项
+
+以下为真实运行暴露的周边问题，各自独立小改，不阻塞上述条目：
+
+- Motor pinned commit `45901d9f...` 不在当前 GitCode remote refs（GitCode
+  传输返回非 Git 内容，`remote-curl: bad line length character`）。当前以
+  master 源码继续验证，未改顶层 gitlink；正式提交/发布前必须补齐可获取的
+  Motor 版本映射或维护 fork mirror，不能静默把 master 当 pinned commit。
+- 本机控制机缺 PyYAML（configure 处理 manifest 时
+  `ModuleNotFoundError: No module named 'yaml'`）。需在本地依赖声明/skill
+  启动自检中补齐，fail fast。
+- upstream `log_monitor.py` 使用 `logging.Logger | None`，远端 Python 3.9
+  运行时报 `TypeError`（被日志采集包装成 warning 未阻塞）。parity 或
+  preflight 应校验远端 Python 版本与同步源码的语法兼容性；upstream 兼容性
+  问题需向上游反馈。
+
+---
+
 ## 完成定义
 
 单项技术债只有同时满足以下条件才可关闭：
