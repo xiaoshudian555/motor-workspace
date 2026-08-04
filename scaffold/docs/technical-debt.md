@@ -451,7 +451,7 @@ R1 关闭记录（2026-08-03）：
 - 快路径对"覆盖不到什么"有显式声明，避免同步成功后误认为代码已完整生效；
   build 路径有可执行的构建命令、产物落盘位置和镜像引用记录。
 
-2026-08-03 落地记录（本条目已实现）：
+2026-08-03 落地记录（**build 路径已实现；replace/deploy 集成未落地**）：
 
 - 新增 `scaffold/.agents/lib/mws_build.py`：
   - `detect_build_gaps`：扫描 `*.proto` 对应 `*_pb2.py` 与 `kv_conductor/bin`
@@ -462,7 +462,8 @@ R1 关闭记录（2026-08-03）：
     wheel 到 `<remote_workspace_root>/motor-wheel-builds/<source_sha>/dist/`，
     以 `wheel.sha256` marker 幂等复用；
   - `render_wheel_replace_manifest`：生成 namespaced Job（hostPath 挂载 wheel
-    目录 + `pip install --force-reinstall`），作为替换执行体；
+    目录 + `pip install --force-reinstall`），**仅为临时 manifest 生成器，未被
+    `deploy_apply` 自动 apply，也不修改 workload 文件系统**；
   - `build_wheel_run_envelope`：产出 `motor-wheel-build` run 证据。
 - 新增 skill `motor-build-wheel`（`SKILL.md` + `scripts/build_wheel.py`），入口
   `build_wheel.py --machine <alias> --source-sha <sha> [--base-image-ref <img>]`。
@@ -471,9 +472,27 @@ R1 关闭记录（2026-08-03）：
 - 测试：`scaffold/tests/test_build_wheel.py`（8 passed）覆盖 gaps 检测、docker
   命令构造、幂等复用、替换 manifest、run envelope。
 
-遗留（真实环境验收待办，不阻塞本地 fixture）：
+2026-08-04 B132 复验（build ✅，标准 deploy 替换 ❌）：
 
-- 在真实 K8s Host 上完成一次 docker 内 wheel 构建 + 替换 Job 端到端验收；
+- 在 B132 运行时镜像内执行 `build.sh`，成功产出
+  `motor-3.1.0-py3-none-any.whl`（SHA256
+  `10490c6a4934f182539a27fda459a21119dc82f8baf852d704c9bbac2656cfbd`），wheel
+  含 `motor/version.info`、`rpc_pb2.py`、`rpc_pb2_grpc.py`。
+- 手动将 wheel 安装到共享目录
+  `/mnt/h00906152/workspace/motor-wheel-builds/<source_sha>/site`，并通过
+  `kubectl set env` 让 Controller/Coordinator 的 `PYTHONPATH` 优先 wheel site；
+  Pod 内导入证明 `motor.__file__`、`rpc_pb2.__file__`、`motor_version=3.1.0`
+  均指向 wheel。
+- `motor-deploy-configure` / `motor-k8s-deploy` 仍只注入源码 hostPath 和
+  `PYTHONPATH`；`render_wheel_replace_manifest` 生成的 Job 在独立容器内
+  `pip install`，不挂载 workload 文件系统，也不会替换 Controller/Coordinator/
+  vLLM Pod 中的 Motor 包。
+- **本条目不能关闭**；wheel → deploy evidence chain 集成见 **TD-A3-09**。
+
+遗留：
+
+- wheel 替换接入 `deploy_configure` / `deploy_apply` 标准 run/bundle 证据链
+  （TD-A3-09）；
 - kv-connector cargo 构建若需特定 Rust 版本，在 build 容器内固化 toolchain
   版本并记录到产物元数据。
 
@@ -481,10 +500,21 @@ R1 关闭记录（2026-08-03）：
 
 ## 2026-08-04 A3 真实部署暴露的技术债（90.90.97.30，`kubernetes-admin@kubernetes`）
 
-以下条目来自 2026-08-04 在 A3 集群的首次真实 configure/apply/stop 全流程运行
+以下条目来自 2026-08-04 在 A3 集群的真实 configure/apply/stop 全流程运行
 （configure run `config-20260804T035253Z-f4bcd295`、deploy run
-`deploy-20260804T065907Z-16a52dae`）。这不是 fixture 结论，是真实环境证据；
-每条均可落到代码与验收动作。本节编号接 P2 之后，优先级独立评估。
+`deploy-20260804T065907Z-16a52dae`），以及同日 B132 镜像基线 / wheel 替换 /
+deploy readiness / smoke 复验（deploy run `deploy-20260804T071419Z-bac9ff54`，
+namespace `mindie-motor-hxy`）。这不是 fixture 结论，是真实环境证据；每条均可
+落到代码与验收动作。本节编号接 P2 之后，优先级独立评估。
+
+**B132 镜像基线已验证事实**（移除 PYTHONPATH 覆盖、回镜像内置包后）：
+
+- Coordinator management `/readiness` 返回 HTTP 200 且 `ready=true`；
+- D/P EngineServer `:10000/health` 均 HTTP 200；
+- 从 Coordinator Pod 内 curl inference Service，non-stream/stream 请求均 HTTP
+  200 并返回有效 completion；
+- 标准 `motor-deploy-configure` / `motor-k8s-deploy` 仍会重新注入源码
+  hostPath/`PYTHONPATH`，会破坏该基线（见 TD-A3-10）。
 
 ### TD-A3-01（P0）：workspace 私加 `namespace` 字段，与 upstream `job_id` 即 namespace 的语义分叉
 
@@ -664,39 +694,41 @@ R1 关闭记录（2026-08-03）：
   upstream 单项配置 `coordinator_infer_node_port: "-"` 只覆盖 Coordinator
   infer 一个端口，不是全局方案。
 
-已落地（2026-08-04，preflight 前置校验 + 自动避让部分）：
+已落地（2026-08-04，preflight 前置校验 + 自动避让 + 默认 override 打开）：
 
 - `motor-deploy-preflight` 读 `motor_deploy_config.node_port_overrides` 的目标
-  端口集，做三段校验：`node_port_range`（默认 30000-32767，契约
-  `node_port_range` 可覆盖，越界 fail closed）、`node_port_unique`（本批重复
-  fail closed）、`node_port_conflict`（`kubectl get services -A` 集群级占用
-  探测，NodePort 不按 namespace 隔离）。
+  端口集；**未声明时**用环境契约里当前 `deploy_mode` 的模板默认端口集
+  （`infer_service_set`/`multi_deployment` 为 31015/31017/31027，
+  `single_container` 为 31015，见 contract `default_node_ports`）作为目标。
+  做三段校验：`node_port_range`（默认 30000-32767，契约 `node_port_range` 可
+  覆盖，越界 fail closed）、`node_port_unique`（本批重复 fail closed）、
+  `node_port_conflict`（`kubectl get services -A` 集群级占用探测，NodePort
+  不按 namespace 隔离）。
 - 冲突时**自动避让**：分配空闲端口并把更新后的映射写回 `user_config.json`
-  （仅修改 `node_port_overrides` 一处，其余字段保留），configure 直接消费新
-  端口；范围内无空闲端口才 fail closed。未声明 overrides 时记 warning：模板
-  默认端口（31015/31017/31027）是 configure render 产物，由 configure 承担
-  render-time 冲突处理。
-- 测试：`test_environment_preflight.py` 新增越界/重复/自动避让/无空闲端口/
-  全部空闲/未声明六条用例，外加写回辅助函数两条用例。
+  （仅修改/新增 `node_port_overrides` 一处，其余字段保留），configure 直接
+  消费新端口；范围内无空闲端口才 fail closed。未冲突的默认端口不写回，
+  配置保持最小改动。
+- 测试：`test_environment_preflight.py` 覆盖越界/重复/声明端口自动避让/默认
+  端口自动避让/默认端口空闲不写回/无空闲端口/无默认端口 warning/写回辅助
+  函数等用例。
 
 目标：
 
 - configure 阶段扫描 manifest 中全部 nodePort（含模板默认端口），`kubectl get
-  services -A` 探测集群级占用（NodePort 不按 namespace 隔离）；——preflight
-  已覆盖配置声明的端口，模板默认端口部分仍归 configure
+  services -A` 探测集群级占用（NodePort 不按 namespace 隔离）；——默认 override
+  打开后 preflight 已覆盖模板默认端口，configure 只需消费写回的 overrides
 - 冲突时给出避让建议（自动选空闲端口）或要求显式 overrides，fail closed；
-  ——配置声明端口的自动避让已落地，模板默认端口避让待落地
+  ——自动避让已落地（含默认端口），无空闲端口才 fail closed
 - 校验目标端口在合法 NodePort 范围内、且本批 manifest 内不重复；——preflight
-  已覆盖配置声明的端口
+  已覆盖
 - 避让映射写入 bundle 证据，不停留在未跟踪本地副本；——写回
   `user_config.json` 已落地，bundle 证据随 configure 产出
 
 验收：
 
-- fixture：占用端口被探测并触发自动避让/报错；范围外端口被拒；——preflight
-  占用自动避让+范围拒绝已落地，模板默认端口自动避让待落地
+- fixture：占用端口被探测并触发自动避让/报错；范围外端口被拒；——已落地
 - 真实环境：A3 上 31015/31017/31027 场景重放，preflight 直接命中冲突并自动
-  写回可用端口，configure 不再依赖人工试错。
+  写回可用端口，configure 不再依赖人工试错；未冲突时配置不被多余改动。
 
 ### TD-A3-06（已落地）：stop 清理语义不对等——改为复用 upstream `delete.sh`
 
@@ -782,6 +814,166 @@ R1 关闭记录（2026-08-03）：
 - 删除的用例逐一说明删除理由（低信息量/重复/无外部行为），不得只报数量；
 - 关键链路（preflight/configure/apply/stop/parity/smoke/functional）的
   producer+consumer 契约测试零缺失。
+
+### TD-A3-09（P0）：wheel 替换未接入 deploy evidence chain
+
+现状（2026-08-04 B132 复验）：
+
+- `motor-build-wheel` + `mws_build.py` 能检测 gaps、在 Docker 内构建 wheel 并
+  产出 `motor-wheel-build` run 证据；B132 上手动 wheel 替换已证明
+  Controller/Coordinator 可从 wheel 正常导入（见 TD-P2-07 复验记录）。
+- `motor-deploy-configure` / `motor-k8s-deploy` 仍只注入源码 hostPath 和
+  `PYTHONPATH`（`mws_machine_target.py:pythonpath_for_machine` +
+  `mws_deploy.py:inject_pythonpath_env`），不消费 wheel artifact。
+- `render_wheel_replace_manifest`（`mws_build.py:287`）只生成临时 Job manifest：
+  Job 容器只读挂载 wheel 目录并在**自身**执行 `pip install`，不挂载 workload
+  文件系统，也不被 `deploy_apply` 自动 apply。
+- 手动验证路径：`kubectl set env` 切换四 Deployment 的 `PYTHONPATH` 为 wheel
+  site 优先——能跑通，但未进入 bundle/run 证据链。
+
+目标：
+
+1. configure 阶段：`detect_build_gaps` 为 true 时强制走 wheel 路径；bundle 记录
+   `wheel_dir`、SHA256、`source_sha`、`base_image_ref`；
+2. apply 阶段：将 wheel site 写入 Deployment `PYTHONPATH`（或 pip install 到共享
+   site 目录后挂载），而非裸源码 tree；
+3. runtime proof：Pod 内验证 `motor.__file__`、`rpc_pb2.__file__`、
+   `motor/version.info` 指向 wheel site；
+4. `motor-wheel-build` run 作为 `deploy-configure` / `deploy-complete` 的
+   upstream ref 链接。
+
+验收：
+
+- 一次标准 deploy run 产出 `status=ready`，runtime proof 指向 wheel site 而非
+  源码树；
+- 不再依赖 `kubectl set env` 手工替换；
+- fixture：configure 产出 bundle 含 wheel 引用；apply 后 mock/runtime proof
+  校验 import 路径。
+
+### TD-A3-10（P0）：vllm/vllm-ascend 源码 PYTHONPATH 破坏 EngineServer
+
+现状（2026-08-04 B132 复验）：
+
+- `pythonpath_for_machine` 无条件把 motor/vllm/vllm-ascend 源码目录拼入
+  `PYTHONPATH` 并注入四 Deployment（`vllm_d0.yaml` 等 manifest 证据：
+  `/mnt/.../motor:/mnt/.../vllm:/mnt/.../vllm-ascend:/mnt/.../python-overlay`）。
+- `remote-code-parity` 只同步源码，不执行 pip install / editable install /
+  native build；源码树缺少 `vllm_ascend._build_info`（由
+  `sources/vllm-ascend/setup.py` 在 install/build 阶段根据 `SOC_VERSION`
+  生成）。
+- 实测：P/D Pod phase 为 Running/Ready，NodeManager 注册成功，但 EngineServer
+  启动失败，核心报错
+  `ImportError: cannot import name '_build_info' from vllm_ascend`；Coordinator
+  management `/readiness` 返回 `ready=false`；EngineServer `:10000/:10001`
+  Connection refused。
+- 移除 PYTHONPATH 覆盖、回 B132 镜像内置包后，EngineServer 与 Coordinator
+  `ready=true` 恢复（见本节开头基线事实）。
+- Motor wheel 替换与 vLLM/vllm-ascend 加载策略必须分离：Motor 可走已构建
+  wheel；vllm/vllm-ascend 不能裸挂未构建源码到 `PYTHONPATH` 最前。
+
+目标：
+
+- 引入 **code override mode**（至少三档，名称可调整）：
+  - `image`（默认/基线）：不注入 vllm/vllm-ascend（及可选 motor）源码
+    `PYTHONPATH`，使用镜像内置包；
+  - `motor-wheel`：仅 Motor 走 wheel site；vllm/vllm-ascend 仍用镜像内置；
+  - `full-source`：vllm/vllm-ascend 也必须完成 build/install 路径，不能裸挂
+    源码目录。
+- configure 按 mode 决定是否注入 hostPath/`PYTHONPATH`；bundle 证据显式记录
+  mode 与各组件实际加载来源。
+- 文档：`remote-code-parity` 和 `motor-deploy-configure` 明确「parity 同步源码
+  ≠ 运行时可直接 import vllm_ascend 插件」。
+
+验收：
+
+- `image` mode 下标准 deploy 不破坏 B132 基线：EngineServer health OK +
+  Coordinator `ready=true`；
+- 仅改 Motor 并走 wheel 时不破坏 vLLM 插件加载；
+- `full-source` mode 缺 `_build_info` 等生成物时在 configure 或 pre-apply
+  阶段 fail closed，不在 Pod 启动后才暴露。
+
+### TD-A3-11（P0）：`deploy_apply` readiness gate 语义错误
+
+现状（deploy run `deploy-20260804T071419Z-bac9ff54` 证据链）：
+
+1. Kubernetes apply 成功：`run.json` 中 `apply.status=ok`，upstream deploy 返回
+   码 0，四个注入 manifest 全部 `kubectl apply` 返回 0。
+2. apply 完成后约 11 秒，`deploy_apply.py` 直接调用
+   `pod_readiness_from_context()` → `pod_readiness_probe()`；该函数对 namespace
+   全量 Pod 做一次 `kubectl get pods -o json` 统计 Ready 数，**未等 Deployment
+   rollout**，也未按本次 `workload_names` / owner 过滤。
+3. 当时 `pods_total=8, pods_ready=3`——符合四 Deployment 滚动更新期间旧/新
+   ReplicaSet Pod 并存，不等于最终服务失败；P/D 模型初始化还需数十秒。
+4. readiness 判失败后 `runtime_code_paths` 被标记 skipped；deploy run
+   `status=failed`，smoke/functional 按设计拒绝消费非 ready 的
+   `deploy-complete`。
+5. `verify_min_service_access` 只看 endpoints 非空，不能证明 EngineServer 或
+   Coordinator `/readiness ready=true`；Pod Ready 也不能替代本项目 P/D
+   EngineServer 与 Coordinator readiness。
+
+根因（至少三条，互不替代）：
+
+- `pod_readiness_probe()` namespace 全量统计，滚动期间必误报；
+- `deploy_apply.py` 无 `kubectl rollout status --timeout=...` 或可配置启动
+  等待窗口；
+- apply 阶段把「Pod 全 Ready」当作 deploy-complete 的充分条件，缺少
+  smoke 级服务 readiness（Coordinator `ready=true`、EngineServer 端口）。
+
+目标：
+
+1. 按 bundle `workload_names` 过滤 Pod，并对每个 Deployment 执行
+   `kubectl rollout status`；
+2. 拆分或延后 readiness：apply 成功 + rollout 完成 ≠ 最终 `ready`；服务级
+   readiness 交给 smoke（Coordinator `/readiness`）+ P/D EngineServer 端口检查；
+3. 可配置等待窗口（模型初始化、EngineServer 启动）写入 profile 或 deploy
+   config，避免硬编码 11 秒；
+4. deploy run 证据区分「apply+rollout OK」与「validated OK」，或 defer
+   `status=ready` 到 smoke 通过后回写。
+
+验收：
+
+- 滚动更新期间 deploy run 不误标 `failed`；
+- 服务最终 Ready 时 deploy run 可被 smoke/functional 消费；
+- fixture：mock 滚动中 3/8 → 不 failed；rollout 完成后 + smoke mock → ready；
+- 真实环境：B132 镜像基线下一次 apply 产出 `status=ready` 的 deploy-complete。
+
+### TD-A3-12（P1）：local-control smoke port-forward 通道仍不可靠
+
+现状（2026-08-04 B132 复验）：
+
+- Pod 内直连 Coordinator management `/readiness` 返回 HTTP 200 且
+  `ready=true`（镜像基线已验证）。
+- 标准 `motor-smoke` 因最新 deploy run `deploy-20260804T071419Z-bac9ff54`
+  为 `failed` 而拒绝执行（`run ... is not ready`）——直接原因是 TD-A3-11，
+  不是服务端未 Ready。
+- 排除 deploy run gate 后，复用 smoke 的 Service discovery、SSH + remote
+  `kubectl port-forward` 和 readiness 请求逻辑：转发进程能分配本地监听端口，
+  但请求阶段出现 `WinError 10061` / `RemoteDisconnected`，未拿到 HTTP 响应。
+- TD-P1-10 已关闭的是 remote-native executor 直连 ClusterIP；**local-control
+  （WSL/Windows 控制机 + SSH master）port-forward 路径在 B132 上仍未验收通过**。
+
+目标：
+
+1. 先完成 TD-A3-11，使镜像基线 deploy 产出 `status=ready` 的 deploy-complete；
+2. 修复或单独验证 SSH + remote `kubectl port-forward` 生命周期（等待 listener
+   ready、保存 forward 进程 stdout/stderr、连接失败可诊断）；
+3. 可选 fallback：local-control 下经 SSH 在 master 上直接 curl ClusterIP，不
+   依赖 port-forward 隧道（与 TD-P1-10 R1 adapter 收敛方向一致）。
+
+验收：
+
+- Windows/WSL 控制机 + SSH master 拓扑下，标准 `motor-smoke` 对 ready
+  deploy-complete run 拿到 `/readiness ready=true` 并落盘 validation run；
+- port-forward 失败时 evidence 含 forward 进程日志，不得只有 `WinError 10061`。
+
+整改顺序建议（治本，非本条关闭条件）：
+
+1. TD-A3-10 `image` mode → 标准 deploy 不再自毁基线；
+2. TD-A3-11 修 deploy_apply gate → deploy run 可产出 `status=ready`；
+3. 本条目重跑标准 smoke；
+4. TD-A3-09 Motor wheel 接入 deploy（基线稳定后再叠 Motor 替换）；
+5. vLLM 源码修改路径单独设计 build/install，不与 Motor wheel 混在同一
+   PYTHONPATH 策略。
 
 ---
 

@@ -25,8 +25,10 @@ description: Validate K8s API and MindCluster base environment before deploy con
   - `node_port_overrides`：目标 NodePort 的范围校验（默认 30000-32767）、本批
     唯一性、`kubectl get services -A` 集群级占用探测。冲突时**自动避让**：分配
     空闲端口并把更新后的映射写回 `user_config.json`（configure 直接消费新端
-    口）；范围内无空闲端口才 fail closed。未声明时记 warning（模板默认端口归
-    configure 处理）
+    口）；范围内无空闲端口才 fail closed。**默认 override 打开**：即使配置未声
+    明 `node_port_overrides`，preflight 也用契约里当前 `deploy_mode` 的模板默
+    认端口（如 `infer_service_set` 为 31015/31017/31027）做冲突探测，冲突即生
+    成以默认端口为 key 的 overrides 写回配置；默认端口全部空闲则不写回。
   配置在前是 3+3 真实顺序，preflight 需要这三个字段才能按配置自适应。
 
 **不消费**：parity-complete、`user_config.json` 的其余字段（namespace、模型、

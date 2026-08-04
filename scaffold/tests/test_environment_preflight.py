@@ -78,6 +78,11 @@ def _contract(**overrides):
         },
         "npu_resource_name": "huawei.com/Ascend910",
         "node_port_range": [30000, 32767],
+        "default_node_ports": {
+            "infer_service_set": [31015, 31017, 31027],
+            "multi_deployment": [31015, 31017, 31027],
+            "single_container": [31015],
+        },
     }
     base.update(overrides)
     return base
@@ -378,10 +383,48 @@ def test_image_node_coverage_skips_unschedulable_nodes() -> None:
 # --- NodePort checks ---
 
 
-def test_node_port_no_overrides_warning() -> None:
-    result = _run(_deploy_config())  # no node_port_overrides key
+def test_node_port_no_overrides_and_no_defaults_warning() -> None:
+    # 契约没给该 mode 的默认端口，且配置没声明 overrides -> warning
+    contract = _contract()
+    del contract["default_node_ports"]
+    runner_patch, avail_patch = _patch_kubectl(_kubectl_side_effect())
+    with runner_patch, avail_patch:
+        result = run_environment_preflight_checks(
+            machine=_machine(),
+            machine_ready=_machine_ready(),
+            contract=contract,
+            deploy_config=_deploy_config(),
+        )
     check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
     assert check["status"] == "warning"
+
+
+def test_node_port_default_ports_free_no_write_back() -> None:
+    # 契约默认端口没冲突 -> 不需写回 overrides
+    side_effect = _kubectl_side_effect(
+        service_node_ports={20000: ["other/svc"], 31000: ["other/svc"]}
+    )
+    result = _run(_deploy_config(), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
+    assert check["status"] == "ok"
+    assert "no overrides needed" in check["message"]
+    assert result.get("node_port_overrides") == {}
+
+
+def test_node_port_default_ports_conflict_auto_avoids() -> None:
+    # 默认端口 31027 被集群占用 -> 自动避让，生成以默认端口为 key 的 overrides
+    side_effect = _kubectl_side_effect(service_node_ports={31027: ["ns/svc-a"]})
+    result = _run(_deploy_config(), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
+    assert check["status"] == "ok"
+    assert "auto-avoided" in check["message"]
+    resolved = result.get("node_port_overrides") or {}
+    assert 31027 in resolved
+    assert resolved[31027] != 31027
+    assert 31015 not in resolved  # 未冲突的默认端口不写
+    assert 31017 not in resolved
 
 
 def test_node_port_out_of_range_fails() -> None:

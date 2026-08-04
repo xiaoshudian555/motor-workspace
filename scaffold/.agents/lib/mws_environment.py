@@ -360,11 +360,15 @@ def run_environment_preflight_checks(
         )
 
     if not runner.stopped_at and deploy_config is not None:
+        default_ports = (
+            (contract.get("default_node_ports") or {}).get(deploy_mode or "") or []
+        )
         node_port_overrides = _run_node_port_checks(
             runner,
             kubectl,
             overrides=node_port_overrides,
             port_range=contract.get("node_port_range", NODEPORT_DEFAULT_RANGE),
+            default_ports=default_ports,
             auto_avoid=True,
         )
 
@@ -607,35 +611,37 @@ def _run_node_port_checks(
     *,
     overrides: dict[int, int],
     port_range: Any,
+    default_ports: list[int] | None = None,
     auto_avoid: bool = True,
 ) -> dict[int, int]:
     """Validate configured NodePort targets and auto-avoid cluster conflicts.
 
     NodePorts are cluster-wide (not namespace-scoped), so usage is collected
-    from all Services across namespaces. When a target is occupied and
-    `auto_avoid` is set, preflight assigns a free port, records the change in
-    the check evidence, and returns the updated map so the caller can write it
-    back into the config. Without auto_avoid, a conflict fails closed with a
-    suggested free port. When no overrides are declared the check records a
-    warning: the template default ports cannot be validated here and are
-    configure's responsibility.
+    from all Services across namespaces. `overrides` is the declared
+    template-original -> replacement map; when empty, the contract's template
+    default ports for the active deploy_mode are probed instead (default
+    override always on). When a target is occupied and `auto_avoid` is set,
+    preflight assigns a free port, records the change, and returns the updated
+    map so the caller can write it back into the config; without auto_avoid a
+    conflict fails closed. Returns the effective map (empty when nothing needs
+    to be written back).
     """
-    if not overrides:
+    if not overrides and not default_ports:
         runner.append(
             {
                 "name": "node_port_conflict",
                 "status": "warning",
                 "message": (
-                    "motor_deploy_config.node_port_overrides not declared; "
-                    "template default ports are not validated here (configure "
-                    "owns render-time conflict handling)"
+                    "no node_port_overrides and no default NodePorts for this "
+                    "deploy_mode in the contract; nothing to validate"
                 ),
             }
         )
         return {}
 
+    targets = list(overrides.values()) if overrides else list(default_ports or [])
+
     lo, hi = _normalize_port_range(port_range)
-    targets = list(overrides.values())
     out_of_range = [p for p in targets if p < lo or p > hi]
     if out_of_range:
         runner.append(
@@ -700,14 +706,22 @@ def _run_node_port_checks(
     conflicts = [p for p in targets if p in usage]
     if conflicts:
         if auto_avoid:
-            adjusted = _assign_free_ports(
-                overrides, used=set(usage), lo=lo, hi=hi
-            )
-            if adjusted is not None:
+            if overrides:
+                adjusted = _assign_free_ports(
+                    overrides, used=set(usage), lo=lo, hi=hi
+                )
+            else:
+                identity = {p: p for p in targets}
+                adjusted = _assign_free_ports(
+                    identity, used=set(usage), lo=lo, hi=hi
+                )
+                if adjusted is not None:
+                    adjusted = {o: n for o, n in adjusted.items() if n != o}
+            if adjusted:
                 changed = {
                     old: new
-                    for old, new in adjusted.items()
-                    if overrides.get(old) != new
+                    for old, new in sorted(adjusted.items())
+                    if overrides.get(old, old) != new
                 }
                 evidence = ",".join(
                     f"{old}->{new}" for old, new in sorted(changed.items())
@@ -752,6 +766,19 @@ def _run_node_port_checks(
             }
         )
         return overrides
+
+    if not overrides:
+        runner.append(
+            {
+                "name": "node_port_conflict",
+                "status": "ok",
+                "message": (
+                    f"template default NodePorts {targets} free cluster-wide; "
+                    "no overrides needed"
+                ),
+            }
+        )
+        return {}
     runner.append(
         {
             "name": "node_port_conflict",

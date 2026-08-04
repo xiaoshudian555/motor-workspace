@@ -46,21 +46,22 @@ deploy-complete
 “拉起服务”属于第二层；“服务拉起后执行指定 workload 并给出可判断结果”属于
 第三层。
 
-## NodePort 冲突默认策略（决策已确认，preflight 已落地自动避让）
+## NodePort 冲突默认策略（决策已确认，preflight 已落地自动避让，默认 override 打开）
 
 部署配置生成前（preflight 阶段）检测到 NodePort 被集群现有服务占用时，
 自动 fallback 调整端口，不再中断询问用户：
 
-- **preflight 阶段**：读 `motor_deploy_config.node_port_overrides` 目标端口 →
-  `kubectl get services -A` 探测集群级占用 → 冲突自动分配空闲端口 → 更新映射
-  写回 `user_config.json`。范围内无空闲端口才 fail closed。
+- **preflight 阶段**：读 `motor_deploy_config.node_port_overrides` 目标端口；
+  未声明时用当前 `deploy_mode` 的模板默认端口（如 `infer_service_set` 为
+  31015/31017/31027）→ `kubectl get services -A` 探测集群级占用 → 冲突自动
+  分配空闲端口 → 更新映射写回 `user_config.json`。范围内无空闲端口才
+  fail closed。
 - **configure 阶段**：消费写回后的 `node_port_overrides` 注入 manifest，生效
   映射进入配置包/bundle。
 - **验证请求端口跟随**：任何直接访问 NodePort 的验证请求（包括确认拉起成功
   的探测）必须使用映射后的新端口，从 bundle 的端口映射读取，不得用旧端口
   请求——否则验证会拿到失败/误判结果。
-- **当前状态**：配置声明的端口自动避让已落地；模板默认端口（未声明
-  `node_port_overrides` 时）的 render 后冲突处理仍属 configure 待办。
+- **当前状态**：已落地。未冲突的默认端口不写回配置，保持配置最小改动。
 
 ## 场景目录
 
@@ -157,8 +158,8 @@ workload 形态。
 ## 现状
 | 场景 | motor-workspace 状态 | Active skill | 现有脚本/可复用资产 | 主要缺口 |
 |---|---|---|---|---|
-| Smoke | Coordinator readiness 已实现，本地验证完成，待真实集群验收 | `motor-smoke` | [`smoke_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-smoke/scripts/smoke_run.py) 消费成功的 `deploy-complete`，发现 management Service、解析 `/readiness` 的 `ready=true` 并落盘 validation run | 尚缺真实 Ascend/K8s 环境端到端证据；不再承担 inference 请求 |
-| Functional | inference-request、metrics-query、Tempo trace-query 已实现 | `motor-functional` | [`case-catalog.json`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/references/case-catalog.json) 提供 feature/case 映射；[`functional_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/scripts/functional_run.py) 执行 non-stream/stream 请求、`1027/metrics` 快照与 request counter 增量、W3C traceparent→Tempo trace/requestId 关联；[`mws_functional.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/lib/mws_functional.py) 负责 spec compiler、dispatcher 和响应判定 | 待真实 Ascend/K8s + observability stack 端到端验收；下一阶段按 [`functional/README.md`](functional/README.md) Roadmap 接入 Grafana trace deep link 和跨信号导航；TLS/参数透传/overload 后续扩展，API key 延后 |
+| Smoke | 实现完成；B132 镜像基线 Pod 内 `/readiness ready=true` 已验证；标准 smoke 仍 blocked | `motor-smoke` | [`smoke_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-smoke/scripts/smoke_run.py) 消费成功的 `deploy-complete`，发现 management Service、解析 `/readiness` 的 `ready=true` 并落盘 validation run | deploy run 因 TD-A3-11 误标 failed 导致无法消费；local-control port-forward 出现 WinError 10061（TD-A3-12）；不再承担 inference 请求 |
+| Functional | inference-request 等在 B132 镜像基线 Pod 内 curl 已打通；标准 functional 仍 blocked | `motor-functional` | [`case-catalog.json`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/references/case-catalog.json) 提供 feature/case 映射；[`functional_run.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-functional/scripts/functional_run.py) 执行 non-stream/stream 请求、`1027/metrics` 快照与 request counter 增量、W3C traceparent→Tempo trace/requestId 关联；[`mws_functional.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/lib/mws_functional.py) 负责 spec compiler、dispatcher 和响应判定 | 无 `status=ready` deploy-complete run 时入口校验拒绝；待 TD-A3-11 修复后接回 evidence chain；observability/TLS/overload 等仍待扩展 |
 | Routing Topology | 仅有 source 测试资产 | 无 | [`test_unified_pd_router.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/router/test_unified_pd_router.py)、[`test_router_pd_hybrid.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/router/test_router_pd_hybrid.py)、[`test_kv_cache_affinity.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/scheduler/test_kv_cache_affinity.py) | 缺真实多实例/PD 拓扑打流、实例选择证据和扩缩容前后验证 |
 | Correctness | 仅有 source 测试资产 | 无 | vLLM Ascend 有 [`test_lm_eval_correctness.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/vllm-ascend/tests/e2e/models/test_lm_eval_correctness.py)；Motor 有 [`test_precision_e2e_chain.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/motor/tests/coordinator/sampling/test_precision_e2e_chain.py) | 缺连接 Motor deploy endpoint 的 correctness adapter、基线、容差和 run 结果 |
 | Benchmark | 部分实现 | `motor-benchmark` | [`SKILL.md`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-benchmark/SKILL.md) 和 [`bench_plan.py`](/home/h00906152/projects/pymotor/motor-workspace/scaffold/.agents/skills/motor-benchmark/scripts/bench_plan.py:17) 只校验 deploy run/machine；vLLM Ascend 有 [`run-performance-benchmarks.sh`](/home/h00906152/projects/pymotor/motor-workspace/sources/vllm-ascend/benchmarks/scripts/run-performance-benchmarks.sh)，vLLM 有 [`benchmark_serving.py`](/home/h00906152/projects/pymotor/motor-workspace/sources/vllm/benchmarks/benchmark_serving.py) | 没有真实请求、指标采集、基线比较和 benchmark run 落盘；仓库技术债也明确记录了这个缺口 |

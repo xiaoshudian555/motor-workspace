@@ -44,3 +44,10 @@ npu_resource_name: huawei.com/Ascend910
 scheduler_name: volcano
 # 合法 NodePort 范围（K8s 集群级）；preflight 校验配置声明的目标端口
 node_port_range: [30000, 32767]
+# 各 deploy_mode 的模板默认 NodePort 集（来自 upstream yaml_template）：
+# 配置未声明 node_port_overrides 时，preflight 以这些端口做冲突探测，
+# 冲突则自动避让并写回 node_port_overrides。
+default_node_ports:
+  infer_service_set: [31015, 31017, 31027]
+  multi_deployment: [31015, 31017, 31027]
+  single_container: [31015]
