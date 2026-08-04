@@ -19,12 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
 
 from mws_deploy import (  # noqa: E402
+    DEFAULT_ROLLOUT_TIMEOUT_S,
     apply_config_bundle,
     collect_runtime_code_paths,
-    pod_readiness_from_context,
     stop_via_upstream_delete_sh,
     verify_min_service_access,
     verify_runtime_code_paths,
+    wait_workload_rollouts,
 )
 from mws_local_state import WorkspaceStateError  # noqa: E402
 from mws_run_state import create_config_bundle, digest_json, write_run  # noqa: E402
@@ -263,7 +264,13 @@ def _run_apply_main(local_state_root, monkeypatch, config_run_id: str, **patches
     return captured["payload"]
 
 
-def test_ready_failure_blocks_deploy_complete(local_state_root, tmp_path, monkeypatch) -> None:
+def _rollout_ok(**extra):
+    payload = {"ready": True, "workloads": [{"resource": "deployment/demo", "returncode": 0}], "rollout_count": 1}
+    payload.update(extra)
+    return payload
+
+
+def test_rollout_failure_blocks_deploy_complete(local_state_root, tmp_path, monkeypatch) -> None:
     bundle_meta = _write_bundle(local_state_root)
     config_run_id = _write_config_run(local_state_root, bundle_meta)
     payload = _run_apply_main(
@@ -272,15 +279,15 @@ def test_ready_failure_blocks_deploy_complete(local_state_root, tmp_path, monkey
         config_run_id,
         **{
             "mws_deploy.apply_config_bundle": lambda **kwargs: {"status": "ok", "apply_results": []},
-            "mws_deploy.pod_readiness_from_context": lambda machine, ctx, ns: {
+            "mws_deploy.wait_workload_rollouts_from_context": lambda *args, **kwargs: {
                 "ready": False,
-                "pods_total": 1,
-                "pods_ready": 0,
+                "failed": ["deployment/demo"],
+                "workloads": [{"resource": "deployment/demo", "returncode": 1}],
             },
         },
     )
     assert payload["status"] == "failed"
-    assert any(item["name"] == "pod_readiness" for item in payload["checks"])
+    assert any(item["name"] == "workload_rollout" for item in payload["checks"])
 
 
 def test_min_access_failure_blocks_deploy_complete(local_state_root, tmp_path, monkeypatch) -> None:
@@ -292,11 +299,7 @@ def test_min_access_failure_blocks_deploy_complete(local_state_root, tmp_path, m
         config_run_id,
         **{
             "mws_deploy.apply_config_bundle": lambda **kwargs: {"status": "ok", "apply_results": []},
-            "mws_deploy.pod_readiness_from_context": lambda machine, ctx, ns: {
-                "ready": True,
-                "pods_total": 1,
-                "pods_ready": 1,
-            },
+            "mws_deploy.wait_workload_rollouts_from_context": lambda *args, **kwargs: _rollout_ok(),
             "mws_deploy.verify_min_service_access": lambda **kwargs: {
                 "name": "min_service_access",
                 "status": "error",
@@ -306,6 +309,37 @@ def test_min_access_failure_blocks_deploy_complete(local_state_root, tmp_path, m
     )
     assert payload["status"] == "failed"
     assert any(item["name"] == "min_service_access" for item in payload["checks"])
+
+
+def test_rollout_ok_produces_ready_deploy_complete(local_state_root, monkeypatch) -> None:
+    bundle_meta = _write_bundle(local_state_root)
+    config_run_id = _write_config_run(local_state_root, bundle_meta)
+    paths = _machine_paths()
+    payload = _run_apply_main(
+        local_state_root,
+        monkeypatch,
+        config_run_id,
+        **{
+            "mws_deploy.apply_config_bundle": lambda **kwargs: {"status": "ok", "apply_results": []},
+            "mws_deploy.wait_workload_rollouts_from_context": lambda *args, **kwargs: _rollout_ok(),
+            "mws_deploy.verify_min_service_access": lambda **kwargs: {
+                "name": "min_service_access",
+                "status": "ok",
+                "message": "endpoints ready: demo",
+            },
+            "mws_deploy.collect_runtime_code_paths": lambda **kwargs: {
+                "status": "ok",
+                "paths": {
+                    "motor": f"{paths['motor_source']}/motor/__init__.py",
+                    "vllm": f"{paths['vllm_source']}/vllm/__init__.py",
+                    "vllm_ascend": f"{paths['vllm_ascend_source']}/vllm_ascend/__init__.py",
+                },
+            },
+        },
+    )
+    assert payload["status"] == "ready"
+    assert any(item["name"] == "workload_rollout" and item["status"] == "ok" for item in payload["checks"])
+    assert "validation_note" in payload
 
 
 def test_runtime_code_path_mismatch_fails() -> None:
@@ -336,6 +370,45 @@ def test_runtime_code_path_match_ok() -> None:
     assert result["status"] == "ok"
 
 
+def test_wait_workload_rollouts_waits_deploy_scoped_resources() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_kubectl(*args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="successfully rolled out", stderr="")
+
+    result = wait_workload_rollouts(
+        _machine(),
+        "ns1",
+        ["deployment/coordinator", "deployment/prefill", "service/demo"],
+        kube_context="ctx-a",
+        timeout=120,
+        kubectl=fake_kubectl,
+    )
+    assert result["ready"] is True
+    assert result["rollout_count"] == 2
+    assert calls == [
+        ("rollout", "status", "deployment/coordinator", "-n", "ns1", "--timeout=120s"),
+        ("rollout", "status", "deployment/prefill", "-n", "ns1", "--timeout=120s"),
+    ]
+
+
+def test_wait_workload_rollouts_requires_rollout_kind() -> None:
+    result = wait_workload_rollouts(
+        _machine(),
+        "ns1",
+        ["service/demo"],
+        kube_context="ctx-a",
+        kubectl=lambda *args: subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+    )
+    assert result["ready"] is False
+    assert "no deployment/statefulset" in result["error"]
+
+
+def test_wait_workload_rollouts_default_timeout() -> None:
+    assert DEFAULT_ROLLOUT_TIMEOUT_S == 600.0
+
+
 def test_restart_recollects_code_paths(local_state_root, monkeypatch) -> None:
     bundle_meta = _write_bundle(local_state_root)
     deploy_run = {
@@ -354,12 +427,12 @@ def test_restart_recollects_code_paths(local_state_root, monkeypatch) -> None:
     monkeypatch.setattr("mws_local_state.INVENTORY_PATH", local_state_root / "machine-inventory.json", raising=False)
     monkeypatch.setattr("mws_parity.MACHINE_RUNS_DIR", local_state_root / "machine-runs", raising=False)
 
-    pods_calls: list[str] = []
+    rollout_calls: list[str] = []
     code_calls: list[str] = []
 
-    def fake_pods(machine, ctx, ns):
-        pods_calls.append(ns)
-        return {"ready": True, "pods_total": 1, "pods_ready": 1}
+    def fake_rollout(machine, ctx, ns, workloads, **kwargs):
+        rollout_calls.append(ns)
+        return _rollout_ok()
 
     def fake_collect(**kwargs):
         code_calls.append(kwargs["namespace"])
@@ -394,14 +467,14 @@ def test_restart_recollects_code_paths(local_state_root, monkeypatch) -> None:
     captured: dict = {}
 
     with patch("mws_deploy.restart_deploy_workloads_from_context", return_value={"status": "ok", "actions": []}):
-        with patch("mws_deploy.pod_readiness_from_context", side_effect=fake_pods):
+        with patch("mws_deploy.wait_workload_rollouts_from_context", side_effect=fake_rollout):
             with patch("mws_deploy.collect_runtime_code_paths", side_effect=fake_collect):
                 with patch("mws_result.emit_result", side_effect=lambda payload: captured.update(payload=payload) or 0):
                     spec.loader.exec_module(module)
                     module.main()
     payload = captured["payload"]
     assert payload["status"] == "ready"
-    assert pods_calls == ["ns1"]
+    assert rollout_calls == ["ns1"]
     assert code_calls == ["ns1"]
     assert payload["code_paths"]["status"] == "ok"
 

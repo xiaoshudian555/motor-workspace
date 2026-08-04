@@ -12,13 +12,14 @@ sys.path.insert(0, str(LIB))
 from repo_paths import REPO_ROOT  # noqa: E402
 
 from mws_deploy import (  # noqa: E402
+    DEFAULT_ROLLOUT_TIMEOUT_S,
     apply_config_bundle,
     collect_runtime_code_paths,
     load_config_bundle,
-    pod_readiness_from_context,
     verify_bundle_digest,
     verify_min_service_access,
     verify_runtime_code_paths,
+    wait_workload_rollouts_from_context,
 )
 from mws_local_state import WorkspaceStateError, get_machine  # noqa: E402
 from mws_machine_target import build_fixed_source_paths  # noqa: E402
@@ -36,7 +37,15 @@ def main() -> int:
     parser.add_argument("--machine-run-id", default="")
     parser.add_argument("--approved-by-user", action="store_true")
     parser.add_argument("--deploy-run-id", default="")
+    parser.add_argument(
+        "--rollout-timeout",
+        type=float,
+        default=DEFAULT_ROLLOUT_TIMEOUT_S,
+        help="Seconds to wait per deploy-scoped Deployment/StatefulSet rollout",
+    )
     args = parser.parse_args()
+    if args.rollout_timeout <= 0:
+        return emit({"status": "error", "errors": ["--rollout-timeout must be positive"]})
     if not args.approved_by_user:
         return emit({"status": "error", "errors": ["apply requires --approved-by-user"]})
 
@@ -108,12 +117,20 @@ def main() -> int:
         )
         return emit(envelope)
 
-    pods = pod_readiness_from_context(machine, kube_context, namespace)
+    workload_names = list(bundle.get("workload_names") or [])
+    progress("waiting for deploy-scoped workload rollouts")
+    rollout = wait_workload_rollouts_from_context(
+        machine,
+        kube_context,
+        namespace,
+        workload_names,
+        timeout=args.rollout_timeout,
+    )
     runner.append(
         {
-            "name": "pod_readiness",
-            "status": "ok" if pods.get("ready") else "error",
-            "message": str(pods),
+            "name": "workload_rollout",
+            "status": "ok" if rollout.get("ready") else "error",
+            "message": rollout.get("error") or str(rollout),
         }
     )
     if runner.continue_ok:
@@ -170,8 +187,13 @@ def main() -> int:
             "bundle_digest": config_run.get("bundle_digest"),
             "bundle_dir": relative_repo(bundle_dir),
             "apply": apply_result,
-            "pods": pods,
+            "rollout": rollout,
+            "workload_names": workload_names,
             "runtime_paths": runtime_paths,
+            "validation_note": (
+                "deploy-complete ready means apply + rollout + runtime_code_paths; "
+                "Coordinator service readiness is validated by motor-smoke"
+            ),
             "code_paths": code_path_check,
         },
         status=status,

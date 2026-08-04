@@ -38,8 +38,12 @@ the development host's kubectl and kubeconfig are never used.
 
 - Validate config run, bundle digest, and fixed path binding before apply.
 - Apply bundle manifests byte-for-byte.
-- Wait for Pod Ready, verify minimal service endpoints, and collect runtime
+- Wait for deploy-scoped Deployment/StatefulSet rollouts
+  (`kubectl rollout status` per bundle `workload_names`) and collect runtime
   `__file__` paths for `motor`, `vllm`, and `vllm_ascend`.
+- `deploy-complete status=ready` means apply + rollout + runtime code paths;
+  Coordinator service readiness (`GET /readiness` body `ready=true`) is validated
+  by `motor-smoke`, not this skill.
 - Associate restart/stop/status with the deploy run via `bundle_dir`.
 - `deploy_restart` may run parity first for code-only updates, then restart
   workloads and re-collect Ready + runtime code path evidence.

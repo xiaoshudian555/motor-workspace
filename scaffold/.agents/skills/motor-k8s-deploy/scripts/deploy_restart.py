@@ -16,12 +16,13 @@ sys.path.insert(0, str(LIB))
 from repo_paths import REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
 
 from mws_deploy import (  # noqa: E402
+    DEFAULT_ROLLOUT_TIMEOUT_S,
     bundle_to_plan,
     collect_runtime_code_paths,
     load_config_bundle,
-    pod_readiness_from_context,
     restart_deploy_workloads_from_context,
     verify_runtime_code_paths,
+    wait_workload_rollouts_from_context,
 )
 from mws_local_state import get_machine  # noqa: E402
 from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine, resolve_machine  # noqa: E402
@@ -82,7 +83,25 @@ def main() -> int:
     parser.add_argument("--skip-parity", action="store_true")
     parser.add_argument("--skip-restart", action="store_true")
     parser.add_argument("--approved-by-user", action="store_true")
+    parser.add_argument(
+        "--rollout-timeout",
+        type=float,
+        default=DEFAULT_ROLLOUT_TIMEOUT_S,
+        help="Seconds to wait per deploy-scoped Deployment/StatefulSet rollout",
+    )
     args = parser.parse_args()
+    if args.rollout_timeout <= 0:
+        envelope = build_result_envelope(
+            kind="deploy-restart",
+            run_id=new_run_id("restart"),
+            workflow_run_id="workflow-unset",
+            checks=[],
+            started_at=utc_now_iso(),
+            errors=["--rollout-timeout must be positive"],
+            status="failed",
+            extra={"machine": args.machine, "deploy_run_id": args.deploy_run_id},
+        )
+        return emit_result(envelope)
     started_at = utc_now_iso()
     restart_run_id = new_run_id("restart")
 
@@ -177,19 +196,26 @@ def main() -> int:
                 extra={"phase": "restart", "parity": parity, "restart": restart},
             )
 
-    pods = pod_readiness_from_context(machine, kube_context, namespace)
+    progress("waiting for deploy-scoped workload rollouts")
+    rollout = wait_workload_rollouts_from_context(
+        machine,
+        kube_context,
+        namespace,
+        list(plan.get("workload_names") or []),
+        timeout=args.rollout_timeout,
+    )
     runtime_paths = collect_runtime_code_paths(
         machine=machine,
         kube_context=kube_context,
         namespace=namespace,
     )
     code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
-    ready = pods.get("ready") is True and code_paths.get("status") == "ok"
+    ready = rollout.get("ready") is True and code_paths.get("status") == "ok"
     runner.append(
         {
-            "name": "pod_readiness",
-            "status": "ok" if pods.get("ready") is True else "error",
-            "message": str(pods),
+            "name": "workload_rollout",
+            "status": "ok" if rollout.get("ready") is True else "error",
+            "message": rollout.get("error") or str(rollout),
         }
     )
     runner.append(code_paths)
@@ -210,7 +236,7 @@ def main() -> int:
             "pythonpath": pythonpath_for_machine(machine),
             "parity": parity,
             "restart": restart,
-            "pods": pods,
+            "rollout": rollout,
             "runtime_paths": runtime_paths,
             "code_paths": code_paths,
         },

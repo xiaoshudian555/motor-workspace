@@ -1975,3 +1975,84 @@ def pod_readiness_from_context(
     namespace: str,
 ) -> dict[str, Any]:
     return pod_readiness_probe(machine, namespace, kube_context=kube_context)
+
+
+DEFAULT_ROLLOUT_TIMEOUT_S = 600.0
+
+_ROLLOUT_RESOURCE_PREFIXES = ("deployment/", "statefulset/")
+
+
+def wait_workload_rollouts(
+    machine: dict[str, Any],
+    namespace: str,
+    workload_names: list[str],
+    *,
+    kube_context: str = "",
+    timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
+    kubectl: KubectlRunner | None = None,
+) -> dict[str, Any]:
+    """Wait for deploy-scoped Deployment/StatefulSet rollouts to complete.
+
+    Service-level readiness (Coordinator ``/readiness``) is validated by
+    ``motor-smoke``, not here. This gate only ensures Kubernetes rollouts for
+    workloads listed in the config bundle have finished.
+    """
+    run_kubectl = _resolve_kubectl_runner(
+        machine=machine,
+        kube_context=kube_context,
+        kubectl=kubectl,
+    )
+    rollouts = [
+        name
+        for name in workload_names
+        if isinstance(name, str) and name.lower().startswith(_ROLLOUT_RESOURCE_PREFIXES)
+    ]
+    if not rollouts:
+        return {
+            "ready": False,
+            "error": "no deployment/statefulset workloads in bundle workload_names",
+            "workloads": [],
+        }
+    timeout_s = max(1, int(timeout))
+    results: list[dict[str, Any]] = []
+    for resource in rollouts:
+        result = run_kubectl(
+            "rollout",
+            "status",
+            resource,
+            "-n",
+            namespace,
+            f"--timeout={timeout_s}s",
+        )
+        results.append(
+            {
+                "resource": resource,
+                "returncode": result.returncode,
+                "stdout_tail": result.stdout[-2000:],
+                "stderr_tail": result.stderr[-1000:],
+            }
+        )
+    failed = [item for item in results if item.get("returncode") != 0]
+    return {
+        "ready": not failed,
+        "workloads": results,
+        "rollout_count": len(rollouts),
+        "failed": [item["resource"] for item in failed],
+    }
+
+
+def wait_workload_rollouts_from_context(
+    machine: dict[str, Any],
+    kube_context: str,
+    namespace: str,
+    workload_names: list[str],
+    *,
+    timeout: float = DEFAULT_ROLLOUT_TIMEOUT_S,
+) -> dict[str, Any]:
+    return wait_workload_rollouts(
+        machine,
+        namespace,
+        workload_names,
+        kube_context=kube_context,
+        timeout=timeout,
+    )
