@@ -13,6 +13,7 @@ sys.path.insert(0, str(LIB))
 
 from repo_paths import MOTOR_ROOT, REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
 
+from mws_build import motor_wheel_dir_from_build_run  # noqa: E402
 from mws_deploy import (  # noqa: E402
     compute_config_fingerprint,
     configure_deploy_bundle,
@@ -46,6 +47,16 @@ def main() -> int:
     parser.add_argument("--config-run-id", default="")
     parser.add_argument("--reuse", action="store_true", help="Reuse existing bundle when fingerprint matches")
     parser.add_argument("--skip-npu-check", action="store_true", help="Skip the node NPU capacity check")
+    parser.add_argument(
+        "--motor-wheel-build-run-id",
+        default="",
+        help="motor-wheel-build run id; inject MOTOR_WHEEL_DIR for boot.sh wheel override",
+    )
+    parser.add_argument(
+        "--motor-wheel-dir",
+        default="",
+        help="Explicit MOTOR_WHEEL_DIR (dist/ containing motor-*.whl); overrides --motor-wheel-build-run-id",
+    )
     args = parser.parse_args()
 
     alias = require_safe_id(args.machine, label="machine")
@@ -83,6 +94,10 @@ def main() -> int:
 
     run_dir = run_dir_for_kind("deploy-config-ready", config_run_id)
     parity_paths = build_fixed_source_paths(machine)
+    motor_wheel_dir = args.motor_wheel_dir.strip()
+    if not motor_wheel_dir and args.motor_wheel_build_run_id.strip():
+        wheel_run = load_run("motor-wheel-build", args.motor_wheel_build_run_id.strip())
+        motor_wheel_dir = motor_wheel_dir_from_build_run(wheel_run)
     reuse_bundle_dir = None
     if args.reuse:
         native_config = normalize_native_config(config_dir)
@@ -90,6 +105,7 @@ def main() -> int:
             native_config=native_config,
             machine_paths=parity_paths,
             deployer_version=deployer_version_token(),
+            motor_wheel_dir=motor_wheel_dir,
         )
         candidate = config_bundle_dir(fingerprint)
         if candidate.exists():
@@ -104,6 +120,7 @@ def main() -> int:
         parity_path_refs=parity_paths,
         reuse_bundle_dir=reuse_bundle_dir,
         skip_npu_check=args.skip_npu_check,
+        motor_wheel_dir=motor_wheel_dir,
     )
     envelope = build_result_envelope(
         kind="deploy-config-ready",
@@ -115,7 +132,12 @@ def main() -> int:
             {"kind": "deploy-environment-ready", "run_id": args.environment_run_id},
             {"kind": "machine-ready", "run_id": str(machine_ready["machine_run_id"])},
             {"kind": "parity-complete", "run_id": args.parity_run_id},
-        ],
+        ]
+        + (
+            [{"kind": "motor-wheel-build", "run_id": args.motor_wheel_build_run_id.strip()}]
+            if args.motor_wheel_build_run_id.strip()
+            else []
+        ),
         warnings=result.get("warnings", []),
         errors=result.get("errors", []),
         extra={
@@ -126,6 +148,7 @@ def main() -> int:
             "bundle_digest": result.get("bundle_digest"),
             "bundle_dir": result.get("bundle_dir"),
             "manifest_files": result.get("manifest_files", []),
+            "motor_wheel_dir": motor_wheel_dir,
             "reused": result.get("reused", False),
         },
     )

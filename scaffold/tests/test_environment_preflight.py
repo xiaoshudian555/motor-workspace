@@ -104,13 +104,75 @@ def _nodes_json(*schedulable, **extra):
     return json.dumps({"items": items})
 
 
-def _pods_json(node_images):
-    """node_images: dict node -> iterable of image refs seen in running pods."""
-    items = []
+def _pod_item(
+    name: str,
+    *,
+    ready: bool = True,
+    phase: str = "Running",
+    namespace: str = "kube-system",
+    node: str = "node-a",
+    image: str = "pause:3",
+) -> dict:
+    return {
+        "metadata": {"name": name, "namespace": namespace},
+        "spec": {"nodeName": node, "containers": [{"name": "c", "image": image}]},
+        "status": {
+            "phase": phase,
+            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+        },
+    }
+
+
+def _cluster_pods_json(
+    *,
+    schedulable_nodes: tuple[str, ...] = ("node-a", "node-b"),
+    node_images=None,
+    has_operator: bool = True,
+    operator_name: str = "infer-operator",
+    unhealthy_components: frozenset[str] | set[str] | None = None,
+    missing_components: frozenset[str] | set[str] | None = None,
+) -> str:
+    unhealthy = set(unhealthy_components or ())
+    missing = set(missing_components or ())
+    items: list[dict] = []
+
+    def add_component(name: str, pattern: str) -> None:
+        if pattern in missing:
+            return
+        ready = pattern not in unhealthy
+        phase = "Running" if ready else "Pending"
+        items.append(_pod_item(name, ready=ready, phase=phase))
+
+    if "volcano" not in missing:
+        add_component("volcano-scheduler-abc", "volcano")
+    if "ascend-device-plugin" not in missing:
+        add_component("ascend-device-plugin-xyz", "ascend-device-plugin")
+    if "clusterd" not in missing:
+        add_component("clusterd-abc", "clusterd")
+    if "noded" not in missing:
+        add_component("mindie-noded-abc", "noded")
+    if has_operator:
+        op = operator_name
+        if op not in missing:
+            add_component(f"{op}-manager-abc", op)
+
+    node_images = node_images if node_images is not None else {"node-a": ["registry.example/motor:latest"]}
     for node, images in node_images.items():
-        containers = [{"name": "c", "image": img} for img in images]
-        items.append({"spec": {"nodeName": node, "containers": containers}})
+        for index, image in enumerate(images):
+            items.append(
+                _pod_item(
+                    f"img-{node}-{index}",
+                    namespace="default",
+                    node=node,
+                    image=str(image),
+                )
+            )
     return json.dumps({"items": items})
+
+
+def _pods_json(node_images):
+    """Backward-compatible alias for image-only pod fixtures."""
+    return _cluster_pods_json(node_images=node_images)
 
 
 def _services_json(node_ports):
@@ -131,9 +193,12 @@ def _kubectl_side_effect(
     has_inferservicesets: bool = True,
     has_ascendjobs: bool = True,
     has_operator: bool = True,
+    operator_name: str = "infer-operator",
     schedulable_nodes=("node-a", "node-b"),
     node_images=None,
     service_node_ports=None,
+    unhealthy_components=None,
+    missing_components=None,
 ):
     """Parameterized kubectl side effect for the preflight check sequence."""
     node_images = node_images or {"node-a": ["registry.example/motor:latest"]}
@@ -167,12 +232,19 @@ def _kubectl_side_effect(
         if "get nodes" in joined and _output_format(cmd) == "json":
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=_nodes_json(*schedulable_nodes), stderr="")
         if "get pods" in joined and _output_format(cmd) == "json":
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=_pods_json(node_images), stderr="")
-        if "get pods -A" in joined:
-            pods = "volcano-scheduler-abc\nascend-device-plugin-xyz\n"
-            if has_operator:
-                pods += "infer-operator-manager-abc\n"
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=pods, stderr="")
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=_cluster_pods_json(
+                    schedulable_nodes=schedulable_nodes,
+                    node_images=node_images,
+                    has_operator=has_operator,
+                    operator_name=operator_name,
+                    unhealthy_components=unhealthy_components,
+                    missing_components=missing_components,
+                ),
+                stderr="",
+            )
         if "get nodes" in joined:
             return subprocess.CompletedProcess(
                 args=cmd,
@@ -245,8 +317,6 @@ def test_podgroups_missing_fails() -> None:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if "api-resources" in joined:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if "get pods -A" in joined:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="volcano\nascend-device-plugin\n", stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
     result = _run(None, side_effect=fake_run)
@@ -269,6 +339,39 @@ def test_success_path_base_environment() -> None:
     result = _run(None)
     assert result["ready"] is True
     assert "namespace" not in result
+    volcano = next(item for item in result["checks"] if item["name"] == "controller:volcano")
+    assert volcano["status"] == "ok"
+    assert "healthy" in volcano["message"]
+
+
+def test_component_unhealthy_fails() -> None:
+    side_effect = _kubectl_side_effect(unhealthy_components={"volcano"})
+    result = _run(None, side_effect=side_effect)
+    assert result["ready"] is False
+    check = next(item for item in result["checks"] if item["name"] == "controller:volcano")
+    assert check["status"] == "error"
+    assert "none are Running and Ready" in check["message"]
+
+
+def test_component_missing_fails() -> None:
+    side_effect = _kubectl_side_effect(missing_components={"volcano"})
+    result = _run(None, side_effect=side_effect)
+    assert result["ready"] is False
+    check = next(item for item in result["checks"] if item["name"] == "controller:volcano")
+    assert check["status"] == "error"
+    assert "missing" in check["message"]
+
+
+def test_operator_group_unhealthy_fails() -> None:
+    side_effect = _kubectl_side_effect(
+        has_operator=True,
+        unhealthy_components={"infer-operator"},
+    )
+    result = _run(_deploy_config(), side_effect=side_effect)
+    assert result["ready"] is False
+    check = next(item for item in result["checks"] if item["name"] == "controller_group:motor_operator")
+    assert check["status"] == "error"
+    assert "unhealthy" in check["message"]
 
 
 def test_no_deploy_config_records_warning() -> None:

@@ -15,6 +15,7 @@ sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mws_deploy import (  # noqa: E402
+    inject_motor_wheel_dir_env,
     inject_namespace,
     inject_pythonpath_env,
     is_cluster_scoped,
@@ -287,6 +288,57 @@ spec:
     assert any(item.get("name") == "PYTHONPATH" for item in containers[0].get("env", []))
     sidecar_env = containers[1].get("env", [])
     assert not any(item.get("name") == "PYTHONPATH" for item in sidecar_env)
+
+
+def test_inject_motor_wheel_dir_env_sets_runtime_container_only() -> None:
+    yaml_text = """
+kind: Deployment
+metadata:
+  name: mindie-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: mindie-server
+          image: mindie:1.0.0
+        - name: sidecar
+          image: busybox:latest
+"""
+    docs = load_yaml_documents(yaml_text)
+    patched = inject_motor_wheel_dir_env(docs, "/mnt/wheel-builds/sha/dist")
+    containers = patched[0]["spec"]["template"]["spec"]["containers"]
+    assert any(
+        item.get("name") == "MOTOR_WHEEL_DIR" and item.get("value") == "/mnt/wheel-builds/sha/dist"
+        for item in containers[0].get("env", [])
+    )
+    sidecar_env = containers[1].get("env", [])
+    assert not any(item.get("name") == "MOTOR_WHEEL_DIR" for item in sidecar_env)
+
+
+def test_process_manifest_documents_motor_wheel_skips_pythonpath() -> None:
+    yaml_text = """
+kind: Deployment
+metadata:
+  name: mindie-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: mindie-server
+          image: mindie:1.0.0
+"""
+    docs = load_yaml_documents(yaml_text)
+    patched = process_manifest_documents(
+        docs,
+        pythonpath="/mnt/motor-workspace/motor:/mnt/motor-workspace/vllm",
+        namespace="motor-dev",
+        base_image_ref="mindie:test",
+        mount_root="/mnt",
+        motor_wheel_dir="/mnt/wheel-builds/sha/dist",
+    )
+    env = patched[0]["spec"]["template"]["spec"]["containers"][0].get("env", [])
+    assert any(item.get("name") == "MOTOR_WHEEL_DIR" for item in env)
+    assert not any(item.get("name") == "PYTHONPATH" for item in env)
 
 
 def test_process_manifest_documents_adds_mnt_hostpath_when_missing() -> None:

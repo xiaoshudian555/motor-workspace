@@ -20,7 +20,7 @@ deploy_mode_api_resource_groups:
           api_group: mindxdl.gitee.com
   multi_deployment: []
   single_container: []
-# 所有部署模式都必须存在的组件（存在性探测）
+# 所有部署模式都必须存在的 MindCluster 组件（Pod 必须 Running 且 Ready）
 component_patterns:
   - noded
   - clusterd

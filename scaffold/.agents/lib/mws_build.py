@@ -50,6 +50,28 @@ def build_output_root(machine: dict[str, Any]) -> str:
     return f"{str(paths['remote_workspace_root']).rstrip('/')}/{BUILD_OUTPUT_SUBDIR}"
 
 
+def wheel_dist_dir(machine: dict[str, Any], source_sha: str) -> str:
+    """Shared dist/ directory holding motor-*.whl for MOTOR_WHEEL_DIR / boot.sh."""
+    normalized = re.sub(r"[^0-9a-fA-F]", "", str(source_sha))
+    if len(normalized) < 8:
+        raise WorkspaceStateError("source_sha must be a git commit sha (>=8 hex chars)")
+    return f"{build_output_root(machine)}/{normalized}/dist"
+
+
+def motor_wheel_dir_from_build_run(run: dict[str, Any]) -> str:
+    """Resolve MOTOR_WHEEL_DIR from a motor-wheel-build run envelope."""
+    extra = run.get("extra") if isinstance(run.get("extra"), dict) else {}
+    for key in ("wheel_dir",):
+        value = extra.get(key) or run.get(key)
+        if value:
+            return str(value).rstrip("/")
+    artifacts = run.get("artifacts") if isinstance(run.get("artifacts"), list) else []
+    for item in artifacts:
+        if isinstance(item, dict) and item.get("name") == "motor-wheel" and item.get("path"):
+            return str(item["path"]).rstrip("/")
+    raise WorkspaceStateError("motor-wheel-build run missing wheel_dir artifact")
+
+
 def detect_build_gaps(source_root: str) -> dict[str, Any]:
     """Detect artifacts the fast path (hostPath/PYTHONPATH) cannot provide.
 

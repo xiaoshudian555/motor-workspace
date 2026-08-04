@@ -40,15 +40,15 @@ P/D 实例数等）、render 后的 manifest。
 - kube context 来自 machine inventory 且可用于 API 访问
 - Kubernetes API 可达并具备读取基础集群环境所需权限
 - environment contract 要求的 CRD/API resource（基础项 + 按 deploy_mode
-  追加项）、controller pattern（含按 deploy_mode 的 one-of 组件组）、NPU
-  resource type
+  追加项）、MindCluster controller Pod 健康（`Running` 且 `Ready=True`；
+  含按 deploy_mode 的 one-of 组件组）、NPU resource type
 - 配置驱动的镜像引用/节点覆盖、NodePort 范围/唯一性/集群占用
 - 结果记录实际命中的 deploy_mode、one-of 组命中项、镜像覆盖证据与端口校验
   证据
 
-可选版本信息读取失败记 `warning` 并继续；API 不可达、权限不足、必需组件缺失、
-镜像引用非法、NodePort 越界/重复/无空闲端口为 `error`/`unavailable` 并立即
-中断。NodePort 集群占用默认自动避让并写回配置，不中断。`--config-dir` 提供
+可选版本信息读取失败记 `warning` 并继续；API 不可达、权限不足、必需组件
+Pod 非 Running/Ready、镜像引用非法、NodePort 越界/重复/无空闲端口为
+`error`/`unavailable` 并立即中断。NodePort 集群占用默认自动避让并写回配置，不中断。`--config-dir` 提供
 了但 `user_config.json` 缺失或 `deploy_mode` 非法时 fail closed；未提供
 `--config-dir` 时只跑基础检查集并在结果中标注。
 

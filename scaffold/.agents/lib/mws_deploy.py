@@ -263,6 +263,38 @@ def inject_pd_anti_affinity(documents: list[dict[str, Any]]) -> list[dict[str, A
     return patched
 
 
+def inject_motor_wheel_dir_env(
+    documents: list[dict[str, Any]],
+    motor_wheel_dir: str,
+) -> list[dict[str, Any]]:
+    """Set MOTOR_WHEEL_DIR on runtime containers for boot.sh wheel override."""
+    if not motor_wheel_dir:
+        return documents
+    patched: list[dict[str, Any]] = []
+    for doc in documents:
+        doc = copy.deepcopy(doc)
+        for pod_spec in iter_pod_specs(doc):
+            containers = pod_spec.get("containers", [])
+            if not isinstance(containers, list):
+                continue
+            for container in containers:
+                if not isinstance(container, dict) or not _is_runtime_container(container):
+                    continue
+                env = container.setdefault("env", [])
+                if not isinstance(env, list):
+                    continue
+                replaced = False
+                for item in env:
+                    if isinstance(item, dict) and item.get("name") == "MOTOR_WHEEL_DIR":
+                        item["value"] = motor_wheel_dir
+                        replaced = True
+                        break
+                if not replaced:
+                    env.append({"name": "MOTOR_WHEEL_DIR", "value": motor_wheel_dir})
+        patched.append(doc)
+    return patched
+
+
 def inject_pythonpath_env(documents: list[dict[str, Any]], pythonpath: str) -> list[dict[str, Any]]:
     if not pythonpath:
         return documents
@@ -856,12 +888,16 @@ def process_manifest_documents(
     base_image_ref: str,
     mount_root: str = "/mnt",
     node_port_overrides: dict[int, int] | None = None,
+    motor_wheel_dir: str = "",
 ) -> list[dict[str, Any]]:
     docs = inject_namespace(documents, namespace)
     docs = inject_hostpath_mount(docs, mount_root=mount_root)
     docs = inject_pd_anti_affinity(docs)
     docs = inject_image_ref(docs, base_image_ref)
-    docs = inject_pythonpath_env(docs, pythonpath)
+    if motor_wheel_dir:
+        docs = inject_motor_wheel_dir_env(docs, motor_wheel_dir)
+    else:
+        docs = inject_pythonpath_env(docs, pythonpath)
     if node_port_overrides:
         docs = inject_node_port_override(docs, node_port_overrides)
     return docs
@@ -876,6 +912,7 @@ def process_manifest_file(
     mount_root: str,
     dest_dir: Path,
     node_port_overrides: dict[int, int] | None = None,
+    motor_wheel_dir: str = "",
 ) -> Path:
     text = path.read_text(encoding="utf-8")
     docs = load_yaml_documents(text)
@@ -886,6 +923,7 @@ def process_manifest_file(
         base_image_ref=base_image_ref,
         mount_root=mount_root,
         node_port_overrides=node_port_overrides,
+        motor_wheel_dir=motor_wheel_dir,
     )
     out = dest_dir / path.name
     out.write_text(dump_yaml_documents(docs), encoding="utf-8")
@@ -1232,12 +1270,14 @@ def compute_config_fingerprint(
     machine_paths: dict[str, str],
     deployer_version: str,
     injector_version: str = MANIFEST_INJECTOR_VERSION,
+    motor_wheel_dir: str = "",
 ) -> str:
     payload = {
         "native_config": native_config,
         "machine_paths": machine_paths,
         "deployer_version": deployer_version,
         "injector_version": injector_version,
+        "motor_wheel_dir": motor_wheel_dir,
     }
     return digest_json(payload)
 
@@ -1389,6 +1429,7 @@ def configure_deploy_bundle(
     parity_path_refs: dict[str, str],
     reuse_bundle_dir: Path | None = None,
     skip_npu_check: bool = False,
+    motor_wheel_dir: str = "",
 ) -> dict[str, Any]:
     """Render or reuse an immutable deploy config bundle."""
     from mws_result import CheckRunner
@@ -1404,6 +1445,7 @@ def configure_deploy_bundle(
         native_config=native_config,
         machine_paths=machine_paths,
         deployer_version=deployer_version_token(),
+        motor_wheel_dir=motor_wheel_dir,
     )
 
     if reuse_bundle_dir and reuse_bundle_dir.exists():
@@ -1503,6 +1545,7 @@ def configure_deploy_bundle(
             mount_root=str(mount_root),
             dest_dir=manifests_dir,
             node_port_overrides=node_port_overrides or None,
+            motor_wheel_dir=motor_wheel_dir,
         )
         manifest_paths.append(out)
         manifest_files.append(relative_repo(out))
@@ -1561,6 +1604,7 @@ def configure_deploy_bundle(
             "workload_names": workload_names,
             "machine_paths": machine_paths,
             "parity_path_refs": parity_path_refs,
+            "motor_wheel_dir": motor_wheel_dir,
             "injector_version": MANIFEST_INJECTOR_VERSION,
             "deployer_version": deployer_version_token(),
         },

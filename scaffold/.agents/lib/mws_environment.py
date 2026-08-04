@@ -245,79 +245,49 @@ def run_environment_preflight_checks(
                 break
 
     if not runner.stopped_at:
-        component_patterns = list(contract.get("component_patterns", []))
-        component_patterns += (contract.get("deploy_mode_components", {}) or {}).get(deploy_mode) or []
-        for pattern in component_patterns:
-            pattern = str(pattern).strip()
-            if not pattern:
-                continue
-            pods = kubectl(
-                "get",
-                "pods",
-                "-A",
-                "-o",
-                "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
-            )
-            if pods.returncode != 0:
+        cluster_pods, pods_err = _fetch_cluster_pods(kubectl)
+        if pods_err:
+            if not runner.append(
+                {
+                    "name": "cluster_pods",
+                    "status": "unavailable",
+                    "message": pods_err,
+                }
+            ):
+                return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
+        else:
+            component_patterns = list(contract.get("component_patterns", []))
+            component_patterns += (contract.get("deploy_mode_components", {}) or {}).get(deploy_mode) or []
+            for pattern in component_patterns:
+                pattern = str(pattern).strip()
+                if not pattern:
+                    continue
+                probe = _probe_component_pattern(cluster_pods, pattern)
                 if not runner.append(
                     {
                         "name": f"controller:{pattern}",
-                        "status": "unavailable",
-                        "message": "could not list cluster pods for controller probe",
-                        "evidence": pods.stderr.strip(),
+                        "status": probe["status"],
+                        "message": probe["message"],
+                        "evidence": probe.get("evidence"),
                     }
                 ):
                     break
-                continue
-            matched = any(pattern in line for line in pods.stdout.splitlines())
-            if not runner.append(
-                {
-                    "name": f"controller:{pattern}",
-                    "status": "ok" if matched else "error",
-                    "message": f"controller pattern {pattern!r} {'found' if matched else 'missing'}",
-                }
-            ):
-                break
 
-    if not runner.stopped_at:
-        for group in (contract.get("deploy_mode_component_groups", {}) or {}).get(deploy_mode) or []:
-            alternatives = group.get("alternatives", []) if isinstance(group, dict) else []
-            if not alternatives:
-                continue
-            pods = kubectl(
-                "get",
-                "pods",
-                "-A",
-                "-o",
-                "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
-            )
-            if pods.returncode != 0:
-                if not runner.append(
-                    {
-                        "name": f"controller_group:{group.get('name', 'unknown')}",
-                        "status": "unavailable",
-                        "message": "could not list cluster pods for controller probe",
-                        "evidence": pods.stderr.strip(),
-                    }
-                ):
-                    break
-                continue
-            hit = next(
-                (str(a) for a in alternatives if any(str(a) in line for line in pods.stdout.splitlines())),
-                "",
-            )
-            if not runner.append(
-                {
-                    "name": f"controller_group:{group.get('name', 'unknown')}",
-                    "status": "ok" if hit else "error",
-                    "message": (
-                        f"group {group.get('name')} satisfied by {hit}"
-                        if hit
-                        else f"group {group.get('name')} missing; none of {[str(a) for a in alternatives]} found"
-                    ),
-                }
-            ):
-                break
+            if not runner.stopped_at:
+                for group in (contract.get("deploy_mode_component_groups", {}) or {}).get(deploy_mode) or []:
+                    alternatives = group.get("alternatives", []) if isinstance(group, dict) else []
+                    if not alternatives:
+                        continue
+                    probe = _probe_component_group(cluster_pods, alternatives)
+                    if not runner.append(
+                        {
+                            "name": f"controller_group:{group.get('name', 'unknown')}",
+                            "status": probe["status"],
+                            "message": probe["message"],
+                            "evidence": probe.get("evidence"),
+                        }
+                    ):
+                        break
 
     if not runner.stopped_at:
         resource_name = str(contract.get("npu_resource_name", "")).strip()
@@ -380,6 +350,121 @@ def run_environment_preflight_checks(
         deploy_mode,
         node_port_overrides=node_port_overrides,
     )
+
+
+def _fetch_cluster_pods(kubectl: Any) -> tuple[list[dict[str, Any]], str | None]:
+    result = kubectl("get", "pods", "-A", "-o", "json")
+    if result.returncode != 0:
+        return [], result.stderr.strip() or "could not list cluster pods"
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return [], "invalid cluster pod list json"
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        return [], "cluster pod list must be an array"
+    return items, None
+
+
+def _pod_ready(pod: dict[str, Any]) -> bool:
+    if pod.get("status", {}).get("phase") != "Running":
+        return False
+    for cond in pod.get("status", {}).get("conditions", []) or []:
+        if cond.get("type") == "Ready" and cond.get("status") == "True":
+            return True
+    return False
+
+
+def _pods_matching_pattern(pods: list[dict[str, Any]], pattern: str) -> list[dict[str, Any]]:
+    pattern = pattern.strip()
+    if not pattern:
+        return []
+    matched: list[dict[str, Any]] = []
+    for pod in pods:
+        name = str(pod.get("metadata", {}).get("name") or "")
+        if pattern in name:
+            matched.append(pod)
+    return matched
+
+
+def _summarize_pod_health(pods: list[dict[str, Any]]) -> str:
+    if not pods:
+        return "no matching pods"
+    parts: list[str] = []
+    for pod in pods[:5]:
+        meta = pod.get("metadata", {}) if isinstance(pod.get("metadata"), dict) else {}
+        phase = pod.get("status", {}).get("phase", "?")
+        parts.append(
+            f"{meta.get('namespace', '?')}/{meta.get('name', '?')}:phase={phase},ready={_pod_ready(pod)}"
+        )
+    if len(pods) > 5:
+        parts.append(f"...+{len(pods) - 5} more")
+    return "; ".join(parts)
+
+
+def _probe_component_pattern(pods: list[dict[str, Any]], pattern: str) -> dict[str, Any]:
+    matched = _pods_matching_pattern(pods, pattern)
+    healthy = [pod for pod in matched if _pod_ready(pod)]
+    if not matched:
+        return {
+            "status": "error",
+            "message": f"controller pattern {pattern!r} missing (no matching pods)",
+            "evidence": "no matching pods",
+        }
+    if not healthy:
+        return {
+            "status": "error",
+            "message": (
+                f"controller pattern {pattern!r} matched {len(matched)} pod(s) "
+                "but none are Running and Ready"
+            ),
+            "evidence": _summarize_pod_health(matched),
+        }
+    return {
+        "status": "ok",
+        "message": (
+            f"controller pattern {pattern!r} healthy "
+            f"({len(healthy)}/{len(matched)} pods Running and Ready)"
+        ),
+        "evidence": _summarize_pod_health(healthy),
+    }
+
+
+def _probe_component_group(pods: list[dict[str, Any]], alternatives: list[Any]) -> dict[str, Any]:
+    for alt in alternatives:
+        pattern = str(alt).strip()
+        if not pattern:
+            continue
+        probe = _probe_component_pattern(pods, pattern)
+        if probe["status"] == "ok":
+            return {
+                "status": "ok",
+                "message": f"group satisfied by healthy {pattern}",
+                "evidence": pattern,
+            }
+
+    any_match = False
+    evidence_parts: list[str] = []
+    for alt in alternatives:
+        pattern = str(alt).strip()
+        matched = _pods_matching_pattern(pods, pattern)
+        if matched:
+            any_match = True
+            evidence_parts.append(f"{pattern}:{_summarize_pod_health(matched)}")
+    alt_names = [str(a) for a in alternatives]
+    if any_match:
+        return {
+            "status": "error",
+            "message": (
+                f"group missing healthy pod; matched but unhealthy among {alt_names}"
+            ),
+            "evidence": " | ".join(evidence_parts),
+        }
+    return {
+        "status": "error",
+        "message": f"group missing; none of {alt_names} found",
+        "evidence": "",
+    }
 
 
 def _finalize(

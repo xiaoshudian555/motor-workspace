@@ -31,4 +31,10 @@ python3 scaffold/.agents/skills/motor-deploy-configure/scripts/deploy_configure.
   --config-dir sources/motor/examples/infer_engines/vllm
 ```
 
+Motor-only wheel override（ModelArts 风格，`boot.sh` 在 Pod 启动时
+`pip install`）：在 parity + `motor-build-wheel` 之后追加
+`--motor-wheel-build-run-id <motor-wheel-build-run-id>`（或
+`--motor-wheel-dir /mnt/.../motor-wheel-builds/<sha>/dist`）。此时 manifest
+注入 `MOTOR_WHEEL_DIR`，**不**注入 vLLM/vllm-ascend 源码 `PYTHONPATH`。
+
 Progress 在 stderr，JSON 结果在 stdout。
