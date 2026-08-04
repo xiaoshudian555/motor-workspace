@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 SCAFFOLD = Path(__file__).resolve().parents[4]
 LIB = SCAFFOLD / ".agents" / "lib"
@@ -56,7 +57,7 @@ def main() -> int:
         )
         contract_path = Path(args.environment_contract) if args.environment_contract else None
         contract = load_environment_contract(contract_path)
-        deploy_mode = _read_deploy_mode(args.config_dir)
+        deploy_config = _read_native_deploy_config(args.config_dir)
     except WorkspaceStateError as exc:
         return emit(
             {
@@ -80,7 +81,7 @@ def main() -> int:
         machine=machine,
         machine_ready=machine_ready,
         contract=contract,
-        deploy_mode=deploy_mode,
+        deploy_config=deploy_config,
     )
     envelope = build_environment_result_envelope(
         run_id=environment_run_id,
@@ -97,19 +98,21 @@ def main() -> int:
                 **envelope,
                 "alias": alias,
                 "machine_run_id": machine_ready["machine_run_id"],
-                "deploy_mode": deploy_mode,
+                "deploy_mode": (deploy_config or {}).get("deploy_mode"),
             },
         )
     return emit(envelope)
 
 
-def _read_deploy_mode(config_dir: str) -> str | None:
-    """Read motor_deploy_config.deploy_mode from the native config directory.
+def _read_native_deploy_config(config_dir: str) -> dict[str, Any] | None:
+    """Read the motor_deploy_config section from the native config directory.
 
     The config is generated before preflight in the 3+3 flow (motor-config-edit),
-    so when a config directory is supplied preflight adapts its workload check
-    set to the deploy mode. Returns None when no config directory is given
-    (base environment check only). Fails closed on a missing/invalid config.
+    so when a config directory is supplied preflight validates it: deploy_mode
+    selects the workload check set, image_name drives the image probe, and
+    node_port_overrides drive NodePort validation. Returns None when no config
+    directory is given (base environment check only). Fails closed on a
+    missing/invalid config.
     """
     if not config_dir:
         return None
@@ -124,15 +127,14 @@ def _read_deploy_mode(config_dir: str) -> str | None:
     if not isinstance(deploy, dict):
         raise WorkspaceStateError(f"motor_deploy_config missing in {path}")
     mode = deploy.get("deploy_mode")
-    if mode is None:
-        return "infer_service_set"
-    mode = str(mode)
-    if mode not in ("infer_service_set", "multi_deployment", "single_container"):
-        raise WorkspaceStateError(
-            f"motor_deploy_config.deploy_mode must be one of "
-            f"infer_service_set/multi_deployment/single_container, got: {mode!r}"
-        )
-    return mode
+    if mode is not None:
+        mode = str(mode)
+        if mode not in ("infer_service_set", "multi_deployment", "single_container"):
+            raise WorkspaceStateError(
+                f"motor_deploy_config.deploy_mode must be one of "
+                f"infer_service_set/multi_deployment/single_container, got: {mode!r}"
+            )
+    return deploy
 
 
 if __name__ == "__main__":

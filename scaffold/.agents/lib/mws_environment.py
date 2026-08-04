@@ -38,21 +38,25 @@ def load_environment_contract(path: Path | None = None) -> dict[str, Any]:
     return data
 
 
+NODEPORT_DEFAULT_RANGE = (30000, 32767)
+
+
 def run_environment_preflight_checks(
     *,
     machine: dict[str, Any],
     machine_ready: dict[str, Any],
     contract: dict[str, Any],
-    deploy_mode: str | None = None,
+    deploy_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read-only cluster environment checks; no namespace or deploy inputs.
 
-    `deploy_mode` (from the Motor native user_config.json, which now exists
-    before preflight in the 3+3 flow) selects the workload-specific check set
-    from the contract: infer_service_set requires a Motor workload API
-    (InferServiceSet or AscendJob) and a Motor operator; multi_deployment and
-    single_container only need the base components. When None, only the base
-    check set runs and the result records that no deploy_mode was supplied.
+    `deploy_config` is the `motor_deploy_config` section of the Motor native
+    user_config.json, which now exists before preflight in the 3+3 flow
+    (motor-config-edit). preflight consumes only: `deploy_mode` (selects the
+    workload-specific check set), `image_name` (image reference + per-node
+    coverage probe), and `node_port_overrides` (target NodePort range/conflict
+    validation). When None, only the base environment check set runs and the
+    result records that no config was supplied.
 
     kubectl always runs on the machine host through the remote transport; the
     machine host's kubeconfig and selected context are authoritative.
@@ -60,6 +64,13 @@ def run_environment_preflight_checks(
     runner = CheckRunner()
     machine_context = str(machine.get("kube_context") or "").strip()
     inventory_alias = str(machine.get("alias") or machine_ready.get("alias") or "")
+
+    deploy_mode: str | None = None
+    if deploy_config:
+        raw_mode = deploy_config.get("deploy_mode")
+        deploy_mode = str(raw_mode).strip() if raw_mode else None
+    image_name = str((deploy_config or {}).get("image_name") or "").strip()
+    node_port_targets = _node_port_targets_from_config(deploy_config)
 
     if not machine_context:
         runner.append(
@@ -343,6 +354,19 @@ def run_environment_preflight_checks(
                     }
                 )
 
+    if not runner.stopped_at and deploy_config is not None:
+        _run_image_checks(
+            runner, kubectl, image_name=image_name, contract=contract
+        )
+
+    if not runner.stopped_at and deploy_config is not None:
+        _run_node_port_checks(
+            runner,
+            kubectl,
+            targets=node_port_targets,
+            port_range=contract.get("node_port_range", NODEPORT_DEFAULT_RANGE),
+        )
+
     return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
 
 
@@ -368,6 +392,352 @@ def _finalize(
             "name": contract.get("name"),
         },
     }
+
+
+def _node_port_targets_from_config(deploy_config: dict[str, Any] | None) -> list[int]:
+    """Extract the effective NodePort targets from motor_deploy_config.
+
+    The targets are the replacement values of `node_port_overrides` (template
+    original -> replacement). preflight validates exactly what the deploy would
+    request; the template default ports (e.g. 31015/31017/31027) are not read
+    here because they are configure-render products and the override map is the
+    config-driven source of truth. Returns [] when no overrides are declared.
+    """
+    if not deploy_config:
+        return []
+    raw = deploy_config.get("node_port_overrides")
+    if not raw:
+        return []
+    if not isinstance(raw, dict):
+        raise WorkspaceStateError(
+            "motor_deploy_config.node_port_overrides must be an object"
+        )
+    targets: list[int] = []
+    for key, value in raw.items():
+        try:
+            new_port = int(value)
+        except (TypeError, ValueError) as exc:
+            raise WorkspaceStateError(
+                f"motor_deploy_config.node_port_overrides values must be integers: {key}={value}"
+            ) from exc
+        targets.append(new_port)
+    return sorted(targets)
+
+
+def _run_image_checks(
+    runner: CheckRunner,
+    kubectl: Any,
+    *,
+    image_name: str,
+    contract: dict[str, Any],
+) -> None:
+    """Validate the configured image reference and per-node coverage.
+
+    kubectl-only preflight cannot prove pullability; it records the reference
+    validity (error) and which schedulable nodes already run the image
+    (warning + evidence when coverage is incomplete). Fail-closed pull
+    verification stays with configure/deploy (TD-A3-04).
+    """
+    if not image_name:
+        runner.append(
+            {
+                "name": "image_reference",
+                "status": "error",
+                "message": "motor_deploy_config.image_name is required",
+            }
+        )
+        return
+
+    if "/" not in image_name:
+        runner.append(
+            {
+                "name": "image_reference",
+                "status": "error",
+                "message": (
+                    f"motor_deploy_config.image_name {image_name!r} has no registry "
+                    "or repository path; use a full image reference"
+                ),
+            }
+        )
+        return
+
+    runner.append(
+        {
+            "name": "image_reference",
+            "status": "ok",
+            "message": "image reference parsed",
+            "evidence": image_name,
+        }
+    )
+
+    nodes = kubectl(
+        "get",
+        "nodes",
+        "-o",
+        "json",
+    )
+    if nodes.returncode != 0:
+        runner.append(
+            {
+                "name": "image_node_coverage",
+                "status": "unavailable",
+                "message": "could not list nodes for image coverage probe",
+                "evidence": nodes.stderr.strip(),
+            }
+        )
+        return
+    try:
+        schedulable = _parse_schedulable_nodes(nodes.stdout)
+    except (ValueError, TypeError) as exc:
+        runner.append(
+            {
+                "name": "image_node_coverage",
+                "status": "unavailable",
+                "message": f"could not parse node list: {exc}",
+            }
+        )
+        return
+
+    pods = kubectl("get", "pods", "-A", "-o", "json")
+    if pods.returncode != 0:
+        runner.append(
+            {
+                "name": "image_node_coverage",
+                "status": "unavailable",
+                "message": "could not list pods for image coverage probe",
+                "evidence": pods.stderr.strip(),
+            }
+        )
+        return
+    try:
+        node_images = _parse_node_image_map(pods.stdout)
+    except (ValueError, TypeError) as exc:
+        runner.append(
+            {
+                "name": "image_node_coverage",
+                "status": "unavailable",
+                "message": f"could not parse pod list: {exc}",
+            }
+        )
+        return
+
+    wanted = _image_short_key(image_name)
+    missing = [
+        node
+        for node in schedulable
+        if not any(_image_short_key(img) == wanted for img in node_images.get(node, set()))
+    ]
+    if not missing:
+        runner.append(
+            {
+                "name": "image_node_coverage",
+                "status": "ok",
+                "message": f"image present on all {len(schedulable)} schedulable nodes",
+                "evidence": ",".join(schedulable),
+            }
+        )
+    else:
+        present = sorted(set(schedulable) - set(missing))
+        runner.append(
+            {
+                "name": "image_node_coverage",
+                "status": "warning",
+                "message": (
+                    f"image {image_name!r} not observed on {len(missing)} of "
+                    f"{len(schedulable)} schedulable nodes; verify pullability before apply "
+                    "(ErrImagePull risk)"
+                ),
+                "evidence": (
+                    f"missing={','.join(sorted(missing))}"
+                    + (f";present={','.join(present)}" if present else "")
+                ),
+            }
+        )
+
+
+def _parse_schedulable_nodes(stdout: str) -> list[str]:
+    data = json.loads(stdout)
+    nodes = []
+    for item in data.get("items", []):
+        if item.get("spec", {}).get("unschedulable"):
+            continue
+        nodes.append(item.get("metadata", {}).get("name") or "")
+    return [name for name in nodes if name]
+
+
+def _parse_node_image_map(stdout: str) -> dict[str, set[str]]:
+    data = json.loads(stdout)
+    mapping: dict[str, set[str]] = {}
+    for item in data.get("items", []):
+        node = item.get("spec", {}).get("nodeName") or ""
+        if not node:
+            continue
+        images = mapping.setdefault(node, set())
+        for container in item.get("spec", {}).get("containers", []) or []:
+            image = container.get("image")
+            if image:
+                images.add(str(image))
+        for container in item.get("spec", {}).get("initContainers", []) or []:
+            image = container.get("image")
+            if image:
+                images.add(str(image))
+    return mapping
+
+
+def _image_short_key(ref: str) -> str:
+    """Compare key: last '/'-separated segment (name[:tag]), ignoring registry."""
+    return (str(ref).split("@")[0].rsplit("/", 1)[-1] or "").strip()
+
+
+def _run_node_port_checks(
+    runner: CheckRunner,
+    kubectl: Any,
+    *,
+    targets: list[int],
+    port_range: Any,
+) -> None:
+    """Validate configured NodePort targets: range, uniqueness, cluster usage.
+
+    NodePorts are cluster-wide (not namespace-scoped), so usage is collected
+    from all Services across namespaces. Conflicts fail closed with a suggested
+    free port. When no overrides are declared the check records a warning: the
+    template default ports cannot be validated here and are configure's
+    responsibility.
+    """
+    if not targets:
+        runner.append(
+            {
+                "name": "node_port_conflict",
+                "status": "warning",
+                "message": (
+                    "motor_deploy_config.node_port_overrides not declared; "
+                    "template default ports are not validated here (configure "
+                    "owns render-time conflict handling)"
+                ),
+            }
+        )
+        return
+
+    lo, hi = _normalize_port_range(port_range)
+    out_of_range = [p for p in targets if p < lo or p > hi]
+    if out_of_range:
+        runner.append(
+            {
+                "name": "node_port_range",
+                "status": "error",
+                "message": (
+                    f"NodePort {out_of_range} outside legal range [{lo}, {hi}]"
+                ),
+                "evidence": ",".join(str(p) for p in out_of_range),
+            }
+        )
+        return
+    runner.append(
+        {
+            "name": "node_port_range",
+            "status": "ok",
+            "message": f"target NodePorts within [{lo}, {hi}]",
+            "evidence": ",".join(str(p) for p in targets),
+        }
+    )
+
+    duplicates = {p for p in targets if targets.count(p) > 1}
+    if duplicates:
+        runner.append(
+            {
+                "name": "node_port_unique",
+                "status": "error",
+                "message": f"duplicate target NodePorts in config: {sorted(duplicates)}",
+            }
+        )
+        return
+    runner.append(
+        {
+            "name": "node_port_unique",
+            "status": "ok",
+            "message": "target NodePorts are unique within config",
+        }
+    )
+
+    services = kubectl("get", "services", "-A", "-o", "json")
+    if services.returncode != 0:
+        runner.append(
+            {
+                "name": "node_port_conflict",
+                "status": "unavailable",
+                "message": "could not list cluster services for NodePort probe",
+                "evidence": services.stderr.strip(),
+            }
+        )
+        return
+    try:
+        usage = _parse_service_node_ports(services.stdout)
+    except (ValueError, TypeError) as exc:
+        runner.append(
+            {
+                "name": "node_port_conflict",
+                "status": "unavailable",
+                "message": f"could not parse services list: {exc}",
+            }
+        )
+        return
+
+    conflicts = [p for p in targets if p in usage]
+    if conflicts:
+        occupied_by = [
+            f"{p}->{','.join(sorted(usage[p]))}" for p in sorted(conflicts)
+        ]
+        suggestion = _suggest_free_port(lo, hi, set(targets) | set(usage))
+        runner.append(
+            {
+                "name": "node_port_conflict",
+                "status": "error",
+                "message": (
+                    f"NodePort conflict: {occupied_by} already used cluster-wide; "
+                    f"pick a free port (e.g. {suggestion}) and update "
+                    "motor_deploy_config.node_port_overrides"
+                ),
+                "evidence": ",".join(str(p) for p in sorted(conflicts)),
+            }
+        )
+        return
+    runner.append(
+        {
+            "name": "node_port_conflict",
+            "status": "ok",
+            "message": "target NodePorts free cluster-wide",
+        }
+    )
+
+
+def _normalize_port_range(port_range: Any) -> tuple[int, int]:
+    try:
+        lo, hi = int(port_range[0]), int(port_range[1])
+    except (TypeError, ValueError, IndexError):
+        return NODEPORT_DEFAULT_RANGE
+    if lo <= 0 or hi <= 0 or lo >= hi:
+        return NODEPORT_DEFAULT_RANGE
+    return lo, hi
+
+
+def _parse_service_node_ports(stdout: str) -> dict[int, set[str]]:
+    data = json.loads(stdout)
+    usage: dict[int, set[str]] = {}
+    for item in data.get("items", []):
+        ns = item.get("metadata", {}).get("namespace", "")
+        name = item.get("metadata", {}).get("name", "")
+        for port in item.get("spec", {}).get("ports", []) or []:
+            node_port = port.get("nodePort")
+            if isinstance(node_port, int) and node_port > 0:
+                usage.setdefault(node_port, set()).add(f"{ns}/{name}")
+    return usage
+
+
+def _suggest_free_port(lo: int, hi: int, used: set[int]) -> int | None:
+    for port in range(lo, hi + 1):
+        if port not in used:
+            return port
+    return None
 
 
 def build_environment_result_envelope(

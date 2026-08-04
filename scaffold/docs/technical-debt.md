@@ -591,8 +591,9 @@ R1 关闭记录（2026-08-03）：
 - 测试 `test_environment_preflight.py` 覆盖：infer_service_set 命中
   inferservicesets / ascendjobs 备选 / 两者皆缺 fail、multi_deployment 不查
   workload API、deploy_mode 记录。
-- SKILL.md 边界更新：preflight 消费 `deploy_mode`（仅该字段），其余配置字段
-  仍不消费。
+- SKILL.md 边界更新：preflight 消费 `motor_deploy_config` 的
+  `deploy_mode`/`image_name`/`node_port_overrides` 三字段（见 TD-A3-04/05），
+  其余配置字段仍不消费。
 
 剩余项：
 
@@ -621,11 +622,22 @@ R1 关闭记录（2026-08-03）：
 3. NPU 容量校验被 `prefill_node_selector`/`decode_node_selector` 缺失阻断后，
    靠 `--skip-npu-check` 绕过继续，配置完整性问题被消解为"跑通流程"。
 
+已落地（2026-08-04，子项 1 的 preflight 部分）：
+
+- `motor-deploy-preflight` 读 `motor_deploy_config.image_name` 做
+  `image_reference`（必填、须含 registry/仓库路径，缺失/非法 fail closed）
+  与 `image_node_coverage`（枚举各可调度节点上已运行镜像，未观察到目标镜像
+  的节点记 warning + 证据表，区分"部分缺失"与"全部缺失"）。
+- 边界说明：kubectl-only preflight 无法证明可拉取（初装新镜像本就要拉取），
+  覆盖度检查是 warning 级风险标记；真正"任一候选节点无镜像且无法证明可拉取
+  则 apply 前 fail closed"的逐节点验证仍需 configure/deploy 落地（见目标）。
+
 目标：
 
 - configure（或独立 preflight 子检查）对目标镜像做逐节点存在性检查：记录
   节点、镜像引用、image ID/digest、检查时间；任一候选节点无镜像且无法证明
-  可拉取时，apply 前 fail closed；
+  可拉取时，apply 前 fail closed；——preflight 覆盖度检查已落地为 warning 级，
+  逐节点拉取验证仍待落地
 - preflight 组件检查从"名字存在"升级为"关键组件 Ready"（至少 clusterd、
   noded、device-plugin、operator、volcano 的 Pod 健康）；
 - 缺 selector 的配置要么补全后校验容量，要么显式声明跳过且 run 证据中标记
@@ -640,7 +652,7 @@ R1 关闭记录（2026-08-03）：
 
 ### TD-A3-05（P2）：NodePort 治理缺失——无占用探测、无范围校验、无自动分配
 
-现状：
+现状（修复前）：
 
 - workspace 只有 `inject_node_port_override`（`mws_deploy.py:325`）与
   `_load_node_port_overrides`（`mws_deploy.py:363`）：用户预先给映射，改写
@@ -652,19 +664,36 @@ R1 关闭记录（2026-08-03）：
   upstream 单项配置 `coordinator_infer_node_port: "-"` 只覆盖 Coordinator
   infer 一个端口，不是全局方案。
 
+已落地（2026-08-04，preflight 前置校验部分）：
+
+- `motor-deploy-preflight` 读 `motor_deploy_config.node_port_overrides` 的目标
+  端口集，做三段校验：`node_port_range`（默认 30000-32767，契约
+  `node_port_range` 可覆盖，越界 fail closed）、`node_port_unique`（本批重复
+  fail closed）、`node_port_conflict`（`kubectl get services -A` 集群级占用
+  探测，NodePort 不按 namespace 隔离；冲突 fail closed 并在消息中给出建议
+  空闲端口）。未声明 overrides 时记 warning：模板默认端口
+  （31015/31017/31027）是 configure render 产物，由 configure 承担
+  render-time 冲突处理。
+- 测试：`test_environment_preflight.py` 新增越界/重复/占用/全部空闲/未声明
+  五条用例。
+
 目标：
 
-- configure 阶段扫描 manifest 中全部 nodePort，`kubectl get services -A`
-  探测集群级占用（NodePort 不按 namespace 隔离）；
+- configure 阶段扫描 manifest 中全部 nodePort（含模板默认端口），`kubectl get
+  services -A` 探测集群级占用（NodePort 不按 namespace 隔离）；——preflight
+  已覆盖配置声明的端口，模板默认端口部分仍归 configure
 - 冲突时给出避让建议（自动选空闲端口）或要求显式 overrides，fail closed；
-- 校验目标端口在合法 NodePort 范围内、且本批 manifest 内不重复；
-- 避让映射写入 bundle 证据，不停留在未跟踪本地副本。
+  ——preflight 已给出建议端口并 fail closed，自动选择空闲端口写入配置待落地
+- 校验目标端口在合法 NodePort 范围内、且本批 manifest 内不重复；——preflight
+  已覆盖配置声明的端口
+- 避让映射写入 bundle 证据，不停留在未跟踪本地副本；——不变，仍待落地
 
 验收：
 
-- fixture：占用端口被探测并触发自动避让/报错；范围外端口被拒；
-- 真实环境：A3 上 31015/31017/31027 场景重放，configure 直接产出可用映射，
-  不需要人工试错。
+- fixture：占用端口被探测并触发自动避让/报错；范围外端口被拒；——preflight
+  占用报错+范围拒绝已落地，自动避让待落地
+- 真实环境：A3 上 31015/31017/31027 场景重放，preflight 直接命中冲突并给出
+  建议端口，configure 不再依赖人工试错。
 
 ### TD-A3-06（已落地）：stop 清理语义不对等——改为复用 upstream `delete.sh`
 

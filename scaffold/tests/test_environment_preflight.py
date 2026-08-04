@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 SCAFFOLD = Path(__file__).resolve().parents[1]
 LIB = SCAFFOLD / ".agents" / "lib"
@@ -78,9 +77,48 @@ def _contract(**overrides):
             "single_container": [],
         },
         "npu_resource_name": "huawei.com/Ascend910",
+        "node_port_range": [30000, 32767],
     }
     base.update(overrides)
     return base
+
+
+def _deploy_config(**overrides):
+    base = {
+        "deploy_mode": "infer_service_set",
+        "image_name": "registry.example/motor:latest",
+    }
+    base.update(overrides)
+    return base
+
+
+def _nodes_json(*schedulable, **extra):
+    items = [{"metadata": {"name": n}, "spec": {}} for n in schedulable]
+    for node in extra.get("unschedulable", []):
+        items.append({"metadata": {"name": node}, "spec": {"unschedulable": True}})
+    return json.dumps({"items": items})
+
+
+def _pods_json(node_images):
+    """node_images: dict node -> iterable of image refs seen in running pods."""
+    items = []
+    for node, images in node_images.items():
+        containers = [{"name": "c", "image": img} for img in images]
+        items.append({"spec": {"nodeName": node, "containers": containers}})
+    return json.dumps({"items": items})
+
+
+def _services_json(node_ports):
+    """node_ports: dict port -> list of service labels."""
+    items = []
+    for port, labels in node_ports.items():
+        items.append(
+            {
+                "metadata": {"namespace": "ns", "name": labels[0] if labels else "svc"},
+                "spec": {"ports": [{"name": "p", "nodePort": port}]},
+            }
+        )
+    return json.dumps({"items": items})
 
 
 def _kubectl_side_effect(
@@ -88,7 +126,21 @@ def _kubectl_side_effect(
     has_inferservicesets: bool = True,
     has_ascendjobs: bool = True,
     has_operator: bool = True,
+    schedulable_nodes=("node-a", "node-b"),
+    node_images=None,
+    service_node_ports=None,
 ):
+    """Parameterized kubectl side effect for the preflight check sequence."""
+    node_images = node_images or {"node-a": ["registry.example/motor:latest"]}
+    service_node_ports = service_node_ports or {}
+
+    def _output_format(cmd):
+        try:
+            i = list(cmd).index("-o")
+        except ValueError:
+            return None
+        return list(cmd)[i + 1] if i + 1 < len(cmd) else None
+
     def run(cmd, **kwargs):
         joined = " ".join(cmd)
         if "cluster-info" in joined:
@@ -105,6 +157,12 @@ def _kubectl_side_effect(
         if "api-resources" in joined and "mindxdl.gitee.com" in joined:
             out = "ascendjobs\n" if has_ascendjobs else ""
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr="")
+        if "get services" in joined and _output_format(cmd) == "json":
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=_services_json(service_node_ports), stderr="")
+        if "get nodes" in joined and _output_format(cmd) == "json":
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=_nodes_json(*schedulable_nodes), stderr="")
+        if "get pods" in joined and _output_format(cmd) == "json":
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=_pods_json(node_images), stderr="")
         if "get pods -A" in joined:
             pods = "volcano-scheduler-abc\nascend-device-plugin-xyz\n"
             if has_operator:
@@ -122,14 +180,14 @@ def _kubectl_side_effect(
     return run
 
 
-def _run(monkeypatch, *, deploy_mode: str | None = None, side_effect=None):
+def _run(deploy_config, *, side_effect=None):
     runner_patch, avail_patch = _patch_kubectl(side_effect or _kubectl_side_effect())
     with runner_patch, avail_patch:
         return run_environment_preflight_checks(
             machine=_machine(),
             machine_ready=_machine_ready(),
             contract=_contract(),
-            deploy_mode=deploy_mode,
+            deploy_config=deploy_config,
         )
 
 
@@ -182,10 +240,8 @@ def test_podgroups_missing_fails() -> None:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if "api-resources" in joined:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
-        if "get pods" in joined:
+        if "get pods -A" in joined:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="volcano\nascend-device-plugin\n", stderr="")
-        if "get nodes" in joined:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout='{"huawei.com/Ascend910":"8"}\n', stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
     result = _run(None, side_effect=fake_run)
@@ -210,19 +266,21 @@ def test_success_path_base_environment() -> None:
     assert "namespace" not in result
 
 
-def test_no_deploy_mode_records_warning() -> None:
+def test_no_deploy_config_records_warning() -> None:
     result = _run(None)
     deploy_check = next(item for item in result["checks"] if item["name"] == "deploy_mode")
     assert deploy_check["status"] == "warning"
+    assert not any(item["name"].startswith("image_") for item in result["checks"])
+    assert not any(item["name"].startswith("node_port_") for item in result["checks"])
 
 
 def test_deploy_mode_recorded_in_result() -> None:
-    result = _run(None, deploy_mode="multi_deployment")
+    result = _run(_deploy_config(deploy_mode="multi_deployment"))
     assert result["deploy_mode"] == "multi_deployment"
 
 
 def test_infer_service_set_accepts_inferservicesets() -> None:
-    result = _run(None, deploy_mode="infer_service_set")
+    result = _run(_deploy_config())
     assert result["ready"] is True
     group = next(item for item in result["checks"] if item["name"] == "api_resource_group:motor_workload_api")
     assert group["status"] == "ok"
@@ -233,7 +291,7 @@ def test_infer_service_set_accepts_inferservicesets() -> None:
 
 def test_infer_service_set_accepts_ascendjobs_alternative() -> None:
     side_effect = _kubectl_side_effect(has_inferservicesets=False, has_ascendjobs=True)
-    result = _run(None, deploy_mode="infer_service_set", side_effect=side_effect)
+    result = _run(_deploy_config(), side_effect=side_effect)
     assert result["ready"] is True
     group = next(item for item in result["checks"] if item["name"] == "api_resource_group:motor_workload_api")
     assert group["evidence"] == "ascendjobs"
@@ -241,7 +299,7 @@ def test_infer_service_set_accepts_ascendjobs_alternative() -> None:
 
 def test_infer_service_set_missing_workload_api_fails() -> None:
     side_effect = _kubectl_side_effect(has_inferservicesets=False, has_ascendjobs=False)
-    result = _run(None, deploy_mode="infer_service_set", side_effect=side_effect)
+    result = _run(_deploy_config(), side_effect=side_effect)
     assert result["ready"] is False
     group = next(item for item in result["checks"] if item["name"] == "api_resource_group:motor_workload_api")
     assert group["status"] == "error"
@@ -249,6 +307,120 @@ def test_infer_service_set_missing_workload_api_fails() -> None:
 
 def test_multi_deployment_does_not_require_workload_api() -> None:
     side_effect = _kubectl_side_effect(has_inferservicesets=False, has_ascendjobs=False)
-    result = _run(None, deploy_mode="multi_deployment", side_effect=side_effect)
+    result = _run(_deploy_config(deploy_mode="multi_deployment"), side_effect=side_effect)
     assert result["ready"] is True
     assert not any(item["name"].startswith("api_resource_group:") for item in result["checks"])
+
+
+# --- image checks ---
+
+
+def test_image_reference_missing_fails() -> None:
+    result = _run(_deploy_config(image_name=""))
+    assert result["ready"] is False
+    assert any(item["name"] == "image_reference" and item["status"] == "error" for item in result["checks"])
+
+
+def test_image_reference_without_registry_fails() -> None:
+    result = _run(_deploy_config(image_name="motor:latest"))
+    assert result["ready"] is False
+    assert any(item["name"] == "image_reference" and item["status"] == "error" for item in result["checks"])
+
+
+def test_image_node_coverage_full_ok() -> None:
+    side_effect = _kubectl_side_effect(
+        schedulable_nodes=("node-a", "node-b"),
+        node_images={
+            "node-a": ["registry.example/motor:latest", "volcano:latest"],
+            "node-b": ["registry.example/motor:latest"],
+        },
+    )
+    result = _run(_deploy_config(), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "image_node_coverage")
+    assert check["status"] == "ok"
+
+
+def test_image_node_coverage_partial_warning() -> None:
+    side_effect = _kubectl_side_effect(
+        schedulable_nodes=("node-a", "node-b"),
+        node_images={"node-a": ["registry.example/motor:latest"]},
+    )
+    result = _run(_deploy_config(), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "image_node_coverage")
+    assert check["status"] == "warning"
+    assert "node-b" in check.get("evidence", "")
+
+
+def test_image_node_coverage_zero_warning() -> None:
+    side_effect = _kubectl_side_effect(
+        schedulable_nodes=("node-a", "node-b"),
+        node_images={"node-a": [], "node-b": []},
+    )
+    result = _run(_deploy_config(), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "image_node_coverage")
+    assert check["status"] == "warning"
+    assert "missing" in check.get("evidence", "")
+
+
+def test_image_node_coverage_skips_unschedulable_nodes() -> None:
+    side_effect = _kubectl_side_effect(
+        schedulable_nodes=("node-a",),
+        node_images={"node-a": ["registry.example/motor:latest"]},
+    )
+    result = _run(_deploy_config(), side_effect=side_effect)
+    check = next(item for item in result["checks"] if item["name"] == "image_node_coverage")
+    assert check["status"] == "ok"
+
+
+# --- NodePort checks ---
+
+
+def test_node_port_no_overrides_warning() -> None:
+    result = _run(_deploy_config())  # no node_port_overrides key
+    check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
+    assert check["status"] == "warning"
+
+
+def test_node_port_out_of_range_fails() -> None:
+    result = _run(_deploy_config(node_port_overrides={"31015": 20000}))
+    assert result["ready"] is False
+    check = next(item for item in result["checks"] if item["name"] == "node_port_range")
+    assert check["status"] == "error"
+
+
+def test_node_port_duplicate_fails() -> None:
+    result = _run(
+        _deploy_config(
+            node_port_overrides={"31015": 32015, "31017": 32015}
+        )
+    )
+    assert result["ready"] is False
+    check = next(item for item in result["checks"] if item["name"] == "node_port_unique")
+    assert check["status"] == "error"
+
+
+def test_node_port_conflict_fails_with_suggestion() -> None:
+    side_effect = _kubectl_side_effect(service_node_ports={32015: ["ns/svc-a"]})
+    result = _run(
+        _deploy_config(node_port_overrides={"31015": 32015, "31017": 32017}),
+        side_effect=side_effect,
+    )
+    assert result["ready"] is False
+    check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
+    assert check["status"] == "error"
+    assert "32015" in check["message"]
+    assert "suggestion" in check["message"].lower() or "free port" in check["message"].lower()
+
+
+def test_node_port_all_free_ok() -> None:
+    side_effect = _kubectl_side_effect(service_node_ports={31027: ["other/svc"]})
+    result = _run(
+        _deploy_config(node_port_overrides={"31015": 32015, "31017": 32017}),
+        side_effect=side_effect,
+    )
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "node_port_conflict")
+    assert check["status"] == "ok"

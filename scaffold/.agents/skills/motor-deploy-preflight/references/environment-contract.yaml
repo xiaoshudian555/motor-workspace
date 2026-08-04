@@ -42,3 +42,5 @@ deploy_mode_component_groups:
   single_container: []
 npu_resource_name: huawei.com/Ascend910
 scheduler_name: volcano
+# 合法 NodePort 范围（K8s 集群级）；preflight 校验配置声明的目标端口
+node_port_range: [30000, 32767]
