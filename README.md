@@ -27,6 +27,7 @@ motor-workspace 按用户工作流划分为三个主要部分：
 repo-init
   -> machine-management
   -> remote-code-parity
+  -> motor-config-edit          (generate user_config.json + env.json)
   -> motor-deploy-preflight       (K8s/MindCluster environment)
   -> motor-deploy-configure       (immutable config bundle + dry-run)
   -> motor-k8s-deploy

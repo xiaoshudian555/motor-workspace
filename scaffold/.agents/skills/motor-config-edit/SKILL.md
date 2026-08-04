@@ -7,7 +7,8 @@ description: Translate deployment intent into a validated Motor native user_conf
 
 3+3 **第二部分第一步**：把「用户要起什么、开哪些配置」翻译成 Motor 原生
 `user_config.json` + `env.json`。产出是可直接交给 `motor-deploy-configure
---config-dir` 的配置目录。
+--config-dir` 的配置目录。下游顺序为 `motor-deploy-preflight`（环境预检）
+→ `motor-deploy-configure`（配置准备）→ `motor-k8s-deploy`（实际部署）。
 
 ## 边界
 

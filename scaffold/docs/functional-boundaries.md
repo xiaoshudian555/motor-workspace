@@ -42,26 +42,59 @@ remote-code-parity` 三个阶段。详细功能归属见
 **核心目标：** 拉起 Motor 服务，并证明 Pod 实际运行的是上一部分交付的
 目标代码。
 
-第二部分与第一部分的三步拆分方式相同，固定拆成三个有独立名称、独立入口、
+第二部分与第一部分一样，固定拆成四个有独立名称、独立入口、
 独立完成标准和独立交付物的步骤：
 
 详细功能归属见 [motor-deploy.md](motor-deploy.md)。
 
 ```text
-1. motor-deploy-preflight
+1. motor-config-edit
+    → 交付完整的 Motor 原生 user_config.json + env.json 配置目录
+
+2. motor-deploy-preflight
     → 交付 deploy-environment-ready
 
-2. motor-deploy-configure
+3. motor-deploy-configure
     → 交付 deploy-config-ready + 不可变配置包
 
-3. motor-k8s-deploy
+4. motor-k8s-deploy
     → 交付 deploy run + Ready + 运行代码证据
 ```
 
-面向用户的“一次完成部署”工作流可以依次调用三个步骤，但这只是编排关系，
-不能把三个步骤的职责、结果或失败边界合并。
+面向用户的“一次完成部署”工作流可以依次调用四个步骤，但这只是编排关系，
+不能把四个步骤的职责、结果或失败边界合并。
 
-### 2.1 K8s 与 MindCluster 环境前置验证
+### 2.1 Motor 部署配置生成
+
+责任单元（目标 skill）：`motor-config-edit`
+
+**核心目标：** 把用户「要起什么、开哪些配置」的意图翻译成完整、合法的 Motor
+原生 `user_config.json` + `env.json`。
+
+负责：
+
+- 从意图解析要改的字段（部署形态 + 特性开关），关键字段首次必问，不猜默认值。
+- 字段出处以 Motor 官方 `config_reference.md` 和 `config_sample.json` 为准，
+  feature 映射表快路径命中优先；未命中再搜源码，搜不到则停问用户，不发明字段。
+- 复制模板或已有配置到 `generated/<job_id>/`，在副本上修改，不碰原件。
+- 自检关键字段（`image_name`/`hardware_type`/`job_id`/`weight_mount_path` 非空、
+  PD 的 `kv_role`/`kv_port` 配对、`tensor_parallel_size <= Pod NPU 数`、
+  `env.json` 两节 env）。
+- 交付字段 diff 和每个改动的源码出处。
+
+明确不负责：
+
+- 部署、dry-run、hostPath/`PYTHONPATH` 注入或 server-side 校验（属第三、四步）。
+- 创建 namespace、修改 Kubernetes 资源。
+
+完成标志：
+
+> 已产出一份完整、自检通过的 Motor 原生配置，可以进入环境验证与配置准备。
+
+本步骤产出配置目录而非 `*-ready` run 记录，作为第四步 configure 的输入引用
+被绑定。
+
+### 2.2 K8s 与 MindCluster 环境前置验证
 
 责任单元（目标 skill）：`motor-deploy-preflight`
 
@@ -94,7 +127,7 @@ remote-code-parity` 三个阶段。详细功能归属见
 - machine、kube context、环境契约版本和集群身份引用。
 - 本结果只允许同一工作流后续步骤引用，不跨工作流复用。
 
-### 2.2 Motor 部署配置准备与验证
+### 2.3 Motor 部署配置准备与验证
 
 责任单元（目标 skill）：`motor-deploy-configure`
 
@@ -116,7 +149,7 @@ remote-code-parity` 三个阶段。详细功能归属见
 
 明确不负责：
 
-- 重新承担第一步的环境基线检查。
+- 重新承担第二步的环境基线检查。
 - apply、restart、stop 或删除 Kubernetes 资源。
 - 等待 Pod Ready 或证明 Pod 实际加载目标代码。
 - 重新同步或制造 parity 结果。
@@ -134,7 +167,7 @@ remote-code-parity` 三个阶段。详细功能归属见
 - immutable config bundle、`config_fingerprint`、最终 manifest 和 diff。
 - 当前 parity 与最终 hostPath/`PYTHONPATH` 的对应证据。
 
-### 2.3 Motor 实际部署与运行验收
+### 2.4 Motor 实际部署与运行验收
 
 责任单元：`motor-k8s-deploy`
 
@@ -173,15 +206,15 @@ remote-code-parity` 三个阶段。详细功能归属见
 部署阶段可以包含最小连通性探测，但它只用于证明服务基本可访问，不代替
 正式验证。
 
-第二部分第一步消费 `machine-ready`，但二者含义不同：
+第二部分第二步（preflight）消费 `machine-ready`，但二者含义不同：
 
 - `machine-ready` 只证明机器可连接、固定远端目录可写、可以执行 parity。
 - `deploy-environment-ready` 证明目标 K8s 与 MindCluster 基础环境可用。
 - `deploy-config-ready` 才结合 parity 固定路径和 Motor 原生配置证明本次配置
   可以交给 apply。
 
-前两步不修改 Kubernetes 状态。第三步取得 consent 后才 apply，并承担 Pod、
-服务和运行代码验证。
+前三步（配置生成、环境验证、配置准备）不修改 Kubernetes 状态。第四步取得
+consent 后才 apply，并承担 Pod、服务和运行代码验证。
 
 ## 3. 部署后验证与测试
 
@@ -216,16 +249,20 @@ remote-code-parity` 三个阶段。详细功能归属见
                          |
                          v
 Motor Deploy
-  第一步证明：K8s 与 MindCluster 基础环境可用
-  第一步交付：deploy-environment-ready + 环境证据
+  第一步证明：产出一份完整合法的 Motor 原生配置
+  第一步交付：user_config.json + env.json 配置目录
                          |
                          v
-  第二步证明：最终部署配置正确并可供原样 apply
-  第二步交付：deploy-config-ready + immutable config bundle
+  第二步证明：K8s 与 MindCluster 基础环境可用
+  第二步交付：deploy-environment-ready + 环境证据
                          |
                          v
-  第三步证明：Motor Ready 且 Pod 实际运行目标代码
-  第三步交付：deploy run + 服务地址 + Ready + 代码加载证据
+  第三步证明：最终部署配置正确并可供原样 apply
+  第三步交付：deploy-config-ready + immutable config bundle
+                         |
+                         v
+  第四步证明：Motor Ready 且 Pod 实际运行目标代码
+  第四步交付：deploy run + 服务地址 + Ready + 代码加载证据
                          |
                          v
 部署后验证与测试
@@ -289,9 +326,10 @@ Agent 工作流入口
 | `machine-management` | 第一部分 | 独立的机器登记与环境验证工作流 |
 | `remote-code-parity` | 第一部分 | 完成本地到远端共享目录的代码一致性闭环 |
 | `remote-toolbox` | 兼容层 | 仅保留尚未被 `.remote-dev` 和内部 adapter 覆盖的能力 |
-| `motor-deploy-preflight`（目标 skill） | 第二部分第一步 | 独立检查 K8s 与 MindCluster 基础环境，交付 `deploy-environment-ready` |
-| `motor-deploy-configure`（目标 skill） | 第二部分第二步 | 生成或复用配置，完成替换、dry-run 和配置—代码对应验证，交付 `deploy-config-ready` |
-| `motor-k8s-deploy` | 第二部分第三步 | 原样 apply 配置包，等待 Ready 并证明 Pod 运行目标代码 |
+| `motor-config-edit`（目标 skill） | 第二部分第一步 | 把用户意图翻译为完整的 Motor 原生 `user_config.json` + `env.json` 配置目录 |
+| `motor-deploy-preflight`（目标 skill） | 第二部分第二步 | 独立检查 K8s 与 MindCluster 基础环境，交付 `deploy-environment-ready` |
+| `motor-deploy-configure`（目标 skill） | 第二部分第三步 | 生成或复用配置，完成替换、dry-run 和配置—代码对应验证，交付 `deploy-config-ready` |
+| `motor-k8s-deploy` | 第二部分第四步 | 原样 apply 配置包，等待 Ready 并证明 Pod 运行目标代码 |
 | `motor-smoke` | 第三部分 | 只校验 Coordinator management readiness 响应体为 `ready=true` |
 | `motor-functional` | 第三部分 | 执行真实 inference 请求并验证 metrics、tracing 等功能语义 |
 | `motor-benchmark` | 第三部分 | 对成功 deploy run 执行正式 benchmark |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate or reuse immutable deploy config bundles (3+3 part-2 step 2)."""
+"""Generate or reuse immutable deploy config bundles (3+3 part-2 step 3)."""
 
 from __future__ import annotations
 

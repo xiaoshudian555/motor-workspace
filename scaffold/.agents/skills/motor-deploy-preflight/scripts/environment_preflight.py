@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""K8s / MindCluster environment preflight (3+3 part-2 step 1)."""
+"""K8s / MindCluster environment preflight (3+3 part-2 step 2)."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,12 @@ def main() -> int:
         default="",
         help="optional environment contract path (defaults to skill reference)",
     )
+    parser.add_argument(
+        "--config-dir",
+        default="",
+        help="Motor native config directory containing user_config.json; "
+        "deploy_mode is read from it to select the workload-specific check set",
+    )
     parser.add_argument("--workflow-run-id", default="", help="workflow run id for this 3+3 flow")
     parser.add_argument("--environment-run-id", default="", help="optional explicit environment run id")
     args = parser.parse_args()
@@ -49,6 +56,7 @@ def main() -> int:
         )
         contract_path = Path(args.environment_contract) if args.environment_contract else None
         contract = load_environment_contract(contract_path)
+        deploy_mode = _read_deploy_mode(args.config_dir)
     except WorkspaceStateError as exc:
         return emit(
             {
@@ -72,6 +80,7 @@ def main() -> int:
         machine=machine,
         machine_ready=machine_ready,
         contract=contract,
+        deploy_mode=deploy_mode,
     )
     envelope = build_environment_result_envelope(
         run_id=environment_run_id,
@@ -88,9 +97,42 @@ def main() -> int:
                 **envelope,
                 "alias": alias,
                 "machine_run_id": machine_ready["machine_run_id"],
+                "deploy_mode": deploy_mode,
             },
         )
     return emit(envelope)
+
+
+def _read_deploy_mode(config_dir: str) -> str | None:
+    """Read motor_deploy_config.deploy_mode from the native config directory.
+
+    The config is generated before preflight in the 3+3 flow (motor-config-edit),
+    so when a config directory is supplied preflight adapts its workload check
+    set to the deploy mode. Returns None when no config directory is given
+    (base environment check only). Fails closed on a missing/invalid config.
+    """
+    if not config_dir:
+        return None
+    path = Path(config_dir) / "user_config.json"
+    if not path.exists():
+        raise WorkspaceStateError(f"--config-dir given but user_config.json not found: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise WorkspaceStateError(f"user_config.json is not valid JSON: {path}") from exc
+    deploy = data.get("motor_deploy_config", {})
+    if not isinstance(deploy, dict):
+        raise WorkspaceStateError(f"motor_deploy_config missing in {path}")
+    mode = deploy.get("deploy_mode")
+    if mode is None:
+        return "infer_service_set"
+    mode = str(mode)
+    if mode not in ("infer_service_set", "multi_deployment", "single_container"):
+        raise WorkspaceStateError(
+            f"motor_deploy_config.deploy_mode must be one of "
+            f"infer_service_set/multi_deployment/single_container, got: {mode!r}"
+        )
+    return mode
 
 
 if __name__ == "__main__":

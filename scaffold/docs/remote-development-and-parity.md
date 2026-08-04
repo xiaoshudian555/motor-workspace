@@ -186,9 +186,9 @@ session ID、deploy run ID 或 validation run ID。
 这里证明的是“可以把代码同步到固定远端位置”，不是“Motor Pod 已经能够
 挂载该位置”。
 
-### 2.5 与 Motor Deploy 三个步骤的边界
+### 2.5 与 Motor Deploy 四个步骤的边界
 
-不属于 `machine-management`，而属于第二部分第一步
+不属于 `machine-management`，而属于第二部分第二步
 `motor-deploy-preflight`：
 
 - 验证 kube context 和 Kubernetes API 可用。
@@ -197,7 +197,7 @@ session ID、deploy run ID 或 validation run ID。
   组件、controller、scheduler 和 CRD。
 - 检查集群是否报告 workspace 环境契约要求的 NPU resource 类型。
 
-不属于 `machine-management`，而属于第二部分第二步
+不属于 `machine-management`，而属于第二部分第三步
 `motor-deploy-configure`：
 
 - 读取 Motor 原生 `user_config.json` 和 `env.json`，不引入第二套部署字段。
@@ -209,7 +209,7 @@ session ID、deploy run ID 或 validation run ID。
 - 不在 apply 前验证候选节点 hostPath、实际 image pull 或模型容器内可读性；
   拉起失败后由 diagnosis 处理。
 
-Pod Ready、容器内模型/挂载可用以及实际代码加载证明属于第二部分第三步
+Pod Ready、容器内模型/挂载可用以及实际代码加载证明属于第二部分第四步
 `motor-k8s-deploy`。
 
 `machine-management` 可以记录 kube context、hardware profile 或 NPU
@@ -367,12 +367,13 @@ content consistency evidence
 
 不交付 session-ref，也不为 Deploy 生成 namespace 或 job-id。
 
-第二部分第一步 `motor-deploy-preflight` 先独立证明 K8s 与 MindCluster
-基础环境可用，不读取本次 Motor 配置。第二步 `motor-deploy-configure` 再结合
-Motor 原生 `user_config.json`、`env.json` 和 parity 固定路径生成或复用不可变
-配置包并交付 `deploy-config-ready`；workspace 不增加 deploy profile 或字段级
-CLI override。第三步 `motor-k8s-deploy` 只消费成功的配置结果，执行实际部署
-和运行验收。
+第二部分第一步 `motor-config-edit` 把用户意图翻译成 Motor 原生
+`user_config.json` + `env.json` 配置目录。第二步 `motor-deploy-preflight` 独立
+证明 K8s 与 MindCluster 基础环境可用，不读取本次 Motor 配置。第三步
+`motor-deploy-configure` 再结合 Motor 原生 `user_config.json`、`env.json` 和
+parity 固定路径生成或复用不可变配置包并交付 `deploy-config-ready`；workspace
+不增加 deploy profile 或字段级 CLI override。第四步 `motor-k8s-deploy` 只消费
+成功的配置结果，执行实际部署和运行验收。
 
 该边界对应的当前实现缺口见
 [technical-debt.md](technical-debt.md#第一部分远程开发准备与代码同步)。

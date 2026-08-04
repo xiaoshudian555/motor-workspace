@@ -1,30 +1,91 @@
-# 第二部分：Motor 环境前置验证、配置准备与实际部署
+# 第二部分：Motor 配置生成、环境前置验证、配置准备与实际部署
 
 第二部分从第一部分交付远端目标代码开始，到 Motor 服务已经拉起、达到约定
 Ready 状态并证明 Pod 使用目标代码结束。
 
-本部分固定拆成三个完整步骤，与第一部分
-`repo-init → machine-management → remote-code-parity` 的拆分方式相同。三个
-步骤使用独立顺序编号，也不是一个 skill 内部的三个函数：
+本部分固定拆成四个完整步骤，与第一部分
+`repo-init → machine-management → remote-code-parity` 的拆分方式相同。四个
+步骤使用独立顺序编号，也不是一个 skill 内部的四个函数：
 
 ```text
-1. K8s 与 MindCluster 环境前置验证
+1. Motor 部署配置生成
+   motor-config-edit
+        ↓ 交付：完整的 Motor 原生 user_config.json + env.json 配置目录
+
+2. K8s 与 MindCluster 环境前置验证
    motor-deploy-preflight
         ↓ 交付：deploy-environment-ready + 环境检查证据
 
-2. Motor 部署配置准备与验证
+3. Motor 部署配置准备与验证
    motor-deploy-configure
         ↓ 交付：deploy-config-ready + 可 apply 的配置包
 
-3. Motor 实际部署与运行验收
+4. Motor 实际部署与运行验收
    motor-k8s-deploy
         ↓ 交付：deploy run + Ready 证据 + 运行代码证据
 ```
 
-三个步骤有独立职责、独立入口、独立结果和独立失败边界。面向用户的“一次完成
-部署”工作流可以顺序调用三个步骤，但不得合并它们的责任、结果或证据。
+四个步骤有独立职责、独立入口、独立结果和独立失败边界。面向用户的“一次完成
+部署”工作流可以顺序调用四个步骤，但不得合并它们的责任、结果或证据。
 
-## 1. K8s 与 MindCluster 环境前置验证
+## 1. Motor 部署配置生成
+
+责任单元（目标 skill）：`motor-config-edit`
+
+核心问题：
+
+> 如何把用户「要起什么、开哪些配置」的意图，翻译成一份完整、合法、可供
+> configure 消费的 Motor 原生 `user_config.json` + `env.json`？
+
+### 输入
+
+- 用户自然语言部署意图（模型、卡数、镜像、特性开关）。
+- 可选已有配置目录（迭代验证时复用）。
+- Motor 原生配置模板：`sources/motor/examples/infer_engines/<engine>/`。
+
+本步骤不消费 parity manifest、`deploy-environment-ready` 或 Kubernetes
+状态，也无需目标机器处于就绪状态。
+
+### 负责
+
+- 从意图解析要改的字段（部署形态 + 特性开关）。
+- 优先命中 `references/feature-schema-map.md` 的字段映射，未命中时以 Motor
+  官方 `config_reference.md` 和 `config_sample.json` 为准，兜底才搜源码；
+  字段出处可追溯，不得发明字段。
+- 复制模板或已有配置到 `generated/<job_id>/`，在副本上修改，不碰原件。
+- 自检关键字段：`image_name`/`hardware_type`/`job_id`/`weight_mount_path`
+  非空，prefill/decode 的模型与 `kv_role`/`kv_port` 配对一致，
+  `tensor_parallel_size <= 对应 Pod NPU 数`，`env.json` 含两节 env。
+- 交付字段 diff、每个改动的源码出处和校验结果。
+
+### 明确不负责
+
+- 部署、dry-run、hostPath/`PYTHONPATH` 注入或 server-side 校验——这些属于
+  第三、四步。
+- 不调用 `motor-deploy-configure`。
+- 不创建 namespace、不修改 Kubernetes 资源。
+
+### 输出和完成标准
+
+交付：
+
+- 完整的 Motor 原生 `user_config.json` + `env.json`（模板副本 + 字段修改），
+  是 `motor-deploy-configure --config-dir` 可直接消费的目录；
+- 字段 diff 和每个改动的源码出处。
+
+完成只代表：
+
+> 已产出一份完整、自检通过的 Motor 原生配置，可以进入环境验证与配置准备。
+
+本步骤产出为配置目录而非 run 记录，因此不单独交付 `*-ready` 契约；它作为
+第四步 configure 的输入引用被绑定。
+
+### 失败停止位置
+
+- 关键字段缺失且用户未确认：停在本步骤并提问，不猜测默认值。
+- 映射表与文档均无法确认字段：停在搜索，向用户报告待确认，不发明字段。
+
+## 2. K8s 与 MindCluster 环境前置验证
 
 责任单元（目标 skill）：`motor-deploy-preflight`
 
@@ -40,7 +101,8 @@ Ready 状态并证明 Pod 使用目标代码结束。
 - workspace 固定版本的 K8s、MindCluster、Volcano 和 Ascend NPU 环境契约。
 
 本步骤不消费 parity manifest、Motor user config、namespace、模型路径、
-镜像引用或最终 Kubernetes manifest。这些都属于第二步。
+镜像引用或最终 Kubernetes manifest。这些分别属于第一步（生成配置）和
+第三步（配置准备）。
 
 ### 负责
 
@@ -85,14 +147,14 @@ workflow 必须重新执行本步骤，不使用 TTL 或历史 `last_verified_at
 任一关键环境依赖失败或无法验证时停在本步骤，不进入配置生成，也不修改
 Kubernetes 状态。
 
-## 2. Motor 部署配置准备与验证
+## 3. Motor 部署配置准备与验证
 
 责任单元（目标 skill）：`motor-deploy-configure`
 
 核心问题：
 
 > 如何基于目标代码和可用环境，生成一份输入对应明确、替换正确、经过 dry-run
-> 且可供第三步原样 apply 的 Motor 部署配置？
+> 且可供第四步原样 apply 的 Motor 部署配置？
 
 ### 输入
 
@@ -138,12 +200,12 @@ dry-run，但不能仅凭“上次部署成功”猜测相同。
 - 记录 `reused_config_bundle_id` 和本次复用证据。
 
 代码内容不属于 config fingerprint。代码变化但固定路径和 Motor 原生配置未
-变化时，可以复用配置包；第二步只重新绑定当前 parity 的固定路径引用，第三步
+变化时，可以复用配置包；本步骤只重新绑定当前 parity 的固定路径引用，第四步
 再验证 Pod 实际加载路径。
 
 ### 明确不负责
 
-- 重新承担第一步的 K8s/MindCluster 基础环境检查。
+- 重新承担第二步的 K8s/MindCluster 基础环境检查。
 - 创建、修改或删除 Kubernetes 资源。
 - apply、restart、scale、stop 或 cleanup。
 - 等待 Pod Ready。
@@ -174,7 +236,7 @@ dry-run，但不能仅凭“上次部署成功”猜测相同。
 + 必需的 manifest 校验与 dry-run 通过
 ```
 
-本步骤的输出必须是第三步可以原样 apply 的不可变配置包。第三步不得重新
+本步骤的输出必须是第四步可以原样 apply 的不可变配置包。第四步不得重新
 render 后再 apply。
 
 ### 失败停止位置
@@ -187,7 +249,7 @@ render 后再 apply。
 
 任何失败都不得进入实际 apply。
 
-## 3. Motor 实际部署与运行验收
+## 4. Motor 实际部署与运行验收
 
 责任单元：`motor-k8s-deploy`
 
@@ -218,8 +280,8 @@ render 后再 apply。
 
 ### 明确不负责
 
-- 重新执行第一步的环境基线检查。
-- 重新 render、替换、dry-run 或冒充第二步的配置结果。
+- 重新执行第二步的环境基线检查。
+- 重新 render、替换、dry-run 或冒充第三步的配置结果。
 - 重新同步或制造 parity 结果。
 - 用正式 workload、benchmark 或 profiling 判断部署是否完成。
 - 修改 Motor upstream P/D 控制器语义。
@@ -250,14 +312,18 @@ render 后再 apply。
 
 ### 失败停止位置
 
-- 配置包缺失、被修改或 fingerprint 不匹配：不 apply，返回第二步。
+- 配置包缺失、被修改或 fingerprint 不匹配：不 apply，返回第三步。
 - 用户未 consent：停在 apply 前。
 - apply 失败：保留 apply 和 K8s 证据，不进入部署完成状态。
 - Pod、服务、模型、挂载或代码路径验证失败：部署存在但未完成，交付诊断入口。
 
-## 三个步骤的交接
+## 四个步骤的交接
 
 ```text
+motor-config-edit
+  → 完整的 user_config.json + env.json 配置目录
+                         |
+                         v
 motor-deploy-preflight
   → deploy-environment-ready
                          |
@@ -275,9 +341,9 @@ ready。
 
 ## 与第一部分和第三部分的边界
 
-第一部分证明远端固定目录中的内容与本地目标代码一致。第二部分的配置步骤证明
-最终 manifest 正确引用这些路径，实际部署步骤证明 Pod 最终看到并加载这些
-路径。
+第一部分证明远端固定目录中的内容与本地目标代码一致。第二部分的配置生成步骤
+产出 Motor 原生配置，配置准备步骤证明最终 manifest 正确引用这些路径，实际
+部署步骤证明 Pod 最终看到并加载这些路径。
 
 第二部分可以做最小服务连通性探测，用来判断部署是否完成。正式功能 smoke、
 正确性测试、benchmark 和 profiling 属于第三部分。第三部分只消费成功的

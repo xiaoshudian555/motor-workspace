@@ -9,7 +9,7 @@
 
 第一部分的三阶段交接和具体功能归属见
 [remote-development-and-parity.md](remote-development-and-parity.md)。
-第二部分的环境、配置和实际部署三步见
+第二部分的环境、配置生成、配置准备和实际部署四步见
 [motor-deploy.md](motor-deploy.md)。
 
 ## Agent 工作流
@@ -22,9 +22,10 @@
 | `machine-management` | 登记并验证远程 Motor 目标 | 第一部分 |
 | `remote-code-parity` | 同步本地 dirty workspace 并证明远端目录内容 | 第一部分 |
 | `remote-toolbox` | 尚未迁移能力的兼容入口 | 兼容层 |
-| `motor-deploy-preflight` | 验证 K8s 与 MindCluster 基础环境 | 第二部分第一步 |
-| `motor-deploy-configure` | 生成或复用不可变配置包并完成配置验证 | 第二部分第二步 |
-| `motor-k8s-deploy` | 原样 apply 配置包并证明 Ready 和 Pod 加载目标代码 | 第二部分第三步 |
+| `motor-config-edit` | 把用户意图翻译为 Motor 原生 `user_config.json` + `env.json` 配置目录 | 第二部分第一步 |
+| `motor-deploy-preflight` | 验证 K8s 与 MindCluster 基础环境 | 第二部分第二步 |
+| `motor-deploy-configure` | 生成或复用不可变配置包并完成配置验证 | 第二部分第三步 |
+| `motor-k8s-deploy` | 原样 apply 配置包并证明 Ready 和 Pod 加载目标代码 | 第二部分第四步 |
 | `motor-smoke` | 校验 Coordinator management readiness body | 第三部分 |
 | `motor-functional` | 执行真实 inference 请求并验证 metrics、tracing 等功能行为 | 第三部分 |
 | `motor-benchmark` | 对成功 deploy run 执行正式 benchmark | 第三部分 |

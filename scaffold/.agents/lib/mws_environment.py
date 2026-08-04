@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""K8s / MindCluster environment preflight checks (3+3 part-2 step 1)."""
+"""K8s / MindCluster environment preflight checks (3+3 part-2 step 2)."""
 
 from __future__ import annotations
 
@@ -43,8 +43,16 @@ def run_environment_preflight_checks(
     machine: dict[str, Any],
     machine_ready: dict[str, Any],
     contract: dict[str, Any],
+    deploy_mode: str | None = None,
 ) -> dict[str, Any]:
     """Read-only cluster environment checks; no namespace or deploy inputs.
+
+    `deploy_mode` (from the Motor native user_config.json, which now exists
+    before preflight in the 3+3 flow) selects the workload-specific check set
+    from the contract: infer_service_set requires a Motor workload API
+    (InferServiceSet or AscendJob) and a Motor operator; multi_deployment and
+    single_container only need the base components. When None, only the base
+    check set runs and the result records that no deploy_mode was supplied.
 
     kubectl always runs on the machine host through the remote transport; the
     machine host's kubeconfig and selected context are authoritative.
@@ -61,7 +69,7 @@ def run_environment_preflight_checks(
                 "message": "machine inventory missing kube_context",
             }
         )
-        return _finalize(runner, machine_context, contract, inventory_alias)
+        return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
 
     runner.append(
         {
@@ -69,6 +77,19 @@ def run_environment_preflight_checks(
             "status": "ok",
             "message": "kube context resolved from machine inventory",
             "evidence": machine_context,
+        }
+    )
+
+    runner.append(
+        {
+            "name": "deploy_mode",
+            "status": "ok" if deploy_mode else "warning",
+            "message": (
+                f"deploy_mode {deploy_mode!r} selected workload check set"
+                if deploy_mode
+                else "no deploy_mode supplied; base environment check only"
+            ),
+            "evidence": deploy_mode or "",
         }
     )
 
@@ -82,7 +103,7 @@ def run_environment_preflight_checks(
                 "message": evidence,
             }
         )
-        return _finalize(runner, machine_context, contract, inventory_alias)
+        return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
     runner.append(
         {
             "name": "kubectl",
@@ -101,7 +122,7 @@ def run_environment_preflight_checks(
                 "message": cluster_info.stderr.strip() or "Kubernetes API unreachable",
             }
         )
-        return _finalize(runner, machine_context, contract, inventory_alias)
+        return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
 
     runner.append(
         {
@@ -143,7 +164,7 @@ def run_environment_preflight_checks(
                 "evidence": auth.stdout.strip() or auth.stderr.strip(),
             }
         )
-        return _finalize(runner, machine_context, contract, inventory_alias)
+        return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
     runner.append(
         {
             "name": "cluster_read_permissions",
@@ -152,7 +173,14 @@ def run_environment_preflight_checks(
         }
     )
 
-    for resource in contract.get("required_api_resources", []):
+    def _api_resource_stdout(name: str, api_group: str) -> str:
+        api = kubectl("api-resources", f"--api-group={api_group}", "-o", "name")
+        return api.stdout or ""
+
+    api_resources = list(contract.get("required_api_resources", []))
+    api_resources += (contract.get("deploy_mode_api_resources", {}) or {}).get(deploy_mode) or []
+
+    for resource in api_resources:
         if not isinstance(resource, dict):
             continue
         name = str(resource.get("name", "")).strip()
@@ -167,20 +195,48 @@ def run_environment_preflight_checks(
             ):
                 break
             continue
-        api = kubectl("api-resources", f"--api-group={api_group}", "-o", "name")
-        found = name in api.stdout
+        stdout = _api_resource_stdout(name, api_group)
+        found = name in stdout
         if not runner.append(
             {
                 "name": f"api_resource:{name}",
                 "status": "ok" if found else "error",
                 "message": f"{name} present" if found else f"{name} missing in api-group {api_group}",
-                "evidence": api.stdout.strip()[:200],
+                "evidence": stdout.strip()[:200],
             }
         ):
             break
 
     if not runner.stopped_at:
-        for pattern in contract.get("component_patterns", []):
+        for group in (contract.get("deploy_mode_api_resource_groups", {}) or {}).get(deploy_mode) or []:
+            alternatives = group.get("alternatives", []) if isinstance(group, dict) else []
+            hit = ""
+            for alt in alternatives:
+                if not isinstance(alt, dict):
+                    continue
+                stdout = _api_resource_stdout(str(alt.get("name", "")), str(alt.get("api_group", "")))
+                if str(alt.get("name", "")) in stdout:
+                    hit = str(alt.get("name", ""))
+                    break
+            names = [str(a.get("name", "")) for a in alternatives if isinstance(a, dict)]
+            if not runner.append(
+                {
+                    "name": f"api_resource_group:{group.get('name', 'unknown')}",
+                    "status": "ok" if hit else "error",
+                    "message": (
+                        f"group {group.get('name')} satisfied by {hit}"
+                        if hit
+                        else f"group {group.get('name')} missing; none of {names} found"
+                    ),
+                    "evidence": hit,
+                }
+            ):
+                break
+
+    if not runner.stopped_at:
+        component_patterns = list(contract.get("component_patterns", []))
+        component_patterns += (contract.get("deploy_mode_components", {}) or {}).get(deploy_mode) or []
+        for pattern in component_patterns:
             pattern = str(pattern).strip()
             if not pattern:
                 continue
@@ -208,6 +264,46 @@ def run_environment_preflight_checks(
                     "name": f"controller:{pattern}",
                     "status": "ok" if matched else "error",
                     "message": f"controller pattern {pattern!r} {'found' if matched else 'missing'}",
+                }
+            ):
+                break
+
+    if not runner.stopped_at:
+        for group in (contract.get("deploy_mode_component_groups", {}) or {}).get(deploy_mode) or []:
+            alternatives = group.get("alternatives", []) if isinstance(group, dict) else []
+            if not alternatives:
+                continue
+            pods = kubectl(
+                "get",
+                "pods",
+                "-A",
+                "-o",
+                "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}",
+            )
+            if pods.returncode != 0:
+                if not runner.append(
+                    {
+                        "name": f"controller_group:{group.get('name', 'unknown')}",
+                        "status": "unavailable",
+                        "message": "could not list cluster pods for controller probe",
+                        "evidence": pods.stderr.strip(),
+                    }
+                ):
+                    break
+                continue
+            hit = next(
+                (str(a) for a in alternatives if any(str(a) in line for line in pods.stdout.splitlines())),
+                "",
+            )
+            if not runner.append(
+                {
+                    "name": f"controller_group:{group.get('name', 'unknown')}",
+                    "status": "ok" if hit else "error",
+                    "message": (
+                        f"group {group.get('name')} satisfied by {hit}"
+                        if hit
+                        else f"group {group.get('name')} missing; none of {[str(a) for a in alternatives]} found"
+                    ),
                 }
             ):
                 break
@@ -247,7 +343,7 @@ def run_environment_preflight_checks(
                     }
                 )
 
-    return _finalize(runner, machine_context, contract, inventory_alias)
+    return _finalize(runner, machine_context, contract, inventory_alias, deploy_mode)
 
 
 def _finalize(
@@ -255,6 +351,7 @@ def _finalize(
     kube_context: str,
     contract: dict[str, Any],
     alias: str,
+    deploy_mode: str | None = None,
 ) -> dict[str, Any]:
     ready = runner.stopped_at is None and not runner.errors
     return {
@@ -265,6 +362,7 @@ def _finalize(
         "errors": runner.errors,
         "stopped_at": runner.stopped_at,
         "kube_context": kube_context,
+        "deploy_mode": deploy_mode,
         "environment_contract": {
             "schema_version": contract.get("schema_version"),
             "name": contract.get("name"),
@@ -294,6 +392,7 @@ def build_environment_result_envelope(
         extra={
             "alias": payload.get("alias"),
             "kube_context": payload.get("kube_context"),
+            "deploy_mode": payload.get("deploy_mode"),
             "environment_contract": payload.get("environment_contract"),
             "stopped_at": payload.get("stopped_at"),
         },

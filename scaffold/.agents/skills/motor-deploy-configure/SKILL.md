@@ -5,7 +5,7 @@ description: Generate or reuse immutable Motor deploy config bundles with upstre
 
 # motor-deploy-configure
 
-3+3 **第二部分第二步**：复制 Motor 原生配置、upstream dry-run、注入固定
+3+3 **第二部分第三步**：复制 Motor 原生配置、upstream dry-run、注入固定
 hostPath / `PYTHONPATH`、校验 namespace 与 RBAC、server-side dry-run，产出
 不可变 bundle 和 `deploy-config-ready`。
 

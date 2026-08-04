@@ -5,7 +5,7 @@ description: Apply, status, stop, and restart Motor using an immutable deploy-co
 
 # motor-k8s-deploy
 
-Third step of Motor Deploy (3+3 part 2). Consumes a successful
+Fourth step of Motor Deploy (3+3 part 2). Consumes a successful
 `deploy-config-ready` run and its immutable config bundle only. Does not
 auto-run parity, render, substitute, or dry-run.
 

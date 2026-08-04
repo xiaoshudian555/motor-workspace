@@ -554,9 +554,9 @@ R1 关闭记录（2026-08-03）：
 
 处理：本条标记关闭；剩余边界分别由 fallback 注释说明和 TD-A3-06 承担。
 
-### TD-A3-03（P1）：环境契约是单代硬编码，不支持 AscendJob / InferServiceSet 两代链路二选一
+### TD-A3-03（P1，已落地）：环境契约单代硬编码 → 按 deploy_mode 自适应 + one-of 链路二选一
 
-现状：
+现状（修复前）：
 
 - `environment-contract.yaml` 把 `ascendjobs.mindxdl.gitee.com` 写为硬性必需；
   `mws_environment.py:155` 只支持 `required_api_resources` 平铺列表逐项检查，
@@ -567,16 +567,38 @@ R1 关闭记录（2026-08-03）：
   普通 Deployment，本就不需要 AscendJob。preflight 在
   `api_resource:ascendjobs` 误报停止。
 - `scaffold/profiles/a2-dev.yaml` 的 `mindcluster` 段是第二份硬编码
-  （ascendjobs/podgroups + ascend-operator），两处需同步改。
+  （ascendjobs/podgroups + ascend-operator）。
 
-目标：
+定方向（2026-08-04，用户确认"配置在前，允许 preflight 读配置，完整自适应"）：
 
-- 契约 schema 升级支持"组内任一满足"（one-of）：workload API 组
-  （ascendjobs | inferservicesets）、operator 组件组
-  （ascend-operator | infer-operator）；
-- podgroups（volcano）与 noded/clusterd/ascend-device-plugin 保持硬性；
-- `a2-dev.yaml` 与契约 YAML 同源或同步更新；
-- preflight 结果明确记录实际命中的是哪一代链路。
+- 3+3 流程真实顺序为配置生成在前（`motor-config-edit` 为第二部分第一步）；
+  preflight 通过 `--config-dir` 读取 `user_config.json` 的
+  `motor_deploy_config.deploy_mode`，按 mode 选择 workload 专用检查集。
+- 契约 schema v2：基础 `required_api_resources`（podgroups）+ 按 deploy_mode
+  追加的硬性资源与 one-of 资源组、one-of 组件组。
+
+落地记录（已实施，测试通过）：
+
+- 契约改为 schema v2：`deploy_mode_api_resources` / `deploy_mode_api_resource_groups`
+  / `deploy_mode_components` / `deploy_mode_component_groups`；`ascendjobs` 从
+  基础硬性项移除，`infer_service_set` 的 `motor_workload_api` one-of 组
+  （`inferservicesets | ascendjobs`）与 `motor_operator` one-of 组件组
+  （`infer-operator | ascend-operator`）承担两代链路。
+- `mws_environment.run_environment_preflight_checks` 新增可选 `deploy_mode`
+  参数与 one-of 检查；结果记录 `deploy_mode` 与 one-of 组命中项。
+- `environment_preflight.py` 新增可选 `--config-dir`；配置缺失/非法 fail
+  closed，未提供时只跑基础检查集并在结果中标注。
+- 测试 `test_environment_preflight.py` 覆盖：infer_service_set 命中
+  inferservicesets / ascendjobs 备选 / 两者皆缺 fail、multi_deployment 不查
+  workload API、deploy_mode 记录。
+- SKILL.md 边界更新：preflight 消费 `deploy_mode`（仅该字段），其余配置字段
+  仍不消费。
+
+剩余项：
+
+- `scaffold/profiles/a2-dev.yaml` 的 `mindcluster` 段：经核实不被 preflight
+  消费（preflight 用 skill references 契约），属死配置，后续清理或与契约
+  同源；不影响当前行为。
 
 验收：
 
@@ -702,6 +724,32 @@ R1 关闭记录（2026-08-03）：
   运行时报 `TypeError`（被日志采集包装成 warning 未阻塞）。parity 或
   preflight 应校验远端 Python 版本与同步源码的语法兼容性；upstream 兼容性
   问题需向上游反馈。
+
+### TD-A3-08（P2）：`scaffold/tests` UT 过多过重，需要删减
+
+现状（2026-08-04 实测）：
+
+- `scaffold/tests` 全量 233 passed，耗时约 128s（`0:02:07`）；单次改动全量
+  回归代价高，部分用例是"为了覆盖率"而写的低信息量 UT（mock 断言实现细节、
+  重复 fixture、与真实行为脱节的纯断言），增删行为收益低。
+- 技术债"完成定义"要求每项改动都跑 `scaffold/tests` 全量，UT 体量直接拖慢
+  迭代。
+
+目标：
+
+- 按价值分层保留：契约测试、真实行为测试（producer+consumer）、失败路径
+  fail closed 测试保留；
+- 删除低信息量用例：纯 mock 断言内部调用序列（与外部行为无因果）、重复
+  fixture、只测"函数不抛异常"的无意义断言；
+- 对保留的慢测试标注/分组（如 `@pytest.mark.slow`），日常快速子集可跳过；
+- 删减标准在测试目录 README 或测试文件 docstring 写清，避免未来重新堆积。
+
+验收：
+
+- 全量测试数量与耗时明显下降（目标：耗时进入 60s 内或减量 1/3）；
+- 删除的用例逐一说明删除理由（低信息量/重复/无外部行为），不得只报数量；
+- 关键链路（preflight/configure/apply/stop/parity/smoke/functional）的
+  producer+consumer 契约测试零缺失。
 
 ---
 

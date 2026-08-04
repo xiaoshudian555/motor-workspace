@@ -90,7 +90,7 @@ missing, fixes permissions, then verifies `ssh -o BatchMode=yes ... echo ok`.
 
 It does **not** check namespace RBAC, CRDs, Volcano, Pod readiness, or other
 Kubernetes / MindCluster deployment facts. Those belong to **`motor-deploy-preflight`**
-(3+3 part-2 step 1) — see
+(3+3 part-2 step 2) — see
 `.agents/skills/motor-deploy-preflight/SKILL.md`.
 
 `last_verified_at` in inventory is diagnostic metadata only; downstream steps
