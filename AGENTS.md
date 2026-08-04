@@ -65,6 +65,7 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | `motor-functional` | Compile natural-language feature goals into catalog-backed functional validation specs and dispatch cases |
 | `motor-benchmark` | Benchmark a successful deploy run (third major part) |
 | `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts |
+| `motor-build-wheel` | Build a release-grade Motor wheel (protobuf + Rust kv-conductor) inside Docker; produces `motor-wheel-build` |
 
 None of these are gates for normal local coding or unrelated Git tasks.
 For remote endpoint work, prefer `scaffold/.remote-dev` tools first and use

@@ -451,12 +451,31 @@ R1 关闭记录（2026-08-03）：
 - 快路径对"覆盖不到什么"有显式声明，避免同步成功后误认为代码已完整生效；
   build 路径有可执行的构建命令、产物落盘位置和镜像引用记录。
 
-验收：
+2026-08-03 落地记录（本条目已实现）：
 
-- 文档记录哪些产物必须走 build 路径（pb2、kv-connector wheel）及原因；
-- build 路径存在可执行脚本或明确命令，产物有固定落盘位置；
-- 快路径执行后能检测 pb2 / Rust 扩展缺失并提示走 build 路径（而非静默失败）；
-- 该条目不阻塞第一版真实部署验收，但须在发布级替换前完成。
+- 新增 `scaffold/.agents/lib/mws_build.py`：
+  - `detect_build_gaps`：扫描 `*.proto` 对应 `*_pb2.py` 与 `kv_conductor/bin`
+    二进制，缺任一即返回 `build_required`，供快路径执行后显式提示走 build 路径；
+  - `build_motor_wheel_in_docker`：在远端机器上 `docker run`（容器基础镜像 =
+    运行时 `base_image_ref`）挂载共享盘固定 motor 源码 + build 输出目录，容器内
+    执行上游 `bash build.sh`（含 `generate_proto.sh` 与 cargo build），产出
+    wheel 到 `<remote_workspace_root>/motor-wheel-builds/<source_sha>/dist/`，
+    以 `wheel.sha256` marker 幂等复用；
+  - `render_wheel_replace_manifest`：生成 namespaced Job（hostPath 挂载 wheel
+    目录 + `pip install --force-reinstall`），作为替换执行体；
+  - `build_wheel_run_envelope`：产出 `motor-wheel-build` run 证据。
+- 新增 skill `motor-build-wheel`（`SKILL.md` + `scripts/build_wheel.py`），入口
+  `build_wheel.py --machine <alias> --source-sha <sha> [--base-image-ref <img>]`。
+- 关键约束：wheel 构建**必须**在 Docker 内进行——本地 WSL 缺 CANN/grpcio-tools/
+  Rust 工具链，直接构建产物与 Pods ABI 不一致；容器镜像即运行时镜像保证一致。
+- 测试：`scaffold/tests/test_build_wheel.py`（8 passed）覆盖 gaps 检测、docker
+  命令构造、幂等复用、替换 manifest、run envelope。
+
+遗留（真实环境验收待办，不阻塞本地 fixture）：
+
+- 在真实 K8s Host 上完成一次 docker 内 wheel 构建 + 替换 Job 端到端验收；
+- kv-connector cargo 构建若需特定 Rust 版本，在 build 容器内固化 toolchain
+  版本并记录到产物元数据。
 
 ---
 
