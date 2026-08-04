@@ -486,41 +486,52 @@ R1 关闭记录（2026-08-03）：
 `deploy-20260804T065907Z-16a52dae`）。这不是 fixture 结论，是真实环境证据；
 每条均可落到代码与验收动作。本节编号接 P2 之后，优先级独立评估。
 
-### TD-A3-01（P0）：apply 编排与 upstream deployer 的 namespace 语义双轨，一次 apply 可落到两个 namespace
+### TD-A3-01（P0）：workspace 私加 `namespace` 字段，与 upstream `job_id` 即 namespace 的语义分叉
 
 现状：
 
-- workspace 侧 `load_motor_deploy_config`（`mws_deploy.py:392`）支持显式
-  `namespace`，缺省回退 `job_id`；configure 的 bundle 按显式 namespace 生成与
-  dry-run。
-- 但 apply 阶段 `_run_deploy_full_remote`（`mws_deploy.py:792`）把整个部署
-  委托给 upstream `deploy.py --nostep --auto_log_collect`，upstream 在
-  `controller.py`/`coordinator.py`/`engine.py`/`k8s_utils.py` 中直接使用
-  `motor_deploy_config.job_id` 作为 namespace，不消费显式 `namespace`。
+- Motor 原生 `user_config.json` 没有独立 `namespace` 字段；upstream deployer
+  恒以 `job_id` 作为 namespace（generator 中
+  `metadata.namespace = deploy_config.job_id`，`k8s_utils.py` 的
+  `kubectl apply -n job_id`）。配置参考仅有的 `configmap_namespace` 是
+  kube-system 下另一用途，与部署目标 namespace 无关。
+- workspace `load_motor_deploy_config`（`mws_deploy.py:392`）曾单方面支持
+  `deploy.get("namespace")`，缺省回退 `job_id`——这是 workspace 私加的第二套
+  字段，违反仓库约束"部署配置只来自 Motor 原生配置"。
 - 实际后果（已发生）：运行时配置 `namespace: mindie-motor-hxy` 时，workspace
-  bundle 正确 apply 到新 namespace，upstream 同时按 `job_id:
-  mindie-pd-precision-fi` 在旧 namespace 又创建一套同名 Controller/
-  Coordinator/P/D vLLM 资源。
-- 本轮绕过方式是人工把 `job_id` 与 `namespace` 改成同值；这不是修复，配置
-  层面两个字段语义仍然可以分叉。
+  bundle 按显式 namespace 处理并 dry-run 通过；apply 阶段
+  `_run_deploy_full_remote` 委托 upstream `deploy.py`，upstream 仍按
+  `job_id: mindie-pd-precision-fi` 在旧 namespace 又创建一套同名 Controller/
+  Coordinator/P/D vLLM 资源，一次 apply 落两个 namespace。
 
-目标（两条路线待讨论定夺，见本节末尾）：
+已定修复方向（2026-08-04 与用户确认）：
 
-- 路线 A：workspace 编排接管 apply——upstream 只负责生成 manifest，apply/
-  ConfigMap/log 采集由 workspace 按 bundle 执行，upstream full deploy 不再
-  进入默认链路；
-- 路线 B：继续委托 upstream，但强制 `job_id == namespace` 写入 bundle 契约，
-  configure 时校验一致否则 fail closed，并把 upstream 产生的全部资源登记进
-  run 证据。
+- 删除 workspace 对显式 `namespace` 字段的语义支持：`namespace = job_id` 恒等；
+- 配置中若残留显式 `namespace` 且与 `job_id` 不一致，fail closed 报错，不再
+  静默忽略；显式字段与 `job_id` 相同则兼容放行（旧运行时副本冗余字段）；
+- 不再考虑"workspace 编排接管 apply / 给 upstream 打 patch 消费 namespace"
+  两条路线，避免维护 Motor 分叉。
+
+已落地：
+
+- `mws_deploy.py` `load_motor_deploy_config`：namespace 恒等于 job_id，不一致
+  时抛 `WorkspaceStateError`；
+- 测试：`test_deploy_configure.py` 新增"显式 namespace 与 job_id 不一致
+  fail closed"与"相等时兼容放行"两条用例。
 
 验收：
 
-- 显式 namespace 与 job_id 不一致的配置在 configure 阶段即失败或被规范化，
-  不可能到达 apply；
-- 一次 apply 的资源只落在一个 namespace，run 证据包含目标 namespace 的
-  全量资源清单；
-- 真实环境复验：apply 后 `kubectl get deploy -A | grep <job_id>` 只出现在
-  目标 namespace。
+- 显式 namespace 与 job_id 不一致的配置在 configure 阶段即失败，不可能到达
+  apply；
+- 一次 apply 的资源只落在一个 namespace（job_id），run 证据包含目标 namespace
+  的全量资源清单（与 TD-A3-06 的 run-scoped 登记联动）；
+- 真实环境复验：apply 后 `kubectl get deploy -A | grep <job_id>` 只出现在目标
+  namespace。
+
+遗留（本轮不封闭，属 TD-A3-02/TD-A3-06 范围）：
+
+- bundle 自包含（ConfigMap 纳入 bundle）与 run-scoped 资源登记/清理，仍待
+  独立整改，见下两条。
 
 ### TD-A3-02（P0）：config bundle 不自包含，upstream 运行时生成的 ConfigMap 不在 bundle 内
 

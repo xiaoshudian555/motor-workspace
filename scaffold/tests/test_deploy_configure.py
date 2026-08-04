@@ -77,6 +77,52 @@ def test_namespace_missing_fails_closed(tmp_path) -> None:
     assert result["stopped_at"] == "namespace_exists"
 
 
+def test_explicit_namespace_differing_from_job_id_fails_closed(tmp_path) -> None:
+    """motor_deploy_config.namespace is not a Motor native field; a differing
+    value means the workspace and upstream namespace semantics would diverge, so
+    it must fail closed instead of being silently ignored."""
+    from mws_deploy import load_motor_deploy_config
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "user_config.json").write_text(
+        json.dumps(
+            {
+                "motor_deploy_config": {
+                    "job_id": "job-a",
+                    "namespace": "ns-b",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(WorkspaceStateError, match="namespace"):
+        load_motor_deploy_config(config_dir)
+
+
+def test_explicit_namespace_equal_to_job_id_is_accepted(tmp_path) -> None:
+    """An explicit namespace that equals job_id is tolerated for backward
+    compatibility with runtime copies that carry the redundant field."""
+    from mws_deploy import load_motor_deploy_config
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "user_config.json").write_text(
+        json.dumps(
+            {
+                "motor_deploy_config": {
+                    "job_id": "job-a",
+                    "namespace": "job-a",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = load_motor_deploy_config(config_dir)
+    assert result["job_id"] == "job-a"
+    assert result["namespace"] == "job-a"
+
+
 def test_deploy_plan_redirects_to_configure() -> None:
     script = SCAFFOLD / ".agents/skills/motor-k8s-deploy/scripts/deploy_plan.py"
     proc = subprocess.run(

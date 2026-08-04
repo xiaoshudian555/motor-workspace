@@ -400,7 +400,17 @@ def load_motor_deploy_config(config_dir: Path) -> dict[str, Any]:
     job_id = str(deploy.get("job_id", "")).strip()
     if not job_id:
         raise WorkspaceStateError("motor_deploy_config.job_id is required in user_config.json")
-    namespace = str(deploy.get("namespace") or job_id).strip()
+    # Motor 原生配置没有独立 namespace 字段，upstream deployer 恒以 job_id 作为
+    # namespace；workspace 不得发明第二套字段。显式给了不一致的 namespace 属于
+    # 旧运行时副本残留，必须 fail closed 而不是静默忽略。
+    explicit_namespace = str(deploy.get("namespace") or "").strip()
+    if explicit_namespace and explicit_namespace != job_id:
+        raise WorkspaceStateError(
+            "motor_deploy_config.namespace is not a Motor native field and must not "
+            f"differ from job_id ({explicit_namespace!r} != {job_id!r}); remove the "
+            "namespace field and set job_id to the target namespace"
+        )
+    namespace = job_id
     return {
         "job_id": job_id,
         "namespace": namespace,
