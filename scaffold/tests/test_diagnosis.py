@@ -16,6 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from machine_ready_fixtures import build_machine_ready_run_payload  # noqa: E402
 from mws_diagnosis import resolve_diagnosis_context  # noqa: E402
+from mws_motor_logs import (  # noqa: E402
+    collect_remote_log_sessions,
+    correlate_new_log_sessions,
+    recommend_pymotor_diagnosis_skills,
+)
 from mws_local_state import WorkspaceStateError  # noqa: E402
 from mws_run_state import create_config_bundle, digest_json, write_run  # noqa: E402
 from mws_state import atomic_write_json  # noqa: E402
@@ -64,7 +69,13 @@ def _write_bundle(local_root: Path) -> dict:
     return meta
 
 
-def _write_deploy_chain(local_root: Path, *, bundle_digest: str, bundle_dir: str) -> str:
+def _write_deploy_chain(
+    local_root: Path,
+    *,
+    bundle_digest: str,
+    bundle_dir: str,
+    log_collection: dict | None = None,
+) -> str:
     machine = _machine()
     atomic_write_json(
         local_root / "machine-inventory.json",
@@ -105,6 +116,7 @@ def _write_deploy_chain(local_root: Path, *, bundle_digest: str, bundle_dir: str
             "namespace": "ns1",
             "bundle_dir": bundle_dir,
             "bundle_digest": bundle_digest,
+            "log_collection": log_collection or {},
         },
     )
     return deploy_run_id
@@ -122,6 +134,58 @@ def test_diagnosis_resolves_deploy_config_bundle(local_state_root, tmp_path) -> 
     assert context["config_run_id"] == "cfg-1"
     assert context["kube_context"] == "ctx-a"
     assert "plan_dir" not in context
+
+
+def test_diagnosis_resolves_recorded_auto_log_collect_session(local_state_root) -> None:
+    bundle_meta = _write_bundle(local_state_root)
+    session = "/mnt/motor-workspace/motor/examples/deployer/log_collect/log/20260804_120000"
+    deploy_run_id = _write_deploy_chain(
+        local_state_root,
+        bundle_digest=bundle_meta["bundle_digest"],
+        bundle_dir=bundle_meta["bundle_dir"],
+        log_collection={"status": "recorded", "session_dirs": [session]},
+    )
+    context = resolve_diagnosis_context(machine_alias="dev1", deploy_run_id=deploy_run_id)
+    assert context["log_collection"]["session_dirs"] == [session]
+
+
+def test_correlate_new_auto_log_collect_session() -> None:
+    root = "/mnt/motor-workspace/motor/examples/deployer/log_collect/log"
+    before = {"status": "ok", "remote_log_root": root, "session_dirs": [f"{root}/old"]}
+    after = {
+        "status": "ok",
+        "remote_log_root": root,
+        "session_dirs": [f"{root}/old", f"{root}/20260804_120000"],
+    }
+    result = correlate_new_log_sessions(before, after)
+    assert result["status"] == "recorded"
+    assert result["session_dirs"] == [f"{root}/20260804_120000"]
+
+
+def test_collect_remote_logs_and_route_pymotor_skill(tmp_path) -> None:
+    session = "/mnt/motor-workspace/motor/examples/deployer/log_collect/log/20260804_120000"
+    content = b"PrecisionReporter: threshold reached\nprecision-auto-recover: failed for D\n"
+
+    class FakeAdapter:
+        def run(self, command):
+            assert session in command
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="controller_node_0.log\n", stderr=""
+            )
+
+        def read_bytes(self, remote_path):
+            assert remote_path == f"{session}/controller_node_0.log"
+            return content
+
+    collected = collect_remote_log_sessions(
+        _machine(),
+        [session],
+        tmp_path / "logs",
+        adapter=FakeAdapter(),
+    )
+    assert collected["status"] == "ok"
+    routes = recommend_pymotor_diagnosis_skills(collected["files"])
+    assert routes[0]["skill"] == "motor-diagnosis-controller-recovery-terminate"
 
 
 def test_diagnosis_rejects_missing_config_run(local_state_root) -> None:

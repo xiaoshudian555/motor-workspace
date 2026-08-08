@@ -7,7 +7,8 @@ description: Compile and run catalog-backed Motor functional validation from a u
 
 Turn the user's description into a resolved `mws.functional.spec.v1`; do not ask
 the user to write JSON/YAML. Read `references/case-catalog.json` when selecting
-features or cases.
+features or cases. Read `references/coordinator-endpoints.md` before manual curl,
+endpoint discovery changes, or infer/mgmt port troubleshooting.
 
 ## Workflow
 
@@ -57,6 +58,19 @@ to save an immutable resolved spec for a future functional run.
 6. Dispatch each case by its catalog `adapter`. Record outcomes using existing
    `mws.result.v1` check statuses only: `ok`, `warning`, `error`, or
    `unavailable`.
+
+## Coordinator access (standard)
+
+Functional **must not** hand-craft `ClusterIP:NodePort` URLs. The standard path is:
+
+1. `discover_coordinator_services(..., roles=("infer",))` — infer port **1025**
+2. `kubectl port-forward` to the infer Service (see `functional_run.py`)
+3. `resolve_model_name(user_config)` from the deploy config bundle — not top-level
+   `served_model_name`
+
+Inference cases POST **`/v1/completions`** with a `prompt` field. Do not use the
+mgmt Service (1026) or its ClusterIP for inference. Pitfalls and manual curl
+examples: `references/coordinator-endpoints.md`.
 
 ## Current boundary
 

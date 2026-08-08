@@ -50,6 +50,13 @@ def resolve_diagnosis_context(
         raise WorkspaceStateError(f"deploy run {deploy_run_id} missing namespace evidence")
 
     workload_names = list(bundle.get("workload_names") or config_run.get("workload_names") or [])
+    apply_result = run.get("apply") if isinstance(run.get("apply"), dict) else {}
+    upstream_deploy = (
+        apply_result.get("upstream_deploy")
+        if isinstance(apply_result.get("upstream_deploy"), dict)
+        else {}
+    )
+    log_collection = run.get("log_collection") or upstream_deploy.get("log_collection") or {}
     return {
         "machine_alias": machine_alias,
         "deploy_run_id": deploy_run_id,
@@ -60,4 +67,5 @@ def resolve_diagnosis_context(
         "namespace": namespace,
         "workload_names": workload_names,
         "deploy_status": str(run.get("status") or ""),
+        "log_collection": log_collection if isinstance(log_collection, dict) else {},
     }

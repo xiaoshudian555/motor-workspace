@@ -807,6 +807,9 @@ def _run_deploy_full_local(config_dir: Path) -> dict[str, Any]:
             "reason": f"deployer not found: {DEPLOY_PY}",
             "returncode": None,
         }
+    from mws_motor_logs import correlate_new_log_sessions, snapshot_local_log_sessions
+
+    log_sessions_before = snapshot_local_log_sessions(DEPLOYER_ROOT)
     cmd = [
         "python3",
         str(DEPLOY_PY),
@@ -823,17 +826,20 @@ def _run_deploy_full_local(config_dir: Path) -> dict[str, Any]:
         capture_output=True,
         env=os.environ.copy(),
     )
+    log_sessions_after = snapshot_local_log_sessions(DEPLOYER_ROOT)
     return {
         "status": "ok" if result.returncode == 0 else "error",
         "returncode": result.returncode,
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
+        "log_collection": correlate_new_log_sessions(log_sessions_before, log_sessions_after),
     }
 
 
 def _run_deploy_full_remote(config_dir: Path, machine: dict[str, Any]) -> dict[str, Any]:
     """Execute the full upstream deployment on the machine host."""
     from mws_execution import execution_adapter_for_machine
+    from mws_motor_logs import correlate_new_log_sessions, snapshot_remote_log_sessions
 
     paths = build_fixed_source_paths(machine)
     remote_motor = str(paths["motor_source"]).rstrip("/")
@@ -842,6 +848,7 @@ def _run_deploy_full_remote(config_dir: Path, machine: dict[str, Any]) -> dict[s
     remote_config = f"/tmp/mws-deploy-config-{os.getpid()}"
 
     adapter = execution_adapter_for_machine(machine)
+    log_sessions_before = snapshot_remote_log_sessions(machine, adapter=adapter)
 
     probe = adapter.run(f"test -f {shell_quote(remote_deploy_py)} && echo OK")
     if probe.returncode != 0 or "OK" not in probe.stdout:
@@ -872,11 +879,13 @@ def _run_deploy_full_remote(config_dir: Path, machine: dict[str, Any]) -> dict[s
         f"{shell_quote(remote_config)} --nostep --auto_log_collect"
     )
     result = adapter.run(command)
+    log_sessions_after = snapshot_remote_log_sessions(machine, adapter=adapter)
     return {
         "status": "ok" if result.returncode == 0 else "error",
         "returncode": result.returncode,
         "stdout_tail": result.stdout[-4000:],
         "stderr_tail": result.stderr[-4000:],
+        "log_collection": correlate_new_log_sessions(log_sessions_before, log_sessions_after),
     }
 
 

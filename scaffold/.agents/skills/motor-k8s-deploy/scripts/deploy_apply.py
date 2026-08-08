@@ -100,6 +100,11 @@ def main() -> int:
         }
     )
     if not runner.continue_ok:
+        log_collection = (
+            apply_result.get("upstream_deploy", {}).get("log_collection", {})
+            if isinstance(apply_result.get("upstream_deploy"), dict)
+            else {}
+        )
         envelope = build_result_envelope(
             kind="deploy-complete",
             run_id=deploy_run_id,
@@ -111,10 +116,24 @@ def main() -> int:
             extra={
                 "machine": alias,
                 "config_run_id": args.config_run_id,
+                "namespace": namespace,
+                "bundle_digest": config_run.get("bundle_digest"),
+                "bundle_dir": relative_repo(bundle_dir),
                 "apply": apply_result,
+                "log_collection": log_collection,
             },
             status="failed",
         )
+        write_deploy_run(
+            deploy_run_id,
+            {
+                **envelope,
+                "machine": alias,
+                "config_run_id": args.config_run_id,
+                "bundle_dir": relative_repo(bundle_dir),
+            },
+        )
+        atomic_write_json(deploy_run_dir(deploy_run_id) / "apply.json", envelope)
         return emit(envelope)
 
     workload_names = list(bundle.get("workload_names") or [])
@@ -170,6 +189,11 @@ def main() -> int:
             runner.append(code_path_check)
 
     status = "ready" if runner.continue_ok else "failed"
+    log_collection = (
+        apply_result.get("upstream_deploy", {}).get("log_collection", {})
+        if isinstance(apply_result.get("upstream_deploy"), dict)
+        else {}
+    )
     envelope = build_result_envelope(
         kind="deploy-complete",
         run_id=deploy_run_id,
@@ -187,6 +211,7 @@ def main() -> int:
             "bundle_digest": config_run.get("bundle_digest"),
             "bundle_dir": relative_repo(bundle_dir),
             "apply": apply_result,
+            "log_collection": log_collection,
             "rollout": rollout,
             "workload_names": workload_names,
             "runtime_paths": runtime_paths,

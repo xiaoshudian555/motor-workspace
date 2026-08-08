@@ -29,7 +29,8 @@
 | `motor-smoke` | 校验 Coordinator management readiness body | 第三部分 |
 | `motor-functional` | 执行真实 inference 请求并验证 metrics、tracing 等功能行为 | 第三部分 |
 | `motor-benchmark` | 对成功 deploy run 执行正式 benchmark | 第三部分 |
-| `motor-diagnosis` | 收集 run-scoped 失败证据；诊断目标见 [diagnosis/](diagnosis/) | 跨闭环失败处理，不属于 validation 场景 |
+| `motor-diagnosis` | 收集 run-scoped 失败证据并归档 deploy 对应的 upstream `auto_log_collect` session；诊断目标见 [diagnosis/](diagnosis/) | 跨闭环失败处理，不属于 validation 场景 |
+| `motor-diagnosis-controller-recovery-terminate` | 用 PyMotor Coordinator/Controller/Recovery/NodeManager 日志定位 precision terminate 失败 | `motor-diagnosis` 的 PyMotor 专项诊断 |
 
 `remote-toolbox` 不再扩张成全能远端工作流。通用
 read/edit/bash/search/job/artifact 能力属于 `.remote-dev/`；Motor 和

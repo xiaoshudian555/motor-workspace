@@ -333,7 +333,8 @@ Agent 工作流入口
 | `motor-smoke` | 第三部分 | 只校验 Coordinator management readiness 响应体为 `ready=true` |
 | `motor-functional` | 第三部分 | 执行真实 inference 请求并验证 metrics、tracing 等功能语义 |
 | `motor-benchmark` | 第三部分 | 对成功 deploy run 执行正式 benchmark |
-| `motor-diagnosis` | 跨闭环失败处理（见 [diagnosis/](diagnosis/)，不属于 validation 场景） | 收集 run-scoped 证据，可被 Deploy 或 Validation 调用；后续按失败面扩展为 skill 族 |
+| `motor-diagnosis` | 跨闭环失败处理（见 [diagnosis/](diagnosis/)，不属于 validation 场景） | 收集 run-scoped 证据和 deploy 对应的 upstream `auto_log_collect` session，可被 Deploy 或 Validation 调用 |
+| `motor-diagnosis-controller-recovery-terminate` | `motor-diagnosis` 的 PyMotor 专项诊断 | 按 Coordinator → Controller → Recovery → NodeManager 证据链定位 precision terminate 失败 |
 
 公共运行记录、结果契约和 consent/safety 属于 `.agents/lib/` 支撑能力，
 不单独成为业务 skill。

@@ -15,66 +15,74 @@ from mws_validate import require_safe_id  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Validate the upstream deploy for a future Motor benchmark."
+    )
     parser.add_argument("--machine", required=True)
     parser.add_argument("--deploy-run-id", required=True)
     parser.add_argument("--benchmark-run-id", default="")
     args = parser.parse_args()
     started_at = utc_now_iso()
     alias = require_safe_id(args.machine, label="machine")
-    run_id = args.benchmark_run_id.strip() or f"bench-{args.deploy_run_id}"
+    deploy_run_id = require_safe_id(args.deploy_run_id, label="deploy_run_id")
+    run_id = require_safe_id(
+        args.benchmark_run_id.strip() or f"bench-plan-{deploy_run_id}",
+        label="benchmark_run_id",
+    )
 
     try:
-        run_record = load_deploy_run(args.deploy_run_id, allow_failed=False)
+        run_record = load_deploy_run(deploy_run_id, allow_failed=False)
     except Exception as exc:  # noqa: BLE001
         envelope = build_result_envelope(
-            kind="benchmark-complete",
+            kind="benchmark-plan",
             run_id=run_id,
             workflow_run_id="workflow-unset",
             checks=[],
             started_at=started_at,
             errors=[str(exc)],
             status="failed",
-            extra={"machine": alias, "deploy_run_id": args.deploy_run_id},
+            extra={"machine": alias, "deploy_run_id": deploy_run_id},
         )
         return emit_result(envelope)
 
     if run_record.get("machine") != alias:
         envelope = build_result_envelope(
-            kind="benchmark-complete",
+            kind="benchmark-plan",
             run_id=run_id,
             workflow_run_id=str(run_record.get("workflow_run_id", "workflow-unset")),
             checks=[],
             started_at=started_at,
             errors=["deploy run machine mismatch"],
             status="failed",
-            extra={"machine": alias, "deploy_run_id": args.deploy_run_id},
+            extra={"machine": alias, "deploy_run_id": deploy_run_id},
         )
         return emit_result(envelope)
 
     envelope = build_result_envelope(
-        kind="benchmark-complete",
+        kind="benchmark-plan",
         run_id=run_id,
         workflow_run_id=str(run_record.get("workflow_run_id", "workflow-unset")),
         checks=[
             {
-                "name": "benchmark_execution",
-                "status": "warning",
+                "name": "deploy_context",
+                "status": "ok",
                 "message": (
-                    "motor-benchmark workload execution not implemented yet; "
-                    "deploy run validated as ready"
+                    "ready deploy run and machine binding validated; "
+                    "benchmark workload has not been executed"
                 ),
             }
         ],
         started_at=started_at,
-        upstream_refs=[{"kind": "deploy-complete", "run_id": args.deploy_run_id}],
+        upstream_refs=[{"kind": "deploy-complete", "run_id": deploy_run_id}],
         status="ready",
         extra={
             "machine": alias,
-            "deploy_run_id": args.deploy_run_id,
+            "deploy_run_id": deploy_run_id,
+            "config_run_id": run_record.get("config_run_id"),
+            "bundle_dir": run_record.get("bundle_dir"),
             "namespace": run_record.get("namespace"),
-            "phase": "P3",
-            "implementation_status": "scaffold_only",
+            "implementation_status": "upstream_validated_only",
+            "next": "follow motor-benchmark/references/aisbench.md",
         },
     )
     return emit_result(envelope)

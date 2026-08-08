@@ -276,6 +276,10 @@ render 后再 apply。
 - 拉取、调度、挂载或模型问题导致无法 Ready 时停止并保留现场，交给
   diagnosis；正常部署流程不额外创建诊断 workload。
 - 支持与本次 deploy run 关联的 status、restart、stop 和诊断入口。
+- 已运行部署中只更新并重启 Controller 或 Coordinator 时，使用
+  [`component-config-rollout.md`](../.agents/skills/motor-k8s-deploy/references/component-config-rollout.md)
+  的组件级维护流程；它与重启 deploy run 全部 workload 的 `deploy_restart.py`
+  明确分开。
 - 保存完整部署状态转换和运行证据。
 
 ### 明确不负责

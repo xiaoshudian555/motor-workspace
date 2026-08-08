@@ -28,6 +28,10 @@ do not replace the readiness-body check.
 Do not send inference requests in this skill. Non-stream/stream inference,
 metrics, tracing, and feature behavior belong to `motor-functional`.
 
+**Do not** reuse the mgmt Service ClusterIP or port 1026 for inference curl.
+Mgmt is readiness only (1026); infer is port 1025 on a separate Service. See
+`../motor-functional/references/coordinator-endpoints.md`.
+
 Write artifacts under `.motor-workspace-local/validation-runs/{smoke_run_id}/`.
 The remote machine runs `kubectl port-forward`; an SSH tunnel exposes its
 temporary loopback listener locally. Clean up the forward on exit.

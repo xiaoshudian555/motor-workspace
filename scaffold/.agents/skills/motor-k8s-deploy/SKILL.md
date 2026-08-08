@@ -27,6 +27,12 @@ python3 .agents/skills/motor-k8s-deploy/scripts/deploy_stop.py \
 
 Legacy `deploy_plan.py` redirects to `motor-deploy-configure`.
 
+For a user-approved live configuration change that must restart only Controller
+or only Coordinator, read
+[`references/component-config-rollout.md`](references/component-config-rollout.md).
+That maintenance path is intentionally separate from `deploy_restart.py`, which
+restarts the deploy run's full workload set.
+
 Apply, stop, and restart require `--approved-by-user`.
 
 All Kubernetes operations run `kubectl` on the selected remote machine over
@@ -47,6 +53,9 @@ the development host's kubectl and kubeconfig are never used.
 - Associate restart/stop/status with the deploy run via `bundle_dir`.
 - `deploy_restart` may run parity first for code-only updates, then restart
   workloads and re-collect Ready + runtime code path evidence.
+- Component-scoped live configuration maintenance preserves the existing
+  `motor-config` ConfigMap, changes only the requested JSON field, and rolls out
+  only the selected Controller or Coordinator Deployment.
 
 ## Does not
 

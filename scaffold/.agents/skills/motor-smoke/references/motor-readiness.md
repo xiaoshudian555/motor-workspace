@@ -13,3 +13,7 @@
 真实 non-stream/stream inference 已移到 `motor-functional` 的
 `inference-request` cases。Smoke 成功只表示 Coordinator 自己报告 ready，不表示
 任意业务接口、协议、metrics 或 tracing 已验证通过。
+
+手工 curl 或排查 infer/mgmt 端口混用时，读
+`motor-functional/references/coordinator-endpoints.md`（勿用 mgmt ClusterIP 打
+infer 端口）。

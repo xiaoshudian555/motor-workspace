@@ -7,8 +7,9 @@
 Diagnosis **不属于** [`../validation/`](../validation/)：验证场景回答
 “是否通过”；诊断回答“失败时证据是否够、应往哪一层查”。
 
-当前 `motor-diagnosis` 是已有的 deploy-oriented 采集入口；后续应按下表扩展为
-skill 族，而不是继续把所有排查逻辑堆进单一脚本。
+当前 `motor-diagnosis` 是 deploy-oriented 采集入口：除 Pod/Event 外，还消费
+deploy run 记录的 upstream `--auto_log_collect` session，将对应 Pod 日志归档到
+diagnosis run。专项诊断按下表扩展为 skill 族，而不是把排查逻辑堆进采集脚本。
 
 ## 统一边界
 
@@ -45,7 +46,8 @@ validation 失败 ─┘
 
 | 触发来源或失败面 | 目标诊断入口（规划） | 当前状态 |
 |---|---|---|
-| Deploy apply / Ready / runtime source proof 失败 | `motor-diagnosis`（deploy 采集） | 部分实现：Pod、Event、context、manifest |
+| Deploy apply / Ready / runtime source proof 失败 | `motor-diagnosis`（deploy 采集） | 已串联 Pod、Event、context、manifest 和 upstream `auto_log_collect` session |
+| PyMotor precision auto-recovery terminate 失败 | `motor-diagnosis-controller-recovery-terminate` | 已实现：Coordinator → Controller → Recovery → NodeManager 日志决策树 |
 | [`smoke`](../validation/smoke/) 失败 | Coordinator management Service + readiness 响应诊断 | 缺：readiness 响应与服务端日志时间范围联动 |
 | [`functional`](../validation/functional/) 失败 | inference 客户端响应 + 特性行为证据（日志 / metrics / tracing） | 未落地 |
 | [`routing-topology`](../validation/routing-topology/) 失败 | 实例选择 / 路由表 / 流量迁移时间线 | 未落地 |
@@ -73,6 +75,7 @@ run-scoped diagnosis artifacts、证据索引、跨层时间线、失败位置�
 
 | 能力 | motor-workspace 状态 | Active skill | 现有资产 | 主要缺口 |
 |---|---|---|---|---|
-| Deploy 失败采集 | 部分实现 | `motor-diagnosis` | [`diagnosis_collect.py`](../../.agents/skills/motor-diagnosis/scripts/diagnosis_collect.py) 校验 deploy/config/bundle，收集 Pod、Event、context 和 manifest；契约测试见 [`test_diagnosis.py`](../../tests/test_diagnosis.py) | 缺 Pod 日志、客户端响应、metrics、tracing、Host/NPU 证据、validation 时间范围和跨层时间线 |
+| Deploy 失败采集 | 部分实现 | `motor-diagnosis` | [`diagnosis_collect.py`](../../.agents/skills/motor-diagnosis/scripts/diagnosis_collect.py) 校验 deploy/config/bundle，收集 Pod、Event、context、manifest，并按 deploy run 记录归档 upstream `auto_log_collect` 日志；契约测试见 [`test_diagnosis.py`](../../tests/test_diagnosis.py) | 缺客户端响应、metrics、tracing、Host/NPU 证据、validation 时间范围和跨层时间线 |
+| PyMotor precision terminate | 已实现诊断流程 | `motor-diagnosis-controller-recovery-terminate` | diagnosis manifest 自动匹配 precision/Recovery 标志，Skill 按 U/C/R/X 四阶段输出证据链 | 当前只提供 Agent 诊断决策树，不自动修改配置或恢复实例 |
 | Validation 失败联动 | 未实现 | 无 | 各 validation 场景 README 仅要求引用 diagnosis | 缺场景→skill 调度与 validation-scoped 采集 |
 | 分层专项 skill 族 | 未实现 | 无 | 上表为规划骨架 | 按失败面拆分 skill，避免单脚本膨胀 |

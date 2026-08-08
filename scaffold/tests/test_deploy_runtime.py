@@ -20,6 +20,7 @@ from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
 
 from mws_deploy import (  # noqa: E402
     DEFAULT_ROLLOUT_TIMEOUT_S,
+    _run_deploy_full_remote,
     apply_config_bundle,
     collect_runtime_code_paths,
     stop_via_upstream_delete_sh,
@@ -165,6 +166,34 @@ def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
     configure.assert_not_called()
 
 
+def test_remote_full_deploy_records_new_auto_log_collect_session(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "user_config.json").write_text("{}\n", encoding="utf-8")
+    root = "/mnt/motor-workspace/motor/examples/deployer/log_collect/log"
+    snapshot_count = 0
+
+    class FakeAdapter:
+        def run(self, command):
+            nonlocal snapshot_count
+            if 'find "$root"' in command:
+                snapshot_count += 1
+                stdout = "old\n" if snapshot_count == 1 else "20260804_120000\nold\n"
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+            if "test -f" in command:
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="OK\n", stderr="")
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="deployed\n", stderr="")
+
+        def upload_file(self, local_path, remote_path):
+            return None
+
+    with patch("mws_execution.execution_adapter_for_machine", return_value=FakeAdapter()):
+        result = _run_deploy_full_remote(config_dir, _machine())
+    assert result["status"] == "ok"
+    assert result["log_collection"]["status"] == "recorded"
+    assert result["log_collection"]["session_dirs"] == [f"{root}/20260804_120000"]
+
+
 MACHINE_RUN_ID = "machine-1"
 
 
@@ -288,6 +317,31 @@ def test_rollout_failure_blocks_deploy_complete(local_state_root, tmp_path, monk
     )
     assert payload["status"] == "failed"
     assert any(item["name"] == "workload_rollout" for item in payload["checks"])
+
+
+def test_apply_failure_persists_log_session_for_diagnosis(local_state_root, monkeypatch) -> None:
+    bundle_meta = _write_bundle(local_state_root)
+    config_run_id = _write_config_run(local_state_root, bundle_meta)
+    session = "/mnt/motor-workspace/motor/examples/deployer/log_collect/log/20260804_120000"
+    payload = _run_apply_main(
+        local_state_root,
+        monkeypatch,
+        config_run_id,
+        **{
+            "mws_deploy.apply_config_bundle": lambda **kwargs: {
+                "status": "error",
+                "upstream_deploy": {
+                    "status": "error",
+                    "log_collection": {"status": "recorded", "session_dirs": [session]},
+                },
+                "errors": ["overlay failed"],
+            },
+        },
+    )
+    assert payload["status"] == "failed"
+    run_path = local_state_root / "deploy-runs" / payload["run_id"] / "run.json"
+    stored = json.loads(run_path.read_text(encoding="utf-8"))
+    assert stored["log_collection"]["session_dirs"] == [session]
 
 
 def test_min_access_failure_blocks_deploy_complete(local_state_root, tmp_path, monkeypatch) -> None:

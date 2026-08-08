@@ -13,6 +13,7 @@ sys.path.insert(0, str(LIB))
 from repo_paths import REPO_ROOT  # noqa: E402
 
 from mws_diagnosis import resolve_diagnosis_context  # noqa: E402
+from mws_motor_logs import collect_remote_log_sessions, recommend_pymotor_diagnosis_skills  # noqa: E402
 from mws_kubectl import build_kubectl_runner  # noqa: E402
 from mws_local_state import WorkspaceStateError, get_machine, utc_now_iso  # noqa: E402
 from mws_result import build_result_envelope, emit_result, progress, utc_now_iso as result_now  # noqa: E402
@@ -69,6 +70,24 @@ def main() -> int:
     atomic_write_json(context_path, context)
     artifacts.append(str(context_path.relative_to(REPO_ROOT)))
 
+    remote_log_sessions = list(context.get("log_collection", {}).get("session_dirs") or [])
+    log_collection = {
+        "status": "unavailable",
+        "session_dirs": remote_log_sessions,
+        "files": [],
+        "errors": ["deploy run has no recorded auto_log_collect session"],
+    }
+    if remote_log_sessions:
+        progress("collecting recorded auto_log_collect sessions")
+        log_collection = collect_remote_log_sessions(machine, remote_log_sessions, out_dir / "logs")
+        diagnosis_routes = recommend_pymotor_diagnosis_skills(log_collection["files"])
+        for item in log_collection["files"]:
+            local_path = Path(item["local_path"])
+            item["local_path"] = str(local_path.relative_to(REPO_ROOT))
+            artifacts.append(item["local_path"])
+    else:
+        diagnosis_routes = []
+
     manifest = {
         "schema_version": 1,
         "machine": alias,
@@ -79,6 +98,9 @@ def main() -> int:
         "namespace": namespace,
         "kube_context": context["kube_context"],
         "workload_names": context["workload_names"],
+        "remote_log_sessions": remote_log_sessions,
+        "log_collection": log_collection,
+        "diagnosis_routes": diagnosis_routes,
         "validation_run_id": diagnosis_run_id,
         "artifacts": artifacts,
         "collected_at": utc_now_iso(),
@@ -96,7 +118,16 @@ def main() -> int:
                 "name": "diagnosis_context",
                 "status": "ok",
                 "message": "deploy/config/bundle context resolved",
-            }
+            },
+            {
+                "name": "auto_log_collect_artifacts",
+                "status": "ok" if log_collection["status"] == "ok" else "warning",
+                "message": (
+                    f"collected {len(log_collection['files'])} log artifact(s)"
+                    if log_collection["files"]
+                    else "; ".join(log_collection["errors"]) or "no log artifacts"
+                ),
+            },
         ],
         started_at=started_at,
         upstream_refs=[{"kind": "deploy-complete", "run_id": args.deploy_run_id}],
@@ -108,6 +139,8 @@ def main() -> int:
             "bundle_dir": context["bundle_dir"],
             "namespace": namespace,
             "validation_run_dir": str(out_dir.relative_to(REPO_ROOT)),
+            "remote_log_sessions": remote_log_sessions,
+            "diagnosis_routes": diagnosis_routes,
         },
     )
     return emit_result(envelope)

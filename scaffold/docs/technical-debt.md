@@ -403,7 +403,9 @@ R1 关闭记录（2026-08-03）：
 现状：
 
 - `bench_plan.py` 已迁 envelope，校验 ready deploy run + machine 匹配；
-- 无真实 benchmark 请求、指标采集或 benchmark run 落盘。
+- `motor-benchmark/references/aisbench.md` 已提供人工可执行的 workload、Gate、
+  证据和停止条件；
+- 尚未自动执行真实 benchmark 请求、采集指标或落盘 benchmark run。
 
 目标：
 
