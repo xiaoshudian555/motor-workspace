@@ -20,8 +20,10 @@ description: Validate K8s API and MindCluster base environment before deploy con
   `motor_deploy_config` 的三个字段，用它做配置校验：
   - `deploy_mode`：选择 workload 专用检查集（`infer_service_set` 要求 Motor
     workload API 与 operator；其余模式只查基础组件）
-  - `image_name`：镜像引用合法性 + 每个可调度节点该镜像的覆盖度探测
-    （缺失节点记 warning + 证据；逐节点可拉取性验证仍属 configure/deploy）
+  - `image_name`：镜像引用合法性 + 每个可调度节点该镜像的覆盖度探测（**回退
+    探测**：从当前已有 Pod 反推节点是否跑过该镜像，可能漏报；准确覆盖请手动
+    跑 `motor-image-distribution-check` skill）。缺失节点记 warning + 证据；逐
+    节点可拉取性验证仍属 configure/deploy
   - `node_port_overrides`：目标 NodePort 的范围校验（默认 30000-32767）、本批
     唯一性、`kubectl get services -A` 集群级占用探测。冲突时**自动避让**：分配
     空闲端口并把更新后的映射写回 `user_config.json`（configure 直接消费新端

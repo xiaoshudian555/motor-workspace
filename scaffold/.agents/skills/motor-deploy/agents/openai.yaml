@@ -1,0 +1,6 @@
+interface:
+  display_name: "Motor Workspace Deploy"
+  short_description: "Route Motor deploy, feasibility, and reliability requests"
+  default_prompt: "Use $motor-deploy to route this Motor workspace deployment or feasibility request and enforce unsupported reliability boundaries."
+policy:
+  allow_implicit_invocation: true

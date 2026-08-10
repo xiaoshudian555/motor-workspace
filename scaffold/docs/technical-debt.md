@@ -979,6 +979,53 @@ namespace `mindie-motor-hxy`）。这不是 fixture 结论，是真实环境证�
 
 ---
 
+### TD-P2-07：跨节点镜像分发缺少「补 load / 自动分发」能力
+
+现状：
+
+- `motor-image-distribution-check` skill（2026-08-10 新增）只做**只读检查**：
+  agent 按 skill 命令清单跑临时 DaemonSet（跑完即删），扫出每个可调度节点本地
+  runtime 是否已有指定镜像，缺失记 warning。
+- 发现缺失后**没有自动补救路径**：当前镜像上节点靠的是人工
+  `docker save` → 逐台 `docker load`（见
+  `sources/motor/docs/zh/user_guide/maintenance/build_motor_image_from_vllm_ascend.md`），
+  集群扩节点时极易漏（2026-08-10 实测：`mindie-motor-vllm:...20260709` 老镜像
+  在 worker-203/224/admin 三台缺失）。
+- `motor-deploy-preflight` 的 `image_node_coverage` 仍用「从当前已有 Pod 反推
+  节点镜像」的回退探测（自动跑 preflight 时无法调 agent skill）；准确覆盖需
+  手动跑 `motor-image-distribution-check` skill。两者都只报不补。
+
+根因：
+
+- 集群 Pod 模板用 `imagePullPolicy: IfNotPresent` + 无 registry 前缀的本地镜像
+  名，K8s 不会主动拉取，节点本地必须先有镜像；而「镜像如何到达每个节点」从来
+  没有自动化保证。
+
+目标（治本方向，按优先级）：
+
+1. **首选**：镜像推送到内部 registry，Pod 模板改用带 registry 前缀的镜像引用
+   + 合理的 `imagePullPolicy`，让 K8s 自行按节点拉取，从根上消除「节点本地
+   必须预先有镜像」的前置条件。
+2. **过渡**：给 skill 增加 `--repair` / `--distribute` 能力——在一个已有镜像的
+   节点 `docker save`，经共享 hostPath `/mnt` 或直接 scp 到缺失节点
+   `docker load`。需明确授权（写操作 + 大文件传输）。
+3. 扩节点流程（`machine-management` add/repair）后自动挂一次分发检查 + 补
+   load，保证新节点镜像基线一致。
+
+验收：
+
+- 任一节点缺失指定镜像时，存在一条非人工逐台 ssh 的自动路径把镜像补齐；
+- 补齐后 `motor-image-distribution-check` 复扫结果为全节点覆盖（`ok`）；
+- 补 load 过程有 run 级证据（源节点、目标节点、镜像、耗时、结果）；
+- 全程不依赖节点间 SSH 互信。
+
+> 注：本条目只覆盖「补 load / 自动分发」。「临时 DaemonSet 方案本身的更稳替代」
+> （如节点镜像列表上报 apiserver、常驻 node agent）作为该 skill 的长期改进，在
+> `scaffold/.agents/skills/motor-image-distribution-check/references/approach.md`
+> 中跟踪。
+
+---
+
 ## 完成定义
 
 单项技术债只有同时满足以下条件才可关闭：

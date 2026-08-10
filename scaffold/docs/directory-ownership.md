@@ -18,6 +18,7 @@
 
 | Skill | 定位 | 所在闭环或层次 |
 |---|---|---|
+| `motor-deploy` | 将自然语言部署、read-only feasibility 与 Reliability 边界路由到 repo-local 原子 Skill | 第二部分主入口；自身不执行部署 |
 | `repo-init` | 首次初始化本地三仓工作区 | 第一部分的前置支撑 |
 | `machine-management` | 登记并验证远程 Motor 目标 | 第一部分 |
 | `remote-code-parity` | 同步本地 dirty workspace 并证明远端目录内容 | 第一部分 |

@@ -535,8 +535,11 @@ def _run_image_checks(
     """Validate the configured image reference and per-node coverage.
 
     kubectl-only preflight cannot prove pullability; it records the reference
-    validity (error) and which schedulable nodes already run the image
-    (warning + evidence when coverage is incomplete). Fail-closed pull
+    validity (error) and which schedulable nodes already run the image (warning
+    + evidence when coverage is incomplete). This is the FALLBACK probe: it
+    infers node coverage from pods currently running, which under-reports nodes
+    that have the image but no pod using it. For accurate per-node coverage run
+    the motor-image-distribution-check skill manually. Fail-closed pull
     verification stays with configure/deploy (TD-A3-04).
     """
     if not image_name:
@@ -606,12 +609,19 @@ def _run_image_checks(
         for node in schedulable
         if not any(_image_short_key(img) == wanted for img in node_images.get(node, set()))
     ]
+    fallback_note = (
+        "fallback probe (infers coverage from running pods; may under-report). "
+        "For accurate per-node coverage run the motor-image-distribution-check skill"
+    )
     if not missing:
         runner.append(
             {
                 "name": "image_node_coverage",
                 "status": "ok",
-                "message": f"image present on all {len(schedulable)} schedulable nodes",
+                "message": (
+                    f"image present on all {len(schedulable)} schedulable nodes; "
+                    + fallback_note
+                ),
                 "evidence": ",".join(schedulable),
             }
         )
@@ -624,7 +634,7 @@ def _run_image_checks(
                 "message": (
                     f"image {image_name!r} not observed on {len(missing)} of "
                     f"{len(schedulable)} schedulable nodes; verify pullability before apply "
-                    "(ErrImagePull risk)"
+                    "(ErrImagePull risk). " + fallback_note
                 ),
                 "evidence": (
                     f"missing={','.join(sorted(missing))}"

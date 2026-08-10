@@ -54,11 +54,13 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 
 | Skill | Purpose |
 |-------|---------|
+| `motor-deploy` | Natural-language deployment dispatcher: route launch/lifecycle, read-only feasibility, and unsupported Reliability fault-injection requests to the correct boundary |
 | `repo-init` | Initialize workspace: gh, GitHub auth, submodules, fork topology, lock; produces `workspace-ready` (audit only, not a downstream gate) |
 | `machine-management` | Add / verify / repair / remove remote NPU machine + kube context + mount root |
 | `remote-toolbox` | Remote target/probe/exec/job/sync/artifact/cleanup backend |
 | `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
 | `motor-deploy-preflight` | K8s/MindCluster environment preflight (read-only); produces `deploy-environment-ready` |
+| `motor-image-distribution-check` | Verify per-node local container image coverage via temporary DaemonSet probe (agent-run commands, no script); use before apply when ErrImagePull risk matters |
 | `motor-deploy-configure` | Motor native config → immutable bundle + dry-run; produces `deploy-config-ready` |
 | `motor-k8s-deploy` | Apply immutable config bundle, Ready/runtime source proof; produces `deploy-complete` |
 | `motor-smoke` | Prove the deployed Coordinator management Service reports `/readiness ready=true` |
@@ -67,6 +69,12 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts, including the recorded upstream `auto_log_collect` session |
 | `motor-diagnosis-controller-recovery-terminate` | Diagnose PyMotor precision auto-recovery terminate failures from collected logs |
 | `motor-build-wheel` | Build a release-grade Motor wheel (protobuf + Rust kv-conductor) inside Docker; produces `motor-wheel-build` |
+
+Deployment routing is mandatory: when the user says `拉起一个服务`, `拉起服务`,
+`启动服务`, `部署服务`, `能不能起服务`, `是否具备部署条件`, `部署前检查`,
+`检查部署环境`, `构造故障`, `故障注入`, `验证故障恢复`, or equivalent Motor
+deployment wording, read `scaffold/.agents/skills/motor-deploy/SKILL.md` first.
+Do not bypass the dispatcher by selecting an atomic deploy/validation skill directly.
 
 None of these are gates for normal local coding or unrelated Git tasks.
 For remote endpoint work, prefer `scaffold/.remote-dev` tools first and use
@@ -100,5 +108,10 @@ skills for domain workflows.
 When changing a skill, update the whole package together: `SKILL.md`, `scripts/`,
 `references/`, and supporting files. When the change affects shared state, also
 update `scaffold/.agents/lib/mws_*.py` and `scaffold/.agents/scripts/` as applicable.
+
+The live authoring source for `motor-deploy` is
+`~/.hermes/skills/local/motor-deploy/`; keep the tracked mirror under
+`scaffold/.agents/skills/motor-deploy/` and both Claude shims synchronized with
+that source.
 
 `scaffold/bin/motorws` is an internal skill backend only — not the product entry point.
