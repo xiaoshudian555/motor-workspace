@@ -275,18 +275,6 @@ def build_fixed_source_paths(machine: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def pythonpath_for_machine(machine: dict[str, Any]) -> str:
-    paths = build_fixed_source_paths(machine)
-    return ":".join(
-        [
-            paths["motor_source"],
-            paths["vllm_source"],
-            paths["vllm_ascend_source"],
-            paths["python_overlay"],
-        ]
-    )
-
-
 def machine_ref(machine: dict[str, Any]) -> dict[str, Any]:
     alias = machine.get("alias") or machine.get("host")
     paths = build_fixed_source_paths(machine)
@@ -303,7 +291,6 @@ def machine_ref(machine: dict[str, Any]) -> dict[str, Any]:
             "vllm_ascend": paths["vllm_ascend_source"],
             "python_overlay": paths["python_overlay"],
         },
-        "pythonpath": pythonpath_for_machine(machine),
     }
 
 

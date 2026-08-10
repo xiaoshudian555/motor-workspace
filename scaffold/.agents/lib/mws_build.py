@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Release-grade Motor wheel build helpers (TD-P2-07).
 
-The daily Python loop uses fixed shared hostPath + PYTHONPATH; that fast path
-cannot provide protobuf-generated code (``*_pb2.py``) or the Rust kv-conductor
-binary. This module implements the **build path**: build a ``motor`` wheel from
-the motor source tree, always inside a Docker container based on the runtime
-image so the produced wheel is ABI-compatible with the deployed environment.
+Motor runtime replacement requires protobuf-generated code (``*_pb2.py``) and
+the Rust kv-conductor binary. This module builds a complete ``motor`` wheel from
+the motor source tree inside a Docker container based on the runtime image, then
+writes that wheel directory into the fixed remote ``boot.sh`` used by deploy.
 
 Rules (hard):
 - Wheel builds MUST run inside Docker; the local WSL host lacks the CANN,
@@ -19,7 +18,6 @@ Rules (hard):
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -73,11 +71,11 @@ def motor_wheel_dir_from_build_run(run: dict[str, Any]) -> str:
 
 
 def detect_build_gaps(source_root: str) -> dict[str, Any]:
-    """Detect artifacts the fast path (hostPath/PYTHONPATH) cannot provide.
+    """Detect artifacts the parity source tree cannot provide at runtime.
 
     Returns a list of gap records. A non-empty ``missing`` list means the source
-    tree is NOT self-sufficient via the daily Python loop and the build path must
-    be used.
+    tree is not directly importable at runtime (source-tree PYTHONPATH is
+    forbidden), so the artifacts must come from the built wheel.
     """
     root = Path(source_root)
     missing: list[dict[str, str]] = []
@@ -131,14 +129,172 @@ def detect_build_gaps(source_root: str) -> dict[str, Any]:
 def _remote_wheel_exists(adapter: ExecutionAdapter, build_dir: str) -> bool:
     """True when a completed wheel build already exists remotely.
 
-    The build is keyed by source sha, so a marker file plus a wheel file on the
-    shared dir is sufficient to declare the artifact reusable.
+    The build is keyed by source sha. Reuse only a marker plus exactly one wheel
+    so boot.sh cannot receive an ambiguous wheel directory.
     """
     probe = adapter.run(
         f"test -f {shell_quote(build_dir)}/wheel.sha256 && "
-        f"ls {shell_quote(build_dir)}/dist/motor-*.whl >/dev/null 2>&1 && echo WHEEL_OK"
+        f"set -- {shell_quote(build_dir)}/dist/motor-*.whl && "
+        "test \"$#\" -eq 1 && test -f \"$1\" && echo WHEEL_OK"
     )
     return probe.returncode == 0 and "WHEEL_OK" in probe.stdout
+
+
+_BOOT_SH_REL = "examples/deployer/startup/boot.sh"
+_BOOT_WHEEL_BEGIN = "# >>> MWS_MOTOR_WHEEL_DIR_BEGIN"
+_BOOT_WHEEL_END = "# <<< MWS_MOTOR_WHEEL_DIR_END"
+
+
+def hardcode_motor_wheel_dir_in_boot_sh(
+    adapter: Any,
+    *,
+    source_root: str,
+    wheel_dir: str,
+) -> str:
+    """Write the just-built wheel dist path into remote Motor ``boot.sh``.
+
+    Primary replace path: after each successful wheel build, patch the fixed
+    remote motor tree's ``boot.sh`` so Pods that source it (via ConfigMap /
+    hostPath) install that exact dist without needing K8s env injection.
+    Re-running a build overwrites the hardcoded path (per-sha / per-user root).
+    """
+    boot_path = f"{source_root.rstrip('/')}/{_BOOT_SH_REL}"
+    wheel_dir = str(wheel_dir).rstrip("/")
+    # Remote Python patch keeps markers idempotent across rebuilds.
+    script = (
+        "python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        f"boot = Path({boot_path!r})\n"
+        f"wheel_dir = {wheel_dir!r}\n"
+        f"begin = {_BOOT_WHEEL_BEGIN!r}\n"
+        f"end = {_BOOT_WHEEL_END!r}\n"
+        "block = (\n"
+        "    begin + '\\n'\n"
+        "    + f'MOTOR_WHEEL_DIR=\"{wheel_dir}\"\\n'\n"
+        "    + end + '\\n'\n"
+        ")\n"
+        "if not boot.is_file():\n"
+        "    raise SystemExit(f'missing boot.sh: {boot}')\n"
+        "text = boot.read_text(encoding='utf-8')\n"
+        "if begin in text and end in text:\n"
+        "    pre, rest = text.split(begin, 1)\n"
+        "    _, post = rest.split(end, 1)\n"
+        "    if post.startswith('\\n'):\n"
+        "        post = post[1:]\n"
+        "    text = pre + block + post\n"
+        "else:\n"
+        "    needle = 'if [ -n \"${MOTOR_WHEEL_DIR:-}\" ]; then'\n"
+        "    idx = text.find(needle)\n"
+        "    if idx < 0:\n"
+        "        raise SystemExit('boot.sh missing MOTOR_WHEEL_DIR install block')\n"
+        "    text = text[:idx] + block + text[idx:]\n"
+        "boot.write_text(text, encoding='utf-8')\n"
+        "print('BOOT_WHEEL_DIR_HARDCODED=' + wheel_dir)\n"
+        "PY"
+    )
+    result = adapter.run(script)
+    if result.returncode != 0 or "BOOT_WHEEL_DIR_HARDCODED=" not in (result.stdout or ""):
+        raise WorkspaceStateError(
+            "failed to hardcode MOTOR_WHEEL_DIR into remote boot.sh: "
+            + ((result.stderr or result.stdout or "")[-2000:])
+        )
+    return boot_path
+
+
+def _remove_motor_wheel_dir_block_in_boot_sh(
+    adapter: Any,
+    *,
+    source_root: str,
+) -> str:
+    """Remove the MWS_MOTOR_WHEEL_DIR marker block from remote ``boot.sh``.
+
+    The block is a pure insert around the upstream install ``if`` line, so
+    deleting the BEGIN..END segment restores boot.sh byte-for-byte. Idempotent:
+    a boot.sh without the block is left untouched.
+    """
+    boot_path = f"{source_root.rstrip('/')}/{_BOOT_SH_REL}"
+    script = (
+        "python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        f"boot = Path({boot_path!r})\n"
+        f"begin = {_BOOT_WHEEL_BEGIN!r}\n"
+        f"end = {_BOOT_WHEEL_END!r}\n"
+        "if not boot.is_file():\n"
+        "    raise SystemExit(f'missing boot.sh: {boot}')\n"
+        "text = boot.read_text(encoding='utf-8')\n"
+        "if begin in text and end in text:\n"
+        "    pre, rest = text.split(begin, 1)\n"
+        "    _, post = rest.split(end, 1)\n"
+        "    if post.startswith('\\n'):\n"
+        "        post = post[1:]\n"
+        "    boot.write_text(pre + post, encoding='utf-8')\n"
+        "    print('BOOT_WHEEL_DIR_REMOVED')\n"
+        "else:\n"
+        "    print('BOOT_WHEEL_DIR_ABSENT')\n"
+        "PY"
+    )
+    result = adapter.run(script)
+    if result.returncode != 0 or (
+        "BOOT_WHEEL_DIR_REMOVED" not in (result.stdout or "")
+        and "BOOT_WHEEL_DIR_ABSENT" not in (result.stdout or "")
+    ):
+        raise WorkspaceStateError(
+            "failed to remove MOTOR_WHEEL_DIR block from remote boot.sh: "
+            + ((result.stderr or result.stdout or "")[-2000:])
+        )
+    return boot_path
+
+
+def _read_remote_boot_sh(adapter: Any, *, source_root: str) -> str:
+    boot_path = f"{source_root.rstrip('/')}/{_BOOT_SH_REL}"
+    result = adapter.run(f"cat {shell_quote(boot_path)}")
+    if result.returncode != 0:
+        raise WorkspaceStateError(
+            "cannot read remote boot.sh for verification: "
+            + ((result.stderr or result.stdout or "")[-2000:])
+        )
+    return result.stdout or ""
+
+
+def _verify_boot_sh_wheel_override(content: str, *, wheel_dir: str | None) -> None:
+    has_block = _BOOT_WHEEL_BEGIN in content and _BOOT_WHEEL_END in content
+    if wheel_dir is None:
+        if has_block:
+            raise WorkspaceStateError(
+                "boot.sh still carries a MWS_MOTOR_WHEEL_DIR block after image-mode reconcile"
+            )
+        return
+    expected = f'{_BOOT_WHEEL_BEGIN}\nMOTOR_WHEEL_DIR="{wheel_dir}"\n{_BOOT_WHEEL_END}'
+    if expected not in content:
+        raise WorkspaceStateError(
+            "boot.sh MOTOR_WHEEL_DIR block does not match bundle wheel_dir "
+            f"{wheel_dir!r} after motor-wheel reconcile"
+        )
+
+
+def reconcile_motor_wheel_override(
+    adapter: Any,
+    *,
+    source_root: str,
+    wheel_dir: str | None,
+) -> str:
+    """Converge remote ``boot.sh`` to the desired wheel override state.
+
+    ``wheel_dir`` set writes/refreshes the MWS_MOTOR_WHEEL_DIR block (delegates
+    to the build-path hardcode helper); ``None`` removes the block. The remote
+    content is verified against the desired state afterwards. Returns boot.sh
+    path. Apply-time callers treat the bundle as the source of truth and pass
+    its wheel_dir (or None for image mode) here unconditionally.
+    """
+    if wheel_dir is None:
+        boot_path = _remove_motor_wheel_dir_block_in_boot_sh(adapter, source_root=source_root)
+    else:
+        boot_path = hardcode_motor_wheel_dir_in_boot_sh(
+            adapter, source_root=source_root, wheel_dir=wheel_dir
+        )
+    content = _read_remote_boot_sh(adapter, source_root=source_root)
+    _verify_boot_sh_wheel_override(content, wheel_dir=wheel_dir)
+    return boot_path
 
 
 def build_motor_wheel_in_docker(
@@ -146,19 +302,22 @@ def build_motor_wheel_in_docker(
     machine: dict[str, Any],
     base_image_ref: str,
     source_sha: str,
-    reuse: bool = True,
+    reuse: bool = False,
 ) -> dict[str, Any]:
     """Build a ``motor`` wheel inside a Docker container on the machine host.
 
     The container is based on the runtime image and mounts the already-synced
-    fixed motor source tree (read-only) plus a fixed shared build output
-    directory. Inside the container it runs the upstream ``build.sh`` (which
-    generates protobuf files and builds the Rust kv-conductor binary) and copies
-    the resulting ``motor-*.whl`` into the shared output dir.
+    fixed motor source tree (read-only during docker build) plus a fixed shared
+    build output directory. Inside the container it runs the upstream
+    ``build.sh`` (which generates protobuf files and builds the Rust
+    kv-conductor binary) and copies the resulting ``motor-*.whl`` into the
+    shared output dir. After a successful build (or reuse), the fixed remote
+    motor ``boot.sh`` is updated to hardcode ``MOTOR_WHEEL_DIR`` to that dist.
 
     Returns a build record with the remote wheel path, sha256, container image
-    and source sha. When ``reuse`` is true and a wheel with the same source sha
-    already exists, the build is skipped (idempotent).
+    and source sha. Builds run by default so dirty source changes sharing the
+    same Git sha cannot accidentally reuse an older wheel. Set ``reuse`` only
+    when the caller explicitly accepts sha-keyed reuse.
     """
     if not base_image_ref or base_image_ref == "UNRESOLVED":
         raise WorkspaceStateError(
@@ -172,7 +331,6 @@ def build_motor_wheel_in_docker(
     if len(source_sha) < 8:
         raise WorkspaceStateError("source_sha must be a git commit sha (>=8 hex chars)")
 
-    gaps = detect_build_gaps(source_root)
     build_dir = f"{output_root}/{source_sha}"
     remote_wheel_dir = f"{build_dir}/dist"
     wheel_digest = f"mws-motor-wheel-{source_sha[:12]}"
@@ -180,7 +338,10 @@ def build_motor_wheel_in_docker(
     adapter = execution_adapter_for_machine(machine)
 
     if reuse and _remote_wheel_exists(adapter, build_dir):
-        return _build_record(
+        boot_path = hardcode_motor_wheel_dir_in_boot_sh(
+            adapter, source_root=source_root, wheel_dir=remote_wheel_dir
+        )
+        record = _build_record(
             machine=machine,
             source_root=source_root,
             base_image_ref=base_image_ref,
@@ -190,20 +351,8 @@ def build_motor_wheel_in_docker(
             reused=True,
             status="ok",
         )
-
-    if not gaps.get("build_required"):
-        # Nothing to build: the fast path is sufficient.
-        return _build_record(
-            machine=machine,
-            source_root=source_root,
-            base_image_ref=base_image_ref,
-            source_sha=source_sha,
-            build_dir=build_dir,
-            wheel_digest=wheel_digest,
-            reused=False,
-            status="ok",
-            message="source tree has no pb2/Rust gaps; fast path sufficient",
-        )
+        record["boot_sh_path"] = boot_path
+        return record
 
     probe = adapter.run(
         f"test -f {shell_quote(source_root + '/build.sh')} && echo OK && "
@@ -217,6 +366,12 @@ def build_motor_wheel_in_docker(
         raise WorkspaceStateError("docker CLI is not available on the machine host")
 
     adapter.mkdir(remote_wheel_dir)
+    cleanup = adapter.run(
+        f"rm -f {shell_quote(remote_wheel_dir)}/motor-*.whl "
+        f"{shell_quote(build_dir)}/wheel.sha256"
+    )
+    if cleanup.returncode != 0:
+        raise WorkspaceStateError("failed to clean previous motor wheel build outputs")
 
     # Run build.sh inside a runtime-based container. The motor source is mounted
     # read-only; build.sh writes generated pb2 / kv-conductor binary into its own
@@ -248,14 +403,21 @@ def build_motor_wheel_in_docker(
     # Compute sha256 of the produced wheel on the remote and persist a marker.
     marker_script = (
         f"cd {shell_quote(remote_wheel_dir)} && "
-        "for f in motor-*.whl; do "
-        "sha256sum \"$f\" | awk -v n=\"$f\" '{print $1 \"  \" n}' "
-        "> {shell_quote(build_dir)}/wheel.sha256; "
-        "done"
+        "set -- motor-*.whl; "
+        "[ \"$#\" -eq 1 ] && [ -f \"$1\" ] || { "
+        "echo 'expected exactly one motor wheel' >&2; exit 1; }; "
+        f"sha256sum \"$1\" > {shell_quote(build_dir)}/wheel.sha256"
     )
-    adapter.run(marker_script)
+    marker = adapter.run(marker_script)
+    if marker.returncode != 0:
+        raise WorkspaceStateError(
+            "motor wheel build must produce exactly one motor-*.whl artifact"
+        )
 
-    return _build_record(
+    boot_path = hardcode_motor_wheel_dir_in_boot_sh(
+        adapter, source_root=source_root, wheel_dir=remote_wheel_dir
+    )
+    record = _build_record(
         machine=machine,
         source_root=source_root,
         base_image_ref=base_image_ref,
@@ -265,6 +427,8 @@ def build_motor_wheel_in_docker(
         reused=False,
         status="ok",
     )
+    record["boot_sh_path"] = boot_path
+    return record
 
 
 def _build_record(
@@ -291,76 +455,6 @@ def _build_record(
         "wheel_dir": f"{build_dir}/dist",
         "built_at": utc_now_iso(),
         "machine": machine.get("alias") or machine.get("host"),
-    }
-
-
-def _inject_wheel_pythonpath(pythonpath: str, wheel_dir: str) -> str:
-    """Prepend an extracted-wheel site dir to PYTHONPATH.
-
-    When a wheel is available we prefer the installed package; the caller is
-    responsible for actually installing/extracting it. This is a helper for the
-    replace step (used by the skill).
-    """
-    if not wheel_dir:
-        return pythonpath
-    return f"{wheel_dir}:{pythonpath}" if pythonpath else wheel_dir
-
-
-def render_wheel_replace_manifest(
-    *,
-    wheel_dir: str,
-    namespace: str,
-    container: str,
-    image: str,
-    replace_path: str,
-) -> dict[str, Any]:
-    """Render an ephemeral Job that pip-installs the built wheel.
-
-    This is the ``replace`` half of the build path: the wheel built in Docker is
-    installed into a fresh runtime container so the Pods' runtime code is the
-    wheel build (protobuf + Rust included), not the raw source tree.
-
-    Returns a single-document manifest dict for a namespaced Job. The wheel dir
-    is expected to live on the shared mount root so the Job can mount it as a
-    hostPath volume.
-    """
-    return {
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": {"name": "mws-wheel-replace", "namespace": namespace},
-        "spec": {
-            "backoffLimit": 2,
-            "template": {
-                "spec": {
-                    "restartPolicy": "Never",
-                    "containers": [
-                        {
-                            "name": "wheel-replace",
-                            "image": image,
-                            "command": [
-                                "bash",
-                                "-c",
-                                f"pip install --no-cache-dir --force-reinstall "
-                                f"{replace_path}/motor-*.whl",
-                            ],
-                            "volumeMounts": [
-                                {
-                                    "name": "wheel-store",
-                                    "mountPath": replace_path,
-                                    "readOnly": True,
-                                }
-                            ],
-                        }
-                    ],
-                    "volumes": [
-                        {
-                            "name": "wheel-store",
-                            "hostPath": {"path": wheel_dir, "type": "Directory"},
-                        }
-                    ],
-                }
-            },
-        },
     }
 
 
@@ -398,6 +492,7 @@ def build_wheel_run_envelope(
         "wheel_dir": build_result.get("wheel_dir"),
         "build_dir": build_result.get("build_dir"),
         "reused": build_result.get("reused", False),
+        "boot_sh_path": build_result.get("boot_sh_path"),
     }
     if build_result.get("machine"):
         extra["machine"] = build_result["machine"]

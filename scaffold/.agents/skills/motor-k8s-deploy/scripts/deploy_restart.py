@@ -25,7 +25,7 @@ from mws_deploy import (  # noqa: E402
     wait_workload_rollouts_from_context,
 )
 from mws_local_state import get_machine  # noqa: E402
-from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine, resolve_machine  # noqa: E402
+from mws_machine_target import build_fixed_source_paths, resolve_machine  # noqa: E402
 from mws_result import (  # noqa: E402
     CheckRunner,
     build_result_envelope,
@@ -209,7 +209,11 @@ def main() -> int:
         kube_context=kube_context,
         namespace=namespace,
     )
-    code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
+    code_paths = verify_runtime_code_paths(
+        runtime_paths,
+        machine_paths,
+        motor_wheel_dir=str(bundle.get("motor_wheel_dir") or ""),
+    )
     ready = rollout.get("ready") is True and code_paths.get("status") == "ok"
     runner.append(
         {
@@ -233,7 +237,6 @@ def main() -> int:
             "machine": alias,
             "deploy_run_id": args.deploy_run_id,
             "workflow": "deploy_restart",
-            "pythonpath": pythonpath_for_machine(machine),
             "parity": parity,
             "restart": restart,
             "rollout": rollout,

@@ -126,13 +126,17 @@ def test_apply_bytes_match_bundle(local_state_root) -> None:
 
     with patch("mws_deploy.run_deploy_full", return_value={"status": "ok", "returncode": 0}):
         with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
-            result = apply_config_bundle(
-                bundle_dir=bundle_dir,
-                machine=_machine(),
-                kube_context="ctx-a",
-                namespace="ns1",
-                kubectl=fake_kubectl,
-            )
+            with patch(
+                "mws_deploy.reconcile_boot_package_policy",
+                return_value={"status": "ok", "policy": "image", "wheel_dir": "", "boot_sh_path": ""},
+            ):
+                result = apply_config_bundle(
+                    bundle_dir=bundle_dir,
+                    machine=_machine(),
+                    kube_context="ctx-a",
+                    namespace="ns1",
+                    kubectl=fake_kubectl,
+                )
     assert result["status"] == "ok"
     assert result["apply_results"][0]["bytes_sha256"] == expected_hash
     assert result["fallback"] is False
@@ -153,15 +157,19 @@ def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
     fake_kubectl = lambda *args: subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
     with patch("mws_deploy.run_deploy_full", return_value={"status": "ok", "returncode": 0}):
         with patch("mws_deploy.stage_remote_files", side_effect=fake_stage):
-            with patch("mws_deploy.run_deploy_dry_run") as dry_run:
-                with patch("mws_deploy.configure_deploy_bundle") as configure:
-                    apply_config_bundle(
-                        bundle_dir=bundle_dir,
-                        machine=_machine(),
-                        kube_context="ctx-a",
-                        namespace="ns1",
-                        kubectl=fake_kubectl,
-                    )
+            with patch(
+                "mws_deploy.reconcile_boot_package_policy",
+                return_value={"status": "ok", "policy": "image", "wheel_dir": "", "boot_sh_path": ""},
+            ):
+                with patch("mws_deploy.run_deploy_dry_run") as dry_run:
+                    with patch("mws_deploy.configure_deploy_bundle") as configure:
+                        apply_config_bundle(
+                            bundle_dir=bundle_dir,
+                            machine=_machine(),
+                            kube_context="ctx-a",
+                            namespace="ns1",
+                            kubectl=fake_kubectl,
+                        )
     dry_run.assert_not_called()
     configure.assert_not_called()
 
@@ -384,9 +392,9 @@ def test_rollout_ok_produces_ready_deploy_complete(local_state_root, monkeypatch
             "mws_deploy.collect_runtime_code_paths": lambda **kwargs: {
                 "status": "ok",
                 "paths": {
-                    "motor": f"{paths['motor_source']}/motor/__init__.py",
-                    "vllm": f"{paths['vllm_source']}/vllm/__init__.py",
-                    "vllm_ascend": f"{paths['vllm_ascend_source']}/vllm_ascend/__init__.py",
+                    "motor": "/usr/local/lib/python3.11/site-packages/motor/__init__.py",
+                    "vllm": "/usr/local/lib/python3.11/site-packages/vllm/__init__.py",
+                    "vllm_ascend": "/usr/local/lib/python3.11/site-packages/vllm_ascend/__init__.py",
                 },
             },
         },
@@ -410,18 +418,74 @@ def test_runtime_code_path_mismatch_fails() -> None:
     assert "motor" in result["message"]
 
 
-def test_runtime_code_path_match_ok() -> None:
+def test_runtime_code_path_image_mode_accepts_image_packages() -> None:
+    paths = _machine_paths()
+    collected = {
+        "status": "ok",
+        "paths": {
+            "motor": "/usr/local/lib/python3.11/site-packages/motor/__init__.py",
+            "vllm": "/usr/local/lib/python3.11/site-packages/vllm/__init__.py",
+            "vllm_ascend": "/usr/local/lib/python3.11/site-packages/vllm_ascend/__init__.py",
+        },
+    }
+    result = verify_runtime_code_paths(collected, paths)
+    assert result["status"] == "ok"
+
+
+def test_runtime_code_path_wheel_mode_accepts_installed_motor() -> None:
+    paths = _machine_paths()
+    collected = {
+        "status": "ok",
+        "paths": {
+            "motor": "/usr/local/lib/python3.11/site-packages/motor/__init__.py",
+            "vllm": "/usr/local/lib/python3.11/site-packages/vllm/__init__.py",
+            "vllm_ascend": "/usr/local/lib/python3.11/site-packages/vllm_ascend/__init__.py",
+        },
+    }
+    result = verify_runtime_code_paths(
+        collected,
+        paths,
+        motor_wheel_dir="/mnt/motor-wheel-builds/abcdef/dist",
+    )
+    assert result["status"] == "ok"
+
+
+def test_runtime_code_path_wheel_mode_rejects_motor_source_tree() -> None:
     paths = _machine_paths()
     collected = {
         "status": "ok",
         "paths": {
             "motor": f"{paths['motor_source']}/motor/__init__.py",
-            "vllm": f"{paths['vllm_source']}/vllm/__init__.py",
-            "vllm_ascend": f"{paths['vllm_ascend_source']}/vllm_ascend/__init__.py",
+            "vllm": "/usr/local/lib/python3.11/site-packages/vllm/__init__.py",
+            "vllm_ascend": "/usr/local/lib/python3.11/site-packages/vllm_ascend/__init__.py",
         },
     }
-    result = verify_runtime_code_paths(collected, paths)
-    assert result["status"] == "ok"
+    result = verify_runtime_code_paths(
+        collected,
+        paths,
+        motor_wheel_dir="/mnt/motor-wheel-builds/abcdef/dist",
+    )
+    assert result["status"] == "error"
+    assert "still loads from source path" in result["message"]
+
+
+def test_runtime_code_path_wheel_mode_rejects_vllm_source_tree() -> None:
+    paths = _machine_paths()
+    collected = {
+        "status": "ok",
+        "paths": {
+            "motor": "/usr/local/lib/python3.11/site-packages/motor/__init__.py",
+            "vllm": f"{paths['vllm_source']}/vllm/__init__.py",
+            "vllm_ascend": "/usr/local/lib/python3.11/site-packages/vllm_ascend/__init__.py",
+        },
+    }
+    result = verify_runtime_code_paths(
+        collected,
+        paths,
+        motor_wheel_dir="/mnt/motor-wheel-builds/abcdef/dist",
+    )
+    assert result["status"] == "error"
+    assert "vllm" in result["message"]
 
 
 def test_wait_workload_rollouts_waits_deploy_scoped_resources() -> None:
@@ -491,12 +555,12 @@ def test_restart_recollects_code_paths(local_state_root, monkeypatch) -> None:
     def fake_collect(**kwargs):
         code_calls.append(kwargs["namespace"])
         return {
-            "status": "ok",
-            "paths": {
-                "motor": "/mnt/motor-workspace/motor/motor/__init__.py",
-                "vllm": "/mnt/motor-workspace/vllm/vllm/__init__.py",
-                "vllm_ascend": "/mnt/motor-workspace/vllm-ascend/vllm_ascend/__init__.py",
-            },
+                "status": "ok",
+                "paths": {
+                    "motor": "/usr/local/lib/python3.11/site-packages/motor/__init__.py",
+                    "vllm": "/usr/local/lib/python3.11/site-packages/vllm/__init__.py",
+                    "vllm_ascend": "/usr/local/lib/python3.11/site-packages/vllm_ascend/__init__.py",
+                },
         }
 
     import importlib.util

@@ -16,9 +16,6 @@ from repo_paths import MOTOR_ROOT, REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
 from mws_build import (  # noqa: E402
     build_motor_wheel_in_docker,
     build_wheel_run_envelope,
-    detect_build_gaps,
-    motor_source_root,
-    render_wheel_replace_manifest,
 )
 from mws_lock import load_lock, resolve_base_image_ref, verify_lock  # noqa: E402
 from mws_local_state import WorkspaceStateError, get_machine  # noqa: E402
@@ -33,7 +30,19 @@ def main() -> int:
     parser.add_argument("--machine", required=True)
     parser.add_argument("--source-sha", default="")
     parser.add_argument("--base-image-ref", default="")
-    parser.add_argument("--no-reuse", action="store_true", help="Force rebuild even when a wheel exists")
+    reuse_group = parser.add_mutually_exclusive_group()
+    reuse_group.add_argument(
+        "--reuse",
+        action="store_true",
+        help="Reuse an existing wheel keyed by source sha",
+    )
+    reuse_group.add_argument(
+        "--no-reuse",
+        dest="reuse",
+        action="store_false",
+        help=argparse.SUPPRESS,
+    )
+    parser.set_defaults(reuse=False)
     parser.add_argument("--workflow-run-id", default="")
     parser.add_argument("--machine-run-id", default="")
     parser.add_argument("--config-run-id", default="")
@@ -52,15 +61,12 @@ def main() -> int:
             config_dir=MOTOR_ROOT / "examples" / "infer_engines" / "vllm",
             explicit=args.base_image_ref.strip() or None,
         )
-        source_root = motor_source_root(machine)
-        gaps = detect_build_gaps(source_root)
-
         progress(f"building motor wheel in docker for source_sha={args.source_sha}")
         build_result = build_motor_wheel_in_docker(
             machine=machine,
             base_image_ref=base_image_ref,
             source_sha=args.source_sha or _fallback_source_sha(machine),
-            reuse=not args.no_reuse,
+            reuse=args.reuse,
         )
     except WorkspaceStateError as exc:
         return emit(

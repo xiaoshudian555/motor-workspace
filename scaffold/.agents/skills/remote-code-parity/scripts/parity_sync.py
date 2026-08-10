@@ -100,7 +100,6 @@ def main() -> int:
             "machine_run_id": machine_ready.get("machine_run_id"),
             "remote_workspace_root": manifest.get("remote_workspace_root"),
             "source_dirs": paths,
-            "pythonpath": manifest.get("pythonpath"),
             "local_content_digest": manifest.get("local_content_digest"),
             "remote_content_digest": manifest.get("remote_content_digest"),
             "sync_mode": manifest.get("sync_mode"),

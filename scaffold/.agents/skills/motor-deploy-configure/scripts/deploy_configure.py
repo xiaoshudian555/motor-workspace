@@ -50,12 +50,7 @@ def main() -> int:
     parser.add_argument(
         "--motor-wheel-build-run-id",
         default="",
-        help="motor-wheel-build run id; inject MOTOR_WHEEL_DIR for boot.sh wheel override",
-    )
-    parser.add_argument(
-        "--motor-wheel-dir",
-        default="",
-        help="Explicit MOTOR_WHEEL_DIR (dist/ containing motor-*.whl); overrides --motor-wheel-build-run-id",
+        help="motor-wheel-build run id proving the remote boot.sh wheel override",
     )
     args = parser.parse_args()
 
@@ -94,8 +89,8 @@ def main() -> int:
 
     run_dir = run_dir_for_kind("deploy-config-ready", config_run_id)
     parity_paths = build_fixed_source_paths(machine)
-    motor_wheel_dir = args.motor_wheel_dir.strip()
-    if not motor_wheel_dir and args.motor_wheel_build_run_id.strip():
+    motor_wheel_dir = ""
+    if args.motor_wheel_build_run_id.strip():
         wheel_run = load_run("motor-wheel-build", args.motor_wheel_build_run_id.strip())
         motor_wheel_dir = motor_wheel_dir_from_build_run(wheel_run)
     reuse_bundle_dir = None

@@ -185,7 +185,11 @@ def main() -> int:
                 }
             )
         else:
-            code_path_check = verify_runtime_code_paths(runtime_paths, machine_paths)
+            code_path_check = verify_runtime_code_paths(
+                runtime_paths,
+                machine_paths,
+                motor_wheel_dir=str(bundle.get("motor_wheel_dir") or ""),
+            )
             runner.append(code_path_check)
 
     status = "ready" if runner.continue_ok else "failed"

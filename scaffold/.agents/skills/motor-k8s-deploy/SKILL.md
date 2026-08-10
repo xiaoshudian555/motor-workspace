@@ -47,6 +47,11 @@ the development host's kubectl and kubeconfig are never used.
 - Wait for deploy-scoped Deployment/StatefulSet rollouts
   (`kubectl rollout status` per bundle `workload_names`) and collect runtime
   `__file__` paths for `motor`, `vllm`, and `vllm_ascend`.
+- Runtime package policy has exactly two modes. Image mode requires Motor,
+  vLLM, and vllm-ascend to load from image-installed site/dist-packages. Motor
+  wheel mode requires Motor to load from the wheel installation and vLLM plus
+  vllm-ascend to remain image-installed. Any fixed source-tree import path is
+  rejected in both modes.
 - `deploy-complete status=ready` means apply + rollout + runtime code paths;
   Coordinator service readiness (`GET /readiness` body `ready=true`) is validated
   by `motor-smoke`, not this skill.

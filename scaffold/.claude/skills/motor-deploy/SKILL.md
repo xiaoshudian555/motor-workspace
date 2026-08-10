@@ -1,6 +1,6 @@
 ---
 name: motor-deploy
-description: "Thin dispatcher for Motor deployment work in the motor-workspace repository. Use for service launch and lifecycle requests such as 拉起一个服务, 拉起/启动/部署 Motor, apply 部署, 重启/停止/查看 Motor 服务; read-only feasibility requests such as 能不能起服务, 是否具备部署条件, 部署前检查, 检查部署环境; config preparation and post-deploy readiness; and reliability wording such as 构造故障, 故障注入, 验证故障恢复, which must stop as unsupported instead of routing to adjacent validators."
+description: "Thin dispatcher for Motor deployment work in the motor-workspace repository. Use for service launch and lifecycle requests, Motor wheel/whl replacement, read-only feasibility, config preparation, post-deploy readiness, and unsupported reliability boundaries."
 ---
 
 <!-- Generated Claude Code shim from .agents/skills/motor-deploy/SKILL.md. Do not edit. -->

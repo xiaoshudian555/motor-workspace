@@ -453,7 +453,7 @@ R1 关闭记录（2026-08-03）：
 - 快路径对"覆盖不到什么"有显式声明，避免同步成功后误认为代码已完整生效；
   build 路径有可执行的构建命令、产物落盘位置和镜像引用记录。
 
-2026-08-03 落地记录（**build 路径已实现；replace/deploy 集成未落地**）：
+2026-08-03 历史落地记录（当时 **build 路径已实现；replace/deploy 集成未落地**）：
 
 - 新增 `scaffold/.agents/lib/mws_build.py`：
   - `detect_build_gaps`：扫描 `*.proto` 对应 `*_pb2.py` 与 `kv_conductor/bin`
@@ -463,16 +463,15 @@ R1 关闭记录（2026-08-03）：
     执行上游 `bash build.sh`（含 `generate_proto.sh` 与 cargo build），产出
     wheel 到 `<remote_workspace_root>/motor-wheel-builds/<source_sha>/dist/`，
     以 `wheel.sha256` marker 幂等复用；
-  - `render_wheel_replace_manifest`：生成 namespaced Job（hostPath 挂载 wheel
-    目录 + `pip install --force-reinstall`），**仅为临时 manifest 生成器，未被
-    `deploy_apply` 自动 apply，也不修改 workload 文件系统**；
+  - 当时曾提供 `render_wheel_replace_manifest` 生成 namespaced Job；该 Job 不能
+    修改 workload 文件系统，已在 2026-08-10 收敛方案中删除；
   - `build_wheel_run_envelope`：产出 `motor-wheel-build` run 证据。
 - 新增 skill `motor-build-wheel`（`SKILL.md` + `scripts/build_wheel.py`），入口
   `build_wheel.py --machine <alias> --source-sha <sha> [--base-image-ref <img>]`。
 - 关键约束：wheel 构建**必须**在 Docker 内进行——本地 WSL 缺 CANN/grpcio-tools/
   Rust 工具链，直接构建产物与 Pods ABI 不一致；容器镜像即运行时镜像保证一致。
-- 测试：`scaffold/tests/test_build_wheel.py`（8 passed）覆盖 gaps 检测、docker
-  命令构造、幂等复用、替换 manifest、run envelope。
+- 测试：`scaffold/tests/test_build_wheel.py` 覆盖 gaps 检测、docker 命令构造、
+  幂等复用和 run envelope。
 
 2026-08-04 B132 复验（build ✅，标准 deploy 替换 ❌）：
 
@@ -489,12 +488,20 @@ R1 关闭记录（2026-08-03）：
   `PYTHONPATH`；`render_wheel_replace_manifest` 生成的 Job 在独立容器内
   `pip install`，不挂载 workload 文件系统，也不会替换 Controller/Coordinator/
   vLLM Pod 中的 Motor 包。
-- **本条目不能关闭**；wheel → deploy evidence chain 集成见 **TD-A3-09**。
+- wheel → deploy evidence chain 后续集成记录见 **TD-A3-09**。
+
+2026-08-10 收敛结果：
+
+- wheel 替换已接入 `deploy_configure` / `deploy_apply` 标准 run/bundle 链路：
+  build 成功后把 wheel dist 写入远端固定 Motor 树的 `boot.sh`，运行 Pod 在角色
+  启动前强制执行 `python3 -m pip install --no-deps --force-reinstall`；configure
+  只记录 build run 和 package policy，不注入 wheel env；
+- 独立 Kubernetes Job 替换方案已删除；
+- 两种模式的 runtime proof 都要求 Motor、vLLM、vllm-ascend 从
+  `site-packages` / `dist-packages` 加载，不接受固定源码目录。
 
 遗留：
 
-- wheel 替换接入 `deploy_configure` / `deploy_apply` 标准 run/bundle 证据链
-  （TD-A3-09）；
 - kv-connector cargo 构建若需特定 Rust 版本，在 build 容器内固化 toolchain
   版本并记录到产物元数据。
 
@@ -817,9 +824,9 @@ namespace `mindie-motor-hxy`）。这不是 fixture 结论，是真实环境证�
 - 关键链路（preflight/configure/apply/stop/parity/smoke/functional）的
   producer+consumer 契约测试零缺失。
 
-### TD-A3-09（P0）：wheel 替换未接入 deploy evidence chain
+### TD-A3-09（已完成）：wheel 通过 boot.sh 接入 deploy evidence chain
 
-现状（2026-08-04 B132 复验）：
+历史现状（2026-08-04 B132 复验）：
 
 - `motor-build-wheel` + `mws_build.py` 能检测 gaps、在 Docker 内构建 wheel 并
   产出 `motor-wheel-build` run 证据；B132 上手动 wheel 替换已证明
@@ -852,6 +859,12 @@ namespace `mindie-motor-hxy`）。这不是 fixture 结论，是真实环境证�
 - fixture：configure 产出 bundle 含 wheel 引用；apply 后 mock/runtime proof
   校验 import 路径。
 
+2026-08-10 完成：`motor-wheel-build` 产出共享 wheel，并把 dist 路径写入远端
+固定 Motor 树的 `boot.sh`；configure 只记录 build run 和 package policy，不再
+注入 `MOTOR_WHEEL_DIR`。workload 启动时强制安装且失败即停止；
+apply/status/restart 按 bundle 中的 wheel 模式执行 runtime path proof。原独立
+Job 方案已删除。
+
 ### TD-A3-10（P0）：vllm/vllm-ascend 源码 PYTHONPATH 破坏 EngineServer
 
 现状（2026-08-04 B132 复验）：
@@ -873,16 +886,14 @@ namespace `mindie-motor-hxy`）。这不是 fixture 结论，是真实环境证�
 - Motor wheel 替换与 vLLM/vllm-ascend 加载策略必须分离：Motor 可走已构建
   wheel；vllm/vllm-ascend 不能裸挂未构建源码到 `PYTHONPATH` 最前。
 
-目标：
+收口方案（2026-08-10）：
 
-- 引入 **code override mode**（至少三档，名称可调整）：
-  - `image`（默认/基线）：不注入 vllm/vllm-ascend（及可选 motor）源码
-    `PYTHONPATH`，使用镜像内置包；
-  - `motor-wheel`：仅 Motor 走 wheel site；vllm/vllm-ascend 仍用镜像内置；
-  - `full-source`：vllm/vllm-ascend 也必须完成 build/install 路径，不能裸挂
-    源码目录。
-- configure 按 mode 决定是否注入 hostPath/`PYTHONPATH`；bundle 证据显式记录
-  mode 与各组件实际加载来源。
+- runtime package policy 只有两档：
+  - `image`（默认/基线）：Motor、vLLM、vllm-ascend 全部使用镜像内置包；
+  - `motor-wheel`：仅 Motor 由远端 `boot.sh` 安装已构建 wheel，vLLM、
+    vllm-ascend 仍使用镜像内置包。
+- configure 不注入 `PYTHONPATH` 或 `MOTOR_WHEEL_DIR`；bundle 显式记录 policy，
+  apply/status/restart 校验三者均来自 site/dist-packages。
 - 文档：`remote-code-parity` 和 `motor-deploy-configure` 明确「parity 同步源码
   ≠ 运行时可直接 import vllm_ascend 插件」。
 
@@ -891,8 +902,7 @@ namespace `mindie-motor-hxy`）。这不是 fixture 结论，是真实环境证�
 - `image` mode 下标准 deploy 不破坏 B132 基线：EngineServer health OK +
   Coordinator `ready=true`；
 - 仅改 Motor 并走 wheel 时不破坏 vLLM 插件加载；
-- `full-source` mode 缺 `_build_info` 等生成物时在 configure 或 pre-apply
-  阶段 fail closed，不在 Pod 启动后才暴露。
+- 不支持 full-source runtime；任何固定源码树 import 都由 runtime proof 拒绝。
 
 ### TD-A3-11（P0）：`deploy_apply` readiness gate 语义错误
 

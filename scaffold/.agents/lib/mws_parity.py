@@ -789,14 +789,6 @@ def _try_no_change_fast_path(
     manifest["remote_proof"] = proof
     manifest["machine_ready"] = prior.get("machine_ready")
     manifest["parity_state_ref"] = str(parity_state_path(machine_alias))
-    manifest["pythonpath"] = ":".join(
-        [
-            paths["motor_source"],
-            paths["vllm_source"],
-            paths["vllm_ascend_source"],
-            paths["python_overlay"],
-        ]
-    )
     manifest["target"] = machine.get("host")
     manifest["status"] = "ok"
     manifest["completed_at"] = utc_now_iso()
@@ -946,14 +938,6 @@ def sync_workspace_to_remote(
             manifest["sync_mode"] = (
                 "git-incremental" if used_incremental else "git-initial"
             )
-            manifest["pythonpath"] = ":".join(
-                [
-                    paths["motor_source"],
-                    paths["vllm_source"],
-                    paths["vllm_ascend_source"],
-                    paths["python_overlay"],
-                ]
-            )
             manifest["target"] = machine.get("host")
             manifest["status"] = "ok"
             manifest["completed_at"] = utc_now_iso()
@@ -1020,10 +1004,12 @@ def prove_identity_parity(
     """Prove source readiness for the remote-native topology via identity.
 
     In remote-native the Agent runs on the target host and its working tree
-    *is* the machine's fixed source paths that Pods load via hostPath +
-    PYTHONPATH. This proves identity: each local source repo resolves to the
-    machine's fixed source dir, the fixed dirs exist, and content digests are
-    captured as evidence. Nothing is copied or overwritten.
+    *is* the machine's fixed source paths. Those fixed source dirs only serve
+    wheel building and content-consistency proof; they are not a runtime import
+    path (runtime uses image packages, plus a boot.sh-installed Motor wheel in
+    motor-wheel mode). This proves identity: each local source repo resolves to
+    the machine's fixed source dir, the fixed dirs exist, and content digests
+    are captured as evidence. Nothing is copied or overwritten.
 
     Fails closed: local repo not at the fixed path, fixed dir missing, or
     machine mismatch never publishes a ready proof.
@@ -1093,14 +1079,6 @@ def prove_identity_parity(
                 "remote_content_digests": local_bundle,
                 "content_digests": local_bundle,
                 "machine_ready": machine_ready,
-                "pythonpath": ":".join(
-                    [
-                        paths["motor_source"],
-                        paths["vllm_source"],
-                        paths["vllm_ascend_source"],
-                        paths["python_overlay"],
-                    ]
-                ),
                 "target": machine.get("host"),
                 "sync_mode": "identity",
             }

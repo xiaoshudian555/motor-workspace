@@ -6,8 +6,9 @@ description: Generate or reuse immutable Motor deploy config bundles with upstre
 # motor-deploy-configure
 
 3+3 **第二部分第三步**：复制 Motor 原生配置、upstream dry-run、注入固定
-hostPath / `PYTHONPATH`、校验 namespace 与 RBAC、server-side dry-run，产出
-不可变 bundle 和 `deploy-config-ready`。
+hostPath、校验 namespace 与 RBAC、server-side dry-run，产出不可变 bundle 和
+`deploy-config-ready`。不向 workload 注入源码 `PYTHONPATH` 或
+`MOTOR_WHEEL_DIR`。
 
 ## 边界
 
@@ -31,10 +32,18 @@ python3 scaffold/.agents/skills/motor-deploy-configure/scripts/deploy_configure.
   --config-dir sources/motor/examples/infer_engines/vllm
 ```
 
-Motor-only wheel override（ModelArts 风格，`boot.sh` 在 Pod 启动时
-`pip install`）：在 parity + `motor-build-wheel` 之后追加
-`--motor-wheel-build-run-id <motor-wheel-build-run-id>`（或
-`--motor-wheel-dir /mnt/.../motor-wheel-builds/<sha>/dist`）。此时 manifest
-注入 `MOTOR_WHEEL_DIR`，**不**注入 vLLM/vllm-ascend 源码 `PYTHONPATH`。
+Motor-only wheel override：在 parity + `motor-build-wheel` 之后追加
+`--motor-wheel-build-run-id <motor-wheel-build-run-id>`。该 run 证明 wheel 已构建，
+且远端固定 Motor 树的 `boot.sh` 已写入对应 dist 路径；configure 只记录该证据和
+`motor-wheel` package policy，不再向 manifest 注入同名 env。
+
+运行包策略只有两种：
+
+- 不传 wheel build run：Motor、vLLM、vllm-ascend 全部使用镜像包；
+- 传 wheel build run：`boot.sh` 启动时只安装 Motor wheel，vLLM、vllm-ascend
+  继续使用镜像包。
+
+两种模式都禁止源码 `PYTHONPATH`。从 wheel 模式切回全镜像模式时，必须先重新
+执行 parity，以未写死 wheel 路径的 workspace `boot.sh` 覆盖远端版本。
 
 Progress 在 stderr，JSON 结果在 stdout。

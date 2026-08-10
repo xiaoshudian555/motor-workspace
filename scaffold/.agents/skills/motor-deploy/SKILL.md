@@ -1,6 +1,6 @@
 ---
 name: motor-deploy
-description: "Thin dispatcher for Motor deployment work in the motor-workspace repository. Use for service launch and lifecycle requests such as 拉起一个服务, 拉起/启动/部署 Motor, apply 部署, 重启/停止/查看 Motor 服务; read-only feasibility requests such as 能不能起服务, 是否具备部署条件, 部署前检查, 检查部署环境; config preparation and post-deploy readiness; and reliability wording such as 构造故障, 故障注入, 验证故障恢复, which must stop as unsupported instead of routing to adjacent validators. Route to repo-local atomic skills under scaffold/.agents/skills; never use the legacy standalone deploy.py workflow."
+description: "Thin dispatcher for Motor deployment work in the motor-workspace repository. Use for service launch and lifecycle requests such as 拉起一个服务, 拉起/启动/部署 Motor, apply 部署, 重启/停止/查看 Motor 服务; Motor wheel replacement requests such as 编译 Motor wheel, wheel/whl 替换; read-only feasibility requests such as 能不能起服务, 是否具备部署条件, 部署前检查, 检查部署环境; config preparation and post-deploy readiness; and reliability wording such as 构造故障, 故障注入, 验证故障恢复, which must stop as unsupported instead of routing to adjacent validators. Route to repo-local atomic skills under scaffold/.agents/skills; never use the legacy standalone deploy.py workflow."
 ---
 
 # Motor Deploy Dispatcher
@@ -29,6 +29,7 @@ Read each selected `SKILL.md` completely before following it.
 |---|---|
 | Add, verify, or repair the target machine | `machine-management` |
 | Synchronize the local source tree to fixed remote paths | `remote-code-parity` |
+| Build a Motor wheel for runtime replacement | `motor-build-wheel` |
 | Translate model, image, NPU, or feature intent into native config | `motor-config-edit` |
 | Validate Kubernetes and MindCluster prerequisites | `motor-deploy-preflight` |
 | Build or reuse the immutable validated config bundle | `motor-deploy-configure` |
@@ -45,12 +46,20 @@ only the atomic skills needed to advance the chain:
 
 ```text
 machine-ready + parity-complete
+  → motor-build-wheel (only when wheel replacement is requested)
   → motor-config-edit
   → deploy-environment-ready
   → deploy-config-ready
   → deploy-complete
   → motor-smoke
 ```
+
+When wheel replacement is requested, pass the explicit `motor-wheel-build` run
+ID to `motor-deploy-configure`; do not generate or apply a replacement Job.
+The build run's remote `boot.sh` change is the only wheel replacement mechanism;
+configure must not inject `MOTOR_WHEEL_DIR` or source `PYTHONPATH` into workloads.
+Without a wheel build run, Motor, vLLM, and vllm-ascend all use image packages.
+With one, only Motor is replaced and vLLM plus vllm-ascend remain image packages.
 
 Do not merge the stages or recreate their commands in this dispatcher. Consume
 explicit run IDs and artifacts; do not infer readiness from ambiguous `last_*`

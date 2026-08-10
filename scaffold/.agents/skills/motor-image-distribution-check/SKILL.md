@@ -52,7 +52,7 @@ probe 命令换成 `ctr -n k8s.io images list`。
 
 probe 容器把该节点镜像 tag 列表写入 **termination log**
 （`/dev/termination-log`），之后从 Pod 对象的
-`containerStatuses[].state.terminated.message` 读回——**不要用 `kubectl logs`**，
+`containerStatuses[].lastState.terminated.message` 读回——**不要用 `kubectl logs`**，
 短生命周期 Pod 的 logs 子资源会被快速回收导致读不到。
 
 ```yaml
@@ -69,9 +69,10 @@ spec:
     metadata:
       labels: { app: mws-img-scan }
     spec:
-      restartPolicy: OnFailure   # probe 成功 exit 0 后不再重启；Always 会 CrashLoopBackOff
       tolerations:
       - operator: Exists          # 通吃 taint，覆盖 master
+      # 注意：DaemonSet 只支持 restartPolicy: Always，probe 成功退出后会被重启，
+      # Pod 可能显示 CrashLoopBackOff——数据在 lastState.terminated.message 里。
       containers:
       - name: probe
         image: <SCAN-IMAGE>
@@ -106,31 +107,56 @@ open("/dev/termination-log", "w").write("\n".join(sorted(tags)))
 > 说明：`build_kubectl_runner` 不透传 stdin，manifest 经 ssh 通道用
 > `echo <b64> | base64 -d | kubectl apply -f -` 送达。
 
-### 3. 等所有节点的 probe Pod 都终止
-
-```bash
-ssh root@<entry-host> "kubectl get pods -n default -l app=mws-img-scan -o wide"
-```
-
-**必须等到 Pod 数量 == 可调度节点数，且每个 probe 容器都已终止（`Completed`，
-exit 0）** 再往下。DaemonSet 模板须设 `restartPolicy: OnFailure`——若用默认
-`Always`，probe 成功退出后会被反复重启，表现为 `CrashLoopBackOff`（数据仍在
-`lastState.terminated.message` 里，但等待逻辑会卡住）。
-
-### 4. 逐 Pod 读 termination message
+### 3. 等所有节点 probe 出结果
 
 ```bash
 ssh root@<entry-host> "kubectl get pods -n default -l app=mws-img-scan -o json"
 ```
 
-从每个 Pod 的 `status.containerStatuses[0].state.terminated.message` 取该节点
-的镜像 tag 列表，结合 `spec.nodeName` 得到「节点 → 本地镜像集合」。
+**不要等 Pod phase 变成 `Completed`，也不要看 `kubectl get pods` 的 STATUS 列。**
+
+DaemonSet **只支持 `restartPolicy: Always`**（不能设 `OnFailure`）。probe 脚本
+成功 exit 0 后，kubelet 会立刻重启容器，Pod 常显示 `CrashLoopBackOff`——这是
+预期行为，不是失败。
+
+正确等待条件：**Pod 数量 == 可调度节点数，且每个 Pod 的
+`status.containerStatuses[0].lastState.terminated` 满足 `exitCode == 0` 且
+`message` 非空**。通常第一轮 poll（<2s）就能齐。
+
+示例（在入口机上跑）：
+
+```python
+# 伪代码：轮询直到 len(ready_nodes) == expected_node_count
+term = containerStatuses[0]["lastState"]["terminated"]
+ready = term.get("exitCode") == 0 and term.get("message", "").strip()
+```
+
+### 4. 读 termination message（用 lastState，不是 state）
+
+```bash
+ssh root@<entry-host> "kubectl get pods -n default -l app=mws-img-scan -o json"
+```
+
+从每个 Pod 取：
+
+- `spec.nodeName` → 节点名
+- `status.containerStatuses[0].lastState.terminated.message` → 该节点本地镜像
+  tag 列表（一行一个）
+
+**注意**：
+
+- 读 **`lastState.terminated.message`**，不是 `state.terminated.message`——当前
+  `state` 往往是 `waiting/CrashLoopBackOff`。
+- **不要用 `kubectl logs`**——短生命周期 Pod 的 logs 子资源会被快速回收。
 
 ### 5. 删除临时 DaemonSet
 
 ```bash
-ssh root@<entry-host> "kubectl delete daemonset mws-img-scan -n default"
+ssh root@<entry-host> "kubectl delete daemonset mws-img-scan -n default --wait=false"
 ```
+
+加 `--wait=false`，避免 delete 阻塞等待 CrashLoopBackOff Pod 全部终止（可能
+挂很久）。Pod 会被 DaemonSet controller 异步回收。
 
 ### 6. 覆盖比对并报告
 

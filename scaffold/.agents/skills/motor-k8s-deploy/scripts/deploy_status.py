@@ -75,7 +75,11 @@ def main() -> int:
         kube_context=kube_context,
         namespace=namespace,
     )
-    code_paths = verify_runtime_code_paths(runtime_paths, machine_paths)
+    code_paths = verify_runtime_code_paths(
+        runtime_paths,
+        machine_paths,
+        motor_wheel_dir=str(bundle.get("motor_wheel_dir") or ""),
+    )
     ready = pods.get("ready") is True and code_paths.get("status") == "ok"
     checks = [
         {

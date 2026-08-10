@@ -9,7 +9,7 @@ LIB = SCAFFOLD / ".agents" / "lib"
 sys.path.insert(0, str(LIB))
 
 from mws_local_state import load_profile, save_profile  # noqa: E402
-from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine  # noqa: E402
+from mws_machine_target import build_fixed_source_paths  # noqa: E402
 from mws_parity import build_source_manifest, repo_manifest  # noqa: E402
 from mws_validate import ValidationError, normalize_mount_root, require_safe_id  # noqa: E402
 
@@ -43,14 +43,6 @@ def test_build_fixed_source_paths() -> None:
     assert paths["remote_workspace_root"] == root
     assert paths["motor_source"] == f"{root}/motor"
     assert "current" not in paths
-
-
-def test_pythonpath_order() -> None:
-    value = pythonpath_for_machine(_machine())
-    parts = value.split(":")
-    assert parts[0].endswith("/motor")
-    assert parts[1].endswith("/vllm")
-    assert parts[2].endswith("/vllm-ascend")
 
 
 def test_repo_manifest_on_motor_submodule() -> None:

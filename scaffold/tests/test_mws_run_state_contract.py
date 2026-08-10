@@ -36,8 +36,8 @@ def local_state_root(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_run_kinds_cover_six_types() -> None:
-    assert len(RUN_KINDS) == 6
+def test_run_kinds_include_motor_wheel_build() -> None:
+    assert "motor-wheel-build" in RUN_KINDS
 
 
 def test_write_run_is_immutable(local_state_root) -> None:

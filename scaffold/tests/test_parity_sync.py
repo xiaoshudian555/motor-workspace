@@ -15,9 +15,7 @@ sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from mws_deploy import (  # noqa: E402
-    inject_motor_wheel_dir_env,
     inject_namespace,
-    inject_pythonpath_env,
     is_cluster_scoped,
     load_yaml_documents,
     process_manifest_documents,
@@ -25,7 +23,7 @@ from mws_deploy import (  # noqa: E402
     restart_deploy_workloads,
 )
 from mws_lock import verify_lock  # noqa: E402
-from mws_machine_target import build_fixed_source_paths, pythonpath_for_machine  # noqa: E402
+from mws_machine_target import build_fixed_source_paths  # noqa: E402
 from mws_parity import (  # noqa: E402
     build_source_manifest,
     fanout_nodes,
@@ -79,13 +77,6 @@ def test_fixed_paths_use_machine_workspace_root() -> None:
     assert paths["python_overlay"] == f"{root}/python-overlay"
     assert "current" not in paths
     assert "snapshots" not in json.dumps(paths)
-
-
-def test_pythonpath_uses_fixed_paths() -> None:
-    machine = _machine()
-    value = pythonpath_for_machine(machine)
-    assert value.endswith("/python-overlay")
-    assert "/current/" not in value
 
 
 def _bind_repos(monkeypatch, repo: Path) -> None:
@@ -268,54 +259,7 @@ def test_cluster_scoped_resource_does_not_get_namespace() -> None:
     assert patched[1]["metadata"]["namespace"] == "motor-dev"
 
 
-def test_runtime_container_gets_pythonpath() -> None:
-    yaml_text = """
-kind: Deployment
-metadata:
-  name: mindie-server
-spec:
-  template:
-    spec:
-      containers:
-        - name: mindie-server
-          image: mindie:1.0.0
-        - name: sidecar
-          image: busybox:latest
-"""
-    docs = load_yaml_documents(yaml_text)
-    patched = inject_pythonpath_env(docs, "/mnt/a:/mnt/b")
-    containers = patched[0]["spec"]["template"]["spec"]["containers"]
-    assert any(item.get("name") == "PYTHONPATH" for item in containers[0].get("env", []))
-    sidecar_env = containers[1].get("env", [])
-    assert not any(item.get("name") == "PYTHONPATH" for item in sidecar_env)
-
-
-def test_inject_motor_wheel_dir_env_sets_runtime_container_only() -> None:
-    yaml_text = """
-kind: Deployment
-metadata:
-  name: mindie-server
-spec:
-  template:
-    spec:
-      containers:
-        - name: mindie-server
-          image: mindie:1.0.0
-        - name: sidecar
-          image: busybox:latest
-"""
-    docs = load_yaml_documents(yaml_text)
-    patched = inject_motor_wheel_dir_env(docs, "/mnt/wheel-builds/sha/dist")
-    containers = patched[0]["spec"]["template"]["spec"]["containers"]
-    assert any(
-        item.get("name") == "MOTOR_WHEEL_DIR" and item.get("value") == "/mnt/wheel-builds/sha/dist"
-        for item in containers[0].get("env", [])
-    )
-    sidecar_env = containers[1].get("env", [])
-    assert not any(item.get("name") == "MOTOR_WHEEL_DIR" for item in sidecar_env)
-
-
-def test_process_manifest_documents_motor_wheel_skips_pythonpath() -> None:
+def test_process_manifest_documents_does_not_inject_runtime_package_env() -> None:
     yaml_text = """
 kind: Deployment
 metadata:
@@ -330,14 +274,12 @@ spec:
     docs = load_yaml_documents(yaml_text)
     patched = process_manifest_documents(
         docs,
-        pythonpath="/mnt/motor-workspace/motor:/mnt/motor-workspace/vllm",
         namespace="motor-dev",
         base_image_ref="mindie:test",
         mount_root="/mnt",
-        motor_wheel_dir="/mnt/wheel-builds/sha/dist",
     )
     env = patched[0]["spec"]["template"]["spec"]["containers"][0].get("env", [])
-    assert any(item.get("name") == "MOTOR_WHEEL_DIR" for item in env)
+    assert not any(item.get("name") == "MOTOR_WHEEL_DIR" for item in env)
     assert not any(item.get("name") == "PYTHONPATH" for item in env)
 
 
@@ -356,14 +298,14 @@ spec:
     docs = load_yaml_documents(yaml_text)
     patched = process_manifest_documents(
         docs,
-        pythonpath="/mnt/motor-workspace/motor:/mnt/motor-workspace/vllm",
         namespace="motor-dev",
         base_image_ref="mindie:test",
         mount_root="/mnt",
     )
     pod_spec = patched[0]["spec"]["template"]["spec"]
     assert any(volume.get("hostPath", {}).get("path") == "/mnt" for volume in pod_spec["volumes"])
-    assert any(item.get("name") == "PYTHONPATH" for item in pod_spec["containers"][0]["env"])
+    env = pod_spec["containers"][0].get("env", [])
+    assert not any(item.get("name") in {"PYTHONPATH", "MOTOR_WHEEL_DIR"} for item in env)
 
 
 def test_restart_command_never_uses_delete_all(monkeypatch) -> None:

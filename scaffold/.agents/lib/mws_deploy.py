@@ -17,7 +17,7 @@ from mws_kubectl import KubectlRunner, build_kubectl_runner, stage_remote_files
 from mws_local_state import WorkspaceStateError
 from repo_paths import MOTOR_ROOT, REPO_ROOT
 from mws_lock import resolve_base_image_ref
-from mws_machine_target import build_fixed_source_paths, machine_ref, pythonpath_for_machine
+from mws_machine_target import build_fixed_source_paths, machine_ref
 from mws_transport import shell_quote
 from mws_run_state import (
     bundle_digest_for_files,
@@ -133,6 +133,24 @@ def iter_pod_specs(doc: dict[str, Any]) -> Iterable[dict[str, Any]]:
                     pod_spec = template.get("spec")
                     if isinstance(pod_spec, dict):
                         yield pod_spec
+    elif kind == "InferServiceSet":
+        # MindCluster InferServiceSet nests workloads under spec.template.roles[].
+        # Each role carries a Deployment/StatefulSet-shaped spec.template.spec.
+        template = spec.get("template")
+        if isinstance(template, dict):
+            roles = template.get("roles")
+            if isinstance(roles, list):
+                for role in roles:
+                    if not isinstance(role, dict):
+                        continue
+                    role_spec = role.get("spec")
+                    if not isinstance(role_spec, dict):
+                        continue
+                    pod_template = role_spec.get("template")
+                    if isinstance(pod_template, dict):
+                        pod_spec = pod_template.get("spec")
+                        if isinstance(pod_spec, dict):
+                            yield pod_spec
 
 
 def _is_runtime_container(container: dict[str, Any]) -> bool:
@@ -259,66 +277,6 @@ def inject_pd_anti_affinity(documents: list[dict[str, Any]]) -> list[dict[str, A
                 other_label = f"{base}-{other}{index}"
                 for pod_spec in iter_pod_specs(doc):
                     _ensure_pod_anti_affinity(pod_spec, other_label)
-        patched.append(doc)
-    return patched
-
-
-def inject_motor_wheel_dir_env(
-    documents: list[dict[str, Any]],
-    motor_wheel_dir: str,
-) -> list[dict[str, Any]]:
-    """Set MOTOR_WHEEL_DIR on runtime containers for boot.sh wheel override."""
-    if not motor_wheel_dir:
-        return documents
-    patched: list[dict[str, Any]] = []
-    for doc in documents:
-        doc = copy.deepcopy(doc)
-        for pod_spec in iter_pod_specs(doc):
-            containers = pod_spec.get("containers", [])
-            if not isinstance(containers, list):
-                continue
-            for container in containers:
-                if not isinstance(container, dict) or not _is_runtime_container(container):
-                    continue
-                env = container.setdefault("env", [])
-                if not isinstance(env, list):
-                    continue
-                replaced = False
-                for item in env:
-                    if isinstance(item, dict) and item.get("name") == "MOTOR_WHEEL_DIR":
-                        item["value"] = motor_wheel_dir
-                        replaced = True
-                        break
-                if not replaced:
-                    env.append({"name": "MOTOR_WHEEL_DIR", "value": motor_wheel_dir})
-        patched.append(doc)
-    return patched
-
-
-def inject_pythonpath_env(documents: list[dict[str, Any]], pythonpath: str) -> list[dict[str, Any]]:
-    if not pythonpath:
-        return documents
-    patched: list[dict[str, Any]] = []
-    for doc in documents:
-        doc = copy.deepcopy(doc)
-        for pod_spec in iter_pod_specs(doc):
-            containers = pod_spec.get("containers", [])
-            if not isinstance(containers, list):
-                continue
-            for container in containers:
-                if not isinstance(container, dict) or not _is_runtime_container(container):
-                    continue
-                env = container.setdefault("env", [])
-                if not isinstance(env, list):
-                    continue
-                replaced = False
-                for item in env:
-                    if isinstance(item, dict) and item.get("name") == "PYTHONPATH":
-                        item["value"] = pythonpath
-                        replaced = True
-                        break
-                if not replaced:
-                    env.append({"name": "PYTHONPATH", "value": pythonpath})
         patched.append(doc)
     return patched
 
@@ -892,21 +850,15 @@ def _run_deploy_full_remote(config_dir: Path, machine: dict[str, Any]) -> dict[s
 def process_manifest_documents(
     documents: list[dict[str, Any]],
     *,
-    pythonpath: str,
     namespace: str,
     base_image_ref: str,
     mount_root: str = "/mnt",
     node_port_overrides: dict[int, int] | None = None,
-    motor_wheel_dir: str = "",
 ) -> list[dict[str, Any]]:
     docs = inject_namespace(documents, namespace)
     docs = inject_hostpath_mount(docs, mount_root=mount_root)
     docs = inject_pd_anti_affinity(docs)
     docs = inject_image_ref(docs, base_image_ref)
-    if motor_wheel_dir:
-        docs = inject_motor_wheel_dir_env(docs, motor_wheel_dir)
-    else:
-        docs = inject_pythonpath_env(docs, pythonpath)
     if node_port_overrides:
         docs = inject_node_port_override(docs, node_port_overrides)
     return docs
@@ -915,24 +867,20 @@ def process_manifest_documents(
 def process_manifest_file(
     path: Path,
     *,
-    pythonpath: str,
     namespace: str,
     base_image_ref: str,
     mount_root: str,
     dest_dir: Path,
     node_port_overrides: dict[int, int] | None = None,
-    motor_wheel_dir: str = "",
 ) -> Path:
     text = path.read_text(encoding="utf-8")
     docs = load_yaml_documents(text)
     docs = process_manifest_documents(
         docs,
-        pythonpath=pythonpath,
         namespace=namespace,
         base_image_ref=base_image_ref,
         mount_root=mount_root,
         node_port_overrides=node_port_overrides,
-        motor_wheel_dir=motor_wheel_dir,
     )
     out = dest_dir / path.name
     out.write_text(dump_yaml_documents(docs), encoding="utf-8")
@@ -992,7 +940,6 @@ def render_plan(
     deploy_config = load_motor_deploy_config(config_dir)
     namespace = deploy_config["namespace"]
     job_id = deploy_config["job_id"]
-    pythonpath = pythonpath_for_machine(machine)
     mount_root = build_fixed_source_paths(machine)["mount_root"]
 
     staged_config = run_dir / "config"
@@ -1023,7 +970,6 @@ def render_plan(
         workload_names.extend(extract_workload_names(docs))
         out = process_manifest_file(
             src,
-            pythonpath=pythonpath,
             namespace=namespace,
             base_image_ref=base_image_ref,
             mount_root=str(mount_root),
@@ -1052,7 +998,7 @@ def render_plan(
             if item.get("present")
         },
         "base_image_ref": base_image_ref,
-        "pythonpath": pythonpath,
+        "runtime_package_policy": "image",
         "manifest_files": manifest_files,
         "workload_names": workload_names,
         "deploy_dry_run": deploy_result,
@@ -1527,7 +1473,6 @@ def configure_deploy_bundle(
     runner.append({"name": "upstream_dry_run", "status": "ok", "message": "manifests generated"})
     manifests_dir = run_dir / "manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
-    pythonpath = pythonpath_for_machine(machine)
     mount_root = machine_paths["mount_root"]
     manifest_paths: list[Path] = []
     manifest_files: list[str] = []
@@ -1548,13 +1493,11 @@ def configure_deploy_bundle(
         workload_names.extend(extract_workload_names(docs))
         out = process_manifest_file(
             src,
-            pythonpath=pythonpath,
             namespace=namespace,
             base_image_ref=base_image_ref,
             mount_root=str(mount_root),
             dest_dir=manifests_dir,
             node_port_overrides=node_port_overrides or None,
-            motor_wheel_dir=motor_wheel_dir,
         )
         manifest_paths.append(out)
         manifest_files.append(relative_repo(out))
@@ -1614,6 +1557,7 @@ def configure_deploy_bundle(
             "machine_paths": machine_paths,
             "parity_path_refs": parity_path_refs,
             "motor_wheel_dir": motor_wheel_dir,
+            "runtime_package_policy": "motor-wheel" if motor_wheel_dir else "image",
             "injector_version": MANIFEST_INJECTOR_VERSION,
             "deployer_version": deployer_version_token(),
         },
@@ -1653,9 +1597,11 @@ def _apply_injected_overlay(
 ) -> dict[str, Any]:
     """Idempotently apply the injected (overlay) manifests from a config bundle.
 
-    These are the injector copies of the upstream YAMLs (hostPath/PYTHONPATH,
-    PD anti-affinity, nodePort overrides). Applying them on top of the upstream
-    deployment triggers a rolling update so pods pick up the shared source tree.
+    These are the injector copies of the upstream YAMLs (hostPath/volumeMount,
+    PD anti-affinity, nodePort overrides, image ref). Applying them on top of
+    the upstream deployment triggers a rolling update so pods mount the shared
+    workspace; runtime code comes from image packages (and the boot.sh Motor
+    wheel in motor-wheel mode), never a source-tree PYTHONPATH.
     """
     run_kubectl = _resolve_kubectl_runner(
         machine=machine,
@@ -1712,6 +1658,44 @@ def _apply_bundle_direct(
     return {"status": "ok" if ok else "error", "apply_results": results}
 
 
+def reconcile_boot_package_policy(bundle_dir: Path, machine: dict[str, Any]) -> dict[str, Any]:
+    """Converge remote ``boot.sh`` wheel override to the bundle's package policy.
+
+    The bundle is the source of truth. ``motor-wheel`` writes the bundle's
+    ``motor_wheel_dir``; ``image`` removes any MWS_MOTOR_WHEEL_DIR block. Runs
+    unconditionally at apply time so the upstream deployer (which reads boot.sh
+    into the ConfigMap) always sees the reconciled state, regardless of what a
+    prior wheel build or parity sync left behind. Never bypassed by skipping
+    parity. Returns a small status record; raises on reconcile/verify failure.
+    """
+    from mws_build import reconcile_motor_wheel_override
+    from mws_execution import execution_adapter_for_machine
+
+    bundle = load_config_bundle(bundle_dir)
+    policy = str(bundle.get("runtime_package_policy") or "image")
+    wheel_dir = str(bundle.get("motor_wheel_dir") or "").rstrip("/")
+    if policy == "motor-wheel":
+        if not wheel_dir:
+            raise WorkspaceStateError(
+                "bundle policy is motor-wheel but motor_wheel_dir is empty"
+            )
+        desired: str | None = wheel_dir
+    else:
+        desired = None
+
+    adapter = execution_adapter_for_machine(machine)
+    source_root = str(build_fixed_source_paths(machine)["motor_source"]).rstrip("/")
+    boot_path = reconcile_motor_wheel_override(
+        adapter, source_root=source_root, wheel_dir=desired
+    )
+    return {
+        "status": "ok",
+        "policy": policy,
+        "wheel_dir": desired or "",
+        "boot_sh_path": boot_path,
+    }
+
+
 def apply_config_bundle(
     *,
     bundle_dir: Path,
@@ -1733,6 +1717,12 @@ def apply_config_bundle(
     if not manifest_dir.exists():
         raise WorkspaceStateError(f"bundle manifests missing: {manifest_dir}")
 
+    reconcile = reconcile_boot_package_policy(bundle_dir, machine)
+    if reconcile.get("status") != "ok":
+        raise WorkspaceStateError(
+            "boot.sh package-policy reconcile failed: " + str(reconcile.get("reason"))
+        )
+
     deploy = run_deploy_full(bundle_dir, machine=machine)
     if deploy.get("status") == "ok":
         overlay = _apply_injected_overlay(
@@ -1745,6 +1735,7 @@ def apply_config_bundle(
         return {
             "status": overlay["status"],
             "upstream_deploy": deploy,
+            "boot_policy": reconcile,
             "overlay": overlay,
             "apply_results": overlay.get("apply_results", []),
             "fallback": False,
@@ -1919,6 +1910,8 @@ def collect_runtime_code_paths(
 def verify_runtime_code_paths(
     collected: dict[str, Any],
     machine_paths: dict[str, str],
+    *,
+    motor_wheel_dir: str = "",
 ) -> dict[str, Any]:
     paths = collected.get("paths", {})
     mismatches: list[str] = []
@@ -1928,8 +1921,14 @@ def verify_runtime_code_paths(
         if not actual:
             mismatches.append(f"{module}: missing runtime path")
             continue
-        if expected_root and not actual.startswith(expected_root):
-            mismatches.append(f"{module}: {actual!r} does not start with {expected_root!r}")
+        if expected_root and actual.startswith(expected_root):
+            mismatches.append(
+                f"{module}: {actual!r} still loads from source path {expected_root!r}"
+            )
+        elif "/site-packages/" not in actual and "/dist-packages/" not in actual:
+            mismatches.append(
+                f"{module}: {actual!r} is not installed under site-packages/dist-packages"
+            )
     if mismatches:
         return {
             "name": "runtime_code_paths",
@@ -1937,10 +1936,15 @@ def verify_runtime_code_paths(
             "message": "; ".join(mismatches),
             "paths": paths,
         }
+    message = (
+        "motor loads from the wheel installation; vllm and vllm_ascend load from image packages"
+        if motor_wheel_dir
+        else "motor, vllm, and vllm_ascend load from image packages"
+    )
     return {
         "name": "runtime_code_paths",
         "status": "ok",
-        "message": "runtime modules load from fixed shared paths",
+        "message": message,
         "paths": paths,
     }
 
