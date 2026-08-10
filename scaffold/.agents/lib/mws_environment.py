@@ -549,28 +549,6 @@ def _run_image_checks(
         )
         return
 
-    if "/" not in image_name:
-        runner.append(
-            {
-                "name": "image_reference",
-                "status": "error",
-                "message": (
-                    f"motor_deploy_config.image_name {image_name!r} has no registry "
-                    "or repository path; use a full image reference"
-                ),
-            }
-        )
-        return
-
-    runner.append(
-        {
-            "name": "image_reference",
-            "status": "ok",
-            "message": "image reference parsed",
-            "evidence": image_name,
-        }
-    )
-
     nodes = kubectl(
         "get",
         "nodes",

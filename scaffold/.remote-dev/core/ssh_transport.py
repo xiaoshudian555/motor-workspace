@@ -36,6 +36,9 @@ def ssh_base_cmd(endpoint: Endpoint) -> list[str]:
 
 
 def run_script(endpoint: Endpoint, script: str, *, timeout_ms: int | None = None) -> RemoteCompleted:
+    # Windows clients may hand us CRLF line endings; remote bash treats the CR
+    # as part of the token ("set: -\r: invalid option"), so normalize to LF.
+    script = script.replace("\r\n", "\n").replace("\r", "\n")
     timeout = None if timeout_ms is None else timeout_ms / 1000
     try:
         proc = subprocess.run(

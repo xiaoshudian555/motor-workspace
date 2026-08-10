@@ -33,6 +33,19 @@ class SshTransportTests(unittest.TestCase):
         self.assertEqual(args[-1].split(" ", 2)[:2], ["python3", "-c"])
         self.assertIn("\\n", repr(args[-1]))
 
+    def test_run_script_normalizes_crlf_from_windows_clients(self) -> None:
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        observed: dict[str, object] = {}
+
+        def fake_run(args, **kwargs):
+            observed["input"] = kwargs.get("input")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(ssh_transport.subprocess, "run", fake_run):
+            ssh_transport.run_script(endpoint, "set -u\r\nhostname\r\n")
+
+        self.assertEqual(observed["input"], "set -u\nhostname\n")
+
     def test_run_bytes_quotes_shell_command_as_one_remote_command(self) -> None:
         endpoint = Endpoint(host="1.2.3.4", port=46000)
         observed: dict[str, object] = {}

@@ -429,10 +429,29 @@ def test_image_reference_missing_fails() -> None:
     assert any(item["name"] == "image_reference" and item["status"] == "error" for item in result["checks"])
 
 
-def test_image_reference_without_registry_fails() -> None:
-    result = _run(_deploy_config(image_name="motor:latest"))
-    assert result["ready"] is False
-    assert any(item["name"] == "image_reference" and item["status"] == "error" for item in result["checks"])
+def test_image_short_name_cached_on_nodes_passes() -> None:
+    side_effect = _kubectl_side_effect(
+        schedulable_nodes=("node-a", "node-b"),
+        node_images={
+            "node-a": ["motor:latest"],
+            "node-b": ["registry.example/team/motor:latest"],
+        },
+    )
+    result = _run(_deploy_config(image_name="motor:latest"), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "image_node_coverage")
+    assert check["status"] == "ok"
+
+
+def test_image_short_name_not_cached_warns_not_fails() -> None:
+    side_effect = _kubectl_side_effect(
+        schedulable_nodes=("node-a",),
+        node_images={"node-a": []},
+    )
+    result = _run(_deploy_config(image_name="motor:latest"), side_effect=side_effect)
+    assert result["ready"] is True
+    check = next(item for item in result["checks"] if item["name"] == "image_node_coverage")
+    assert check["status"] == "warning"
 
 
 def test_image_node_coverage_full_ok() -> None:
