@@ -8,89 +8,137 @@ description: Build a Motor wheel (protobuf + Rust kv-conductor) inside Docker on
 Motor 代码替换（TD-P2-07）：把 Motor 源码构建成完整 wheel（protobuf 生成 +
 Rust kv-conductor + `pip wheel`），供运行 Pod 的 `boot.sh` 安装。
 
+## 两层构建物（不要混用）
+
+| 层 | 位置 | 作用 |
+|---|---|---|
+| **上游** | `sources/motor/build.sh` | 在运行时 Docker 镜像内执行的实际构建（proto、cargo、`pip wheel`） |
+| **workspace** | 无独立 build backend | Skill 直接用远端原生命令编排 docker、sha256 和 boot.sh 修改 |
+
 ## 为什么必须在 Docker 里构建
 
 本地开发机（Windows/WSL）缺 CANN、grpcio-tools、Rust 工具链；直接 `pip wheel`
 产出的是与运行环境 ABI 不一致的包，Pods 加载会失败。因此：
 
 - **wheel 构建永远在 Docker 容器内进行**，容器基础镜像 = 目标运行时
-  `base_image_ref`，保证与 Pods 的 Python/CANN/libc 环境一致；
-- 容器挂载共享盘上已同步的固定 `motor` 源码树（构建阶段只读）与共享 build
-  输出目录；
-- 构建产出 wheel 到共享盘后，**立刻把该 dist 路径硬编码进远端固定 motor 树的
-  `boot.sh`**（见下方替换链路）。
+  `base_image_ref`；
+- 容器挂载共享盘上固定 `motor` 源码树（只读）与共享 build 输出目录；
+- 构建成功后由 Skill 直接更新远端固定 motor 树的 `boot.sh` 标记块。
 
-## Entry point
+## 参数（Agent 自行收集，无 motorws 子命令）
 
-```bash
-scaffold/bin/motorws build-wheel \
-  --machine dev1 \
-  --source-sha <git-commit-sha> \
-  --base-image-ref <runtime-image> \
-  [--reuse]
-```
+- **machine**：inventory 别名（必填）。
+- **source-sha**：motor 源码 git commit sha，用于输出目录幂等键（必填，≥8 hex）。
+- **base-image-ref**：构建容器使用的运行时镜像（必填，从 native config 或
+  运行时 workload 确认，禁止猜测）。
+- **reuse**：仅当 caller 明确接受按 source-sha 复用已有 wheel 时跳过 docker
+  build（仍会刷新 boot.sh 标记块）。
 
-参数：
+从 inventory 解析：
 
-- `--machine`：machine inventory 别名（必填）。
-- `--source-sha`：motor 源码 git commit sha，用于幂等缓存（必填，≥8 hex）。
-- `--base-image-ref`：构建容器使用的运行时镜像（必填，从当前 native config
-  或运行时工作负载确认后传入，不由 wrapper 猜测）。
-- 默认强制重建，确保同一 Git SHA 下的本地未提交改动也进入新 wheel。
-- `--reuse`：明确接受按 source-sha 复用已有 wheel 时才跳过构建（仍会刷新
-  `boot.sh` 硬编码路径）。
+- `SOURCE_ROOT=<source_dirs.motor>`
+- `REMOTE_WS=<remote_workspace_root>`
+- `BUILD_DIR=${REMOTE_WS}/motor-wheel-builds/<source_sha>`
+- `WHEEL_DIST=${BUILD_DIR}/dist`
 
 ## 流程
 
-1. 远端机器 `docker run`（基于 `base_image_ref`）挂载 motor 源码 + build 输出
-   目录，容器内执行上游 `bash build.sh`（含 `generate_proto.sh` 与 cargo build）。
-2. 强制产出且只保留一个 `motor-*.whl` 到共享盘
-   `<remote_workspace_root>/motor-wheel-builds/<source_sha>/dist/`，写
-   `wheel.sha256` marker。
-3. **写死路径**：把
-   `MOTOR_WHEEL_DIR=<该 dist 绝对路径>` 写入远端固定 motor 树的
-   `examples/deployer/startup/boot.sh`（`MWS_MOTOR_WHEEL_DIR_*` 标记块，可重复
-   覆盖）。谁在哪编、编到哪个 sha，就写成谁的路径——下次重编再换。
-4. 直接返回构建结果 JSON（wheel_dir、source_sha、base_image_ref、
-   boot_sh_path）。持久证据是远端 wheel、`wheel.sha256` 和 `boot.sh` 标记块；
-   不写本地 build run，也不是部署前置 gate。
+### 0. 构建前缺口检查（可选但推荐）
+
+在 `SOURCE_ROOT` 上确认存在 `build.sh`；若 `.proto` 无对应 `_pb2.py` 或缺少
+`motor/kv_conductor/bin/kv-conductor`，说明必须走 docker build 而非源码
+PYTHONPATH。
+
+### 1. 复用探测（仅 `--reuse` 或 caller 明确要求时）
+
+```bash
+test -f "${BUILD_DIR}/wheel.sha256" \
+  && set -- "${WHEEL_DIST}"/motor-*.whl \
+  && test "$#" -eq 1 && test -f "$1" && echo WHEEL_REUSE_OK
+```
+
+命中则跳到步骤 4；否则继续。
+
+### 2. Docker 内执行上游 build.sh
+
+通过 `remote.bash` 的 `run_in_background=true` 启动下面的长命令，再使用
+`remote.job_status` / `remote.job_tail` 等待完成。不要用普通 60s 同步 SSH，也不要
+在超时后重复启动另一份构建。
+
+```bash
+mkdir -p "${WHEEL_DIST}"
+rm -f "${WHEEL_DIST}"/motor-*.whl "${BUILD_DIR}/wheel.sha256"
+
+docker run --rm --network=host \
+  -v "${SOURCE_ROOT}:/src/motor:ro" \
+  -v "${WHEEL_DIST}:/out" \
+  -w /work \
+  "${BASE_IMAGE_REF}" \
+  bash -c 'set -euo pipefail; cp -r /src/motor /work/motor; cd /work/motor; bash build.sh; cp dist/motor-*.whl /out/'
+```
+
+镜像须已在节点本地；Skill **不** pull 镜像。
+
+### 3. 单 wheel 校验 + sha256 marker
+
+```bash
+cd "${WHEEL_DIST}"
+set -- motor-*.whl
+test "$#" -eq 1 && test -f "$1" || { echo "expected exactly one motor-*.whl"; exit 1; }
+sha256sum "$1" > "${BUILD_DIR}/wheel.sha256"
+```
+
+### 4. 直接修改 boot.sh 标记块
+
+先用 `remote.read` 读取
+`${SOURCE_ROOT}/examples/deployer/startup/boot.sh`，再用 `remote.apply_patch`：
+
+- 已存在 `MWS_MOTOR_WHEEL_DIR_BEGIN/END` 时，只替换两标记之间的整块内容；
+- 不存在时，在原生 `if [ -n "${MOTOR_WHEEL_DIR:-}" ]; then` 前插入：
+
+```bash
+# >>> MWS_MOTOR_WHEEL_DIR_BEGIN
+MOTOR_WHEEL_DIR="<WHEEL_DIST 的绝对路径>"
+# <<< MWS_MOTOR_WHEEL_DIR_END
+```
+
+写后重新读取并确认 BEGIN/END 各恰好一次，且路径完全等于本次
+`${WHEEL_DIST}`。找不到原生安装块、标记不成对或标记重复时停止，不猜插入位置。
+
+切回镜像模式时，读取最新文件后用 `remote.apply_patch` 精确删除 BEGIN 到 END
+整块，并重新读取确认两个标记均不存在。
+
+### 5. 验收（必须全部满足）
+
+- `${WHEEL_DIST}` 下恰好一个 `motor-*.whl`；
+- `${BUILD_DIR}/wheel.sha256` 存在且与 whl 一致；
+- boot.sh 含 `MWS_MOTOR_WHEEL_DIR_*` 块且 `MOTOR_WHEEL_DIR` 指向 `${WHEEL_DIST}`；
+- 报告 `source_sha`、`base_image_ref`、wheel 路径、boot.sh 路径。
+
+**部署后**还需 `deploy.py --update_config` + 目标 workload rollout restart，
+Pod 启动日志应出现 uninstall 旧 motor + pip install 新 whl；Coordinator
+`/readiness` 由 `motor-smoke` 单独验证。
+
+## 不保留 workspace build script
+
+`docker run`、清理 dist、`sha256sum`、单 whl 校验、复用探测和 boot.sh 精确
+patch 都由 Skill 调用现有原子工具完成。本仓不再提供 `motorws build-wheel`、
+`mws_build.py` 或 build 专用 reference script。唯一保留的构建脚本是 Motor 上游
+`build.sh`。
 
 ## 替换链路
 
-**主路径（刻意简单）**：编完 → 改远端 `boot.sh` 硬编码本次 `dist` → 后续
-deploy/restart 把这份 `boot.sh` 打进 ConfigMap → Pod 启动直接
-`pip install` 该 wheel。
-
-不依赖 K8s `MOTOR_WHEEL_DIR` env 注入；后续部署直接使用已更新的 `boot.sh`，
-不消费 build run，也不再改 manifest env。
+编完 → patch boot.sh → deploy/restart 把 boot.sh 打进 ConfigMap → Pod 启动
+`pip install` 该 wheel。不依赖 K8s env 注入 `MOTOR_WHEEL_DIR`。
 
 ## 边界
 
-- 只构建 wheel + 更新远端固定 motor 树里的 `boot.sh` 硬编码块；不 apply、不改
-  K8s 工作负载。
-- Docker 构建阶段不改源码树；构建成功后**允许且必须**改远端 `boot.sh` 中的
-  wheel 路径标记块。
-- `apply` / 删除 / 覆盖固定目录中的其它内容仍需显式授权。
-- 从 wheel 模式切回全镜像模式时，重新执行 parity，用 workspace 原始
-  `boot.sh` 覆盖远端硬编码版本。
+- 只构建 wheel + 更新远端 boot.sh；不 apply、不改 K8s、不创建 namespace。
+- Docker 构建阶段不改源码树；构建成功后**允许且必须**改 boot.sh 标记块。
+- 从 wheel 模式切回全镜像模式：parity 覆盖 boot.sh，或按步骤 4 精确删除标记块。
 
 ## 构建失败排查
 
-上游 `sources/motor/build.sh` 默认可能带
-`-i https://pypi.tuna.tsinghua.edu.cn/simple`。部分机房/NPU 节点上 tuna
-对 **GET 下包返回 403**（HEAD/索引页仍可能 200），表现为：
-
-`HTTP error 403 while getting .../setuptools-*.whl` /
-`Failed to build ... when installing build dependencies`。
-
-此时可依次尝试（改的是本次参与构建的 motor 工作树 / 容器内拷贝，勿假装源本身没问题）：
-
-1. **去掉 `-i ...tuna...`**，让 `pip wheel` 走镜像默认 index（常见为
-   `pypi.org`），再重跑本 skill；
-2. 显式改用可用源，例如 `-i https://pypi.org/simple`，或镜像/站点已验证可
-   GET 的内部 PyPI 镜像；
-3. 确认失败是否只发生在 **GET 包文件**（`curl -I` 200 但 `curl`/`pip
-   download` GET 403）——若是，换源，不要空等 tuna；
-4. 若仍失败：保留构建容器/`docker` 日志，核对 `base_image_ref`、网络、以及
-   kv-conductor 所需的 `cargo` 是否在镜像内可用（缺 cargo 时 wheel 可能仍产出，
-   但无 kv-conductor 二进制）。
+上游 `sources/motor/build.sh` 默认可能带 tuna PyPI 镜像；部分节点 GET 包文件
+403。依次尝试去掉 `-i`、换 `pypi.org`、核对 `base_image_ref` 与 cargo 可用性。
+详见 upstream build.sh 注释。

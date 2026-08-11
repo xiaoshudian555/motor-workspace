@@ -1,0 +1,4 @@
+interface:
+  display_name: "Motor Performance Analysis"
+  short_description: "Locate Motor inference performance bottlenecks across layers"
+  default_prompt: "Use $motor-performance-analysis to identify which layer owns this Motor performance anomaly and what evidence to collect next."

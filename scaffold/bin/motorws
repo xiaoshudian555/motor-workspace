@@ -1,8 +1,59 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""Internal parity entry point for motor-workspace."""
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SCAFFOLD_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-REPO_ROOT="$(cd -- "${SCAFFOLD_ROOT}/.." && pwd)"
-export PYTHONPATH="${SCAFFOLD_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
-exec python3 -m motor_workspace "$@"
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+SCAFFOLD_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCAFFOLD_ROOT / ".agents" / "lib"))
+
+from mws_local_state import WorkspaceStateError  # noqa: E402
+from mws_machine_target import resolve_machine  # noqa: E402
+from mws_parity import prove_identity_parity, sync_workspace_fanout  # noqa: E402
+from mws_validate import require_safe_id  # noqa: E402
+
+
+def emit(payload: dict) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if payload.get("status") in {"ok", "ready"} else 1
+
+
+def command_parity(args: argparse.Namespace) -> int:
+    machine = resolve_machine(require_safe_id(args.machine, label="machine"))
+    if machine.get("executor") == "native":
+        return emit(prove_identity_parity(machine))
+    if not args.approved_overwrite:
+        raise WorkspaceStateError(
+            "parity sync overwrites remote fixed directories; "
+            "re-run with --approved-overwrite"
+        )
+    return emit(sync_workspace_fanout(machine, skip_fast_path=args.skip_fast_path))
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(prog="motorws")
+    commands = root.add_subparsers(dest="command", required=True)
+    parity = commands.add_parser(
+        "parity", help="prove identity parity or sync to fixed remote source paths"
+    )
+    parity.add_argument("--machine", required=True)
+    parity.add_argument("--approved-overwrite", action="store_true")
+    parity.add_argument("--skip-fast-path", action="store_true")
+    parity.set_defaults(handler=command_parity)
+    return root
+
+
+def main() -> int:
+    try:
+        args = parser().parse_args()
+        return args.handler(args)
+    except Exception as exc:  # noqa: BLE001
+        return emit({"status": "error", "errors": [str(exc)]})
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

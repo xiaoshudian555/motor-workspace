@@ -7,8 +7,22 @@
 - `/readiness` 在实例不足时仍可能返回 HTTP 200，但响应体为 `ready=false`；
   Motor 的 `probe.py` 只检查 HTTP 状态码，因此必须解析响应体并要求
   `ready=true`。
+- **`ready=false` 表示启动收敛中**：在 Pod 已 Running/Ready 后，Coordinator
+  仍可能报告实例未齐；应轮询等待，不能立即判 FAIL。
+- **Pod `Ready` ≠ Coordinator ready**：Kubernetes Pod Ready 只表示容器探针通过，
+  不能替代 management `/readiness` 的 JSON `ready=true`。
 - `/health` 是 observability 进程存活信号，不替代 Coordinator readiness。
 - `/v1/models` 依赖可选 AIGW 配置，不作为通用 readiness 条件。
+
+## 轮询默认值
+
+| 参数 | 默认 |
+|---|---|
+| 间隔 | 15s |
+| 上限 | 600s |
+| 通过 | HTTP 200 且 `ready=true` |
+| 等待中 | HTTP 200 且 `ready=false` → 继续轮询，记录证据 |
+| 失败 | 超时仍为 `ready=false`，或 Service/端口不可达 |
 
 真实 non-stream/stream inference 已移到 `motor-functional` 的
 `inference-request` cases。Smoke 成功只表示 Coordinator 自己报告 ready，不表示

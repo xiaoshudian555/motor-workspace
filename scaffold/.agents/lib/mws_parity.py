@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 from io import BytesIO
@@ -19,16 +20,22 @@ from typing import Any
 
 from mws_local_state import LOCAL_ROOT, WorkspaceStateError, utc_now_iso
 from mws_machine_target import build_fixed_source_paths, machine_ref
-from mws_result import progress
 from mws_state import atomic_write_json, file_lock, load_json
 from mws_transport import RemoteTransport, shell_quote, transport_for_machine, validate_machine_transport_fields
-from repo_paths import MOTOR_ROOT, REPO_ROOT, VLLM_ASCEND_ROOT, VLLM_ROOT
+REPO_ROOT = Path(__file__).resolve().parents[3]
+SOURCES_ROOT = REPO_ROOT / "sources"
 
 REPO_DIRS = {
-    "motor": MOTOR_ROOT,
-    "vllm": VLLM_ROOT,
-    "vllm_ascend": VLLM_ASCEND_ROOT,
+    "motor": SOURCES_ROOT / "motor",
+    "vllm": SOURCES_ROOT / "vllm",
+    "vllm_ascend": SOURCES_ROOT / "vllm-ascend",
 }
+
+
+def progress(message: str, *, sentinel: str = "__MWS_PROGRESS__") -> None:
+    print(f"{sentinel} {message}", file=sys.stderr, flush=True)
+
+
 REPO_REMOTE_KEYS = {
     "motor": "motor_source",
     "vllm": "vllm_source",
@@ -189,10 +196,6 @@ def repo_manifest(name: str, path: Path) -> dict[str, Any]:
         "content_digest": _working_tree_tree_hash(path),
         "untracked_files": untracked_hashes,
     }
-
-
-def overlay_manifest() -> dict[str, str]:
-    return compute_overlay_content_digest()["file_hashes"]
 
 
 def build_source_manifest(machine: dict[str, Any]) -> dict[str, Any]:

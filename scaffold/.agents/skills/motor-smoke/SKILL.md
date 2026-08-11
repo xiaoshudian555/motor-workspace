@@ -8,16 +8,42 @@ description: Validate the deployed Coordinator management readiness endpoint. Us
 Read `references/motor-readiness.md`, resolve the current namespace from the
 native Motor config or cluster, and use `remote.bash`/`kubectl` directly.
 
+## Preconditions
+
+- Workloads may still be starting. **Pod `Ready` is informational only** and
+  does not pass smoke; only Coordinator `GET /readiness` with JSON `ready=true`
+  passes.
+- HTTP 200 with `"ready": false` means **startup convergence in progress**, not
+  an immediate FAIL. Poll until ready or timeout.
+
+## Procedure
+
 1. Discover the Coordinator management Service and its ready endpoint.
 2. Reach it from the remote host, or start a temporary `kubectl port-forward`
    with the remote job/monitor tool.
-3. Request `GET /readiness` on management port 1026.
-4. Always stop the temporary port-forward.
+3. Poll `GET /readiness` on management port 1026 with bounded wait:
 
-Pass requires HTTP 200 and a JSON body with `ready=true`. Pod `Ready`, TCP
-connect, `/health`, `/startup`, `/liveness`, or `/v1/models` do not replace
-this check. Do not use management port 1026 for inference; inference uses the
+| Parameter | Default |
+|---|---|
+| Poll interval | 15s |
+| Maximum wait | 600s (10 min) |
+| Pass condition | HTTP 200 and JSON body `ready=true` |
+
+4. On each poll, record evidence: UTC timestamp, HTTP status, response body
+   (or truncated body), and elapsed seconds since first attempt. While
+   `ready=false`, report **WAITING** (not FAIL).
+5. FAIL only when:
+   - maximum wait elapsed with last body still `ready=false`;
+   - HTTP errors persist and are not recoverable (for example management
+     Service missing, port-forward cannot start);
+   - response is not parseable JSON when HTTP 200.
+6. Always stop the temporary port-forward.
+
+Pass requires the final poll to satisfy HTTP 200 and `ready=true`. `/health`,
+`/startup`, `/liveness`, TCP connect, or `/v1/models` do not replace this
+check. Do not use management port 1026 for inference; inference uses the
 separate Coordinator Service on port 1025.
 
-Report the discovered Service, endpoint method, HTTP status, response body,
-and cleanup result directly. Do not create a validation run record.
+Report the discovered Service, endpoint method, poll count, final HTTP status,
+final response body, total wait time, and cleanup result directly. Do not
+create a validation run record.

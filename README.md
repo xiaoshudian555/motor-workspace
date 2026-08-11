@@ -18,13 +18,9 @@ Git/gh 初始化
 ```
 
 Skill 默认直接调用 Git、`gh`、`.remote-dev`、`kubectl` 和 Motor upstream
-deployer。Skill 目录不再保留 scripts；parity 和 wheel 的复杂算法统一由现有
-内部 backend 提供：
-
-```text
-scaffold/bin/motorws parity ...
-scaffold/bin/motorws build-wheel ...
-```
+deployer。Skill 目录不再保留 scripts；parity 的复杂算法由
+`scaffold/bin/motorws parity` 提供；wheel 构建按 `motor-build-wheel` skill 用
+远端 docker/`build.sh` 和原子远端工具直接完成。
 
 ## 固定远端目录
 
@@ -43,7 +39,7 @@ scaffold/bin/motorws build-wheel ...
 ```text
 sources/                       上游源码 submodule
 scaffold/.agents/skills/       Agent 工作流说明
-scaffold/.agents/lib/          parity、wheel、inventory 等保留实现
+scaffold/.agents/lib/          parity、inventory 等保留实现
 scaffold/.remote-dev/          通用远端原子工具
 scaffold/profiles/             可评审模板
 scaffold/tools/build/          可选 image build bypass 说明

@@ -1,118 +1,37 @@
 # Repository instructions
 
-Local `sources/motor` + `sources/vllm` + `sources/vllm-ascend` development
-scaffold. All three are Git submodules under `sources/`.
+Local development scaffold for the `motor`, `vllm`, and `vllm-ascend` submodules under `sources/`. Workflow code lives under `scaffold/`.
 
-Workflow code lives under `scaffold/`. This repository provides a remote
-development substrate first, then Motor domain skills on top. The primary
-development path is **remote-code-parity + shared mount root hostPath into Pods**,
-not rebuilding an image for every code change.
-
-## Repository layout
+## Repository boundaries
 
 ```text
-sources/          motor, vllm, vllm-ascend submodules
-scaffold/         skills, lib, remote-dev, profiles, tools, tests, docs
-.motor-workspace-local/   untracked machine inventory and parity state (repo root)
+sources/                     motor, vllm, vllm-ascend submodules
+scaffold/                    skills, remote-dev, profiles, tools, tests, docs
+.motor-workspace-local/      untracked machine inventory and parity state
 ```
 
-## Remote development model
-
-Use native client tools for local files and local shell work.
-
-Use `scaffold/.remote-dev` remote companion tools for remote endpoints on the
-shared mount root (default `/mnt`, configured by the selected machine inventory record):
-
-| Local tool | Remote tool |
-|------------|-------------|
-| Read | `remote.read` |
-| Edit | `remote.edit` |
-| Write | `remote.write` |
-| Bash | `remote.bash` |
-| Glob | `remote.glob` |
-| Grep | `remote.grep` |
-| LS | `remote.ls` |
-| Monitor | `remote.monitor` |
-| apply_patch | `remote.apply_patch` |
-
-Default endpoint fields:
-
-- `host`
-- `port`
-- `user`, default `root`
-- `root`, default `/`; pass an explicit narrower root when required
-- `cwd`, default fixed remote workspace directory
-
-Prefer `host + port` direct endpoints for ordinary remote development.
-Machine inventory is resolved in `scaffold/.agents/lib` and passed as direct
-endpoints to `scaffold/.remote-dev` tools.
-
-## Skills
-
-Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
-`SKILL.md` — read that before invoking.
-
-| Skill | Purpose |
-|-------|---------|
-| `motor-deploy` | Natural-language deployment dispatcher: route launch/lifecycle, read-only feasibility, and unsupported Reliability fault-injection requests to the correct boundary |
-| `repo-init` | Agent-run Git/gh/submodule initialization; no repository wrapper script or readiness record |
-| `machine-management` | Maintain endpoint metadata and verify current connectivity with `remote.*`; no lifecycle service or readiness record |
-| `remote-toolbox` | Remote MCP read/edit/bash/search/job/artifact backend |
-| `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
-| `motor-deploy-preflight` | Agent-run, read-only K8s/MindCluster environment checks |
-| `motor-image-distribution-check` | Verify per-node local container image coverage via temporary DaemonSet probe (agent-run commands, no script); use before apply when ErrImagePull risk matters |
-| `motor-deploy-configure` | Validate Motor native config with upstream `deploy.py --dry-run` and server-side dry-run |
-| `motor-k8s-deploy` | Use upstream `deploy.py`/`delete.sh` and direct `kubectl` for lifecycle operations |
-| `motor-smoke` | Prove the deployed Coordinator management Service reports `/readiness ready=true` |
-| `motor-functional` | Run focused inference/metrics/tracing checks with direct tools |
-| `motor-benchmark` | Run aisbench against current native config and live K8s state |
-| `motor-diagnosis` | Collect current Pod/Event/log evidence with direct tools |
-| `motor-diagnosis-controller-recovery-terminate` | Diagnose PyMotor precision auto-recovery terminate failures from collected logs |
-| `motor-build-wheel` | Build a release-grade Motor wheel (protobuf + Rust kv-conductor) inside Docker; returns the wheel path and updates the fixed remote `boot.sh` |
-
-Deployment routing is mandatory: when the user says `拉起一个服务`, `拉起服务`,
-`启动服务`, `部署服务`, `能不能起服务`, `是否具备部署条件`, `部署前检查`,
-`检查部署环境`, `构造故障`, `故障注入`, `验证故障恢复`, or equivalent Motor
-deployment wording, read `scaffold/.agents/skills/motor-deploy/SKILL.md` first.
-Do not bypass the dispatcher by selecting an atomic deploy/validation skill directly.
-
-None of these are gates for normal local coding or unrelated Git tasks.
-For remote endpoint work, prefer `scaffold/.remote-dev` tools first and use
-skills for domain workflows.
-
-## Repo-wide rules
-
+- Keep runtime state under `.motor-workspace-local/` and remote-dev state under `scaffold/.remote-dev/state/`; both are untracked.
 - Never write secrets, passwords, or tokens into tracked files.
-- Keep runtime state under `.motor-workspace-local/` and remote-dev state under
-  `scaffold/.remote-dev/state/`. Both are untracked.
 - Keep `.gitmodules` on community upstream URLs.
-- Prefer `scaffold/.remote-dev` over raw SSH for remote work.
-- Skills describe orchestration and call existing tools directly. Add a script
-  only for substantial deterministic logic that existing tools do not provide.
-- Development binds one local workspace to one machine and one fixed
-  `remote_workspace_root` under the shared mount root.
-- Development parity syncs source once to fixed directories under the shared
-  mount root for wheel builds and content proof; runtime uses image packages or
-  a boot.sh-installed Motor wheel. Source-tree `PYTHONPATH` is forbidden. Do
-  not fan out copies to per-session paths.
-- Reuse Motor's current deployer and MindCluster resources. Do not implement a
-  competing P/D controller or generic serving engine.
-- Environment preflight and deploy dry-run must not mutate Kubernetes or user
-  config. Apply, scale, delete, restart, config edits, and overwriting fixed
-  remote source directories require explicit consent.
-- Profiling integration is second-phase work.
-- This repo targets Huawei Ascend NPU. Local machines cannot run
-  `torch`/`torch_npu`-dependent code — validate on remote cluster/Pods.
+- This repository targets Huawei Ascend NPU. Local machines cannot validate `torch`/`torch_npu` runtime behavior; use the remote cluster or Pods.
 
-## Maintenance
+## Development model
 
-When changing a skill, update its `SKILL.md`, relevant references, and any
-retained executable implementation together. Do not create one wrapper script
-per Skill action.
+The primary path is **remote-code-parity + one fixed workspace under the shared mount root**, not rebuilding an image for every edit.
 
-The live authoring source for `motor-deploy` is
-`~/.hermes/skills/local/motor-deploy/`; keep the tracked mirror under
-`scaffold/.agents/skills/motor-deploy/` and both Claude shims synchronized with
-that source.
+- Use native tools for local files and shell work.
+- For remote endpoint work, prefer `scaffold/.remote-dev` over raw SSH and read its tool/Skill instructions when the task actually needs remote access.
+- Runtime uses image packages or a `boot.sh`-installed Motor wheel. Source-tree `PYTHONPATH` and per-session source copies are forbidden.
+- Reuse Motor's deployer and MindCluster resources. Do not implement a competing P/D controller or generic serving engine.
 
-`scaffold/bin/motorws` is an internal skill backend only — not the product entry point.
+## Deployment routing
+
+Deployment wording is mandatory-routed. When the user asks to `拉起一个服务`, `启动服务`, `部署服务`, `能不能起服务`, `部署前检查`, `检查部署环境`, `构造故障`, `故障注入`, `验证故障恢复`, or equivalent Motor deployment work, read `scaffold/.agents/skills/motor-deploy/SKILL.md` first. Do not select an atomic deploy or validation Skill before the dispatcher.
+
+Environment preflight and deploy dry-run must stay read-only. Apply, scale, delete, restart, config edits, and overwriting fixed remote source directories require explicit consent.
+
+## Skill maintenance
+
+Repo-local Skills live under `scaffold/.agents/skills/`; read the selected `SKILL.md` before use. Skills orchestrate existing tools directly. Add a script only for substantial deterministic logic that native tools do not provide.
+
+The live authoring source for `motor-deploy` is `~/.hermes/skills/local/motor-deploy/`. Keep its tracked mirror and Claude shims synchronized. `scaffold/bin/motorws` is an internal parity backend only; other workflows run directly from Skills.

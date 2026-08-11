@@ -13,16 +13,14 @@ from mws_validate import (
     require_safe_id,
     validate_remote_workspace_in_mount,
 )
-from repo_paths import REPO_ROOT
-
 STATE_DIRNAME = ".motor-workspace-local"
 INVENTORY_FILENAME = "machine-inventory.json"
 INVENTORY_SCHEMA_VERSION = 1
 PARITY_BACKEND_CHOICES = ("shared-hostpath", "node-local-hostpath")
 EXECUTOR_CHOICES = ("ssh", "native")
 
-ROOT = REPO_ROOT
-STATE_DIR = ROOT / STATE_DIRNAME
+REPO_ROOT = Path(__file__).resolve().parents[3]
+STATE_DIR = REPO_ROOT / STATE_DIRNAME
 LOCAL_ROOT = STATE_DIR
 INVENTORY_PATH = STATE_DIR / INVENTORY_FILENAME
 INVENTORY_LOCK_PATH = STATE_DIR / f"{INVENTORY_FILENAME}.lock"
@@ -160,17 +158,3 @@ def get_machine(alias: str, *, path: Path | None = None) -> dict[str, Any]:
     if normalized_alias not in machines:
         raise WorkspaceStateError(f"machine not found: {normalized_alias}")
     return machines[normalized_alias]
-
-
-def redact_secrets(payload: Any) -> Any:
-    secret_keys = {"password", "token", "kubeconfig", "secret", "private_key"}
-    if isinstance(payload, dict):
-        return {
-            key: "<redacted>"
-            if any(part in str(key).lower() for part in secret_keys)
-            else redact_secrets(value)
-            for key, value in payload.items()
-        }
-    if isinstance(payload, list):
-        return [redact_secrets(item) for item in payload]
-    return payload

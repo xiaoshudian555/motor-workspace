@@ -18,9 +18,18 @@ Kubernetes 状态。
 从固定 Motor 源码目录执行：
 
 ```bash
-cd /mnt/motor-workspace/motor/examples/deployer
+cd <source_dirs.motor>/examples/deployer
 python3 deploy.py --config_dir <remote-config-dir> --dry-run
-kubectl --context "$CTX" apply --dry-run=server -f output_yamls/
+
+# namespace 必须已存在；configure 不得创建 namespace
+kubectl --context "$CTX" get namespace "$NS"
+
+# 只对 *.yaml/*.yml 做 server-side dry-run（排除 .motor_config_user_config.json 等）
+mapfile -t YAML_FILES < <(
+  find output_yamls -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) | sort
+)
+kubectl --context "$CTX" apply --dry-run=server \
+  $(printf ' -f %s' "${YAML_FILES[@]}")
 ```
 
 逐一检查生成 YAML 的 namespace、image、hostPath、volumeMount、resources、
