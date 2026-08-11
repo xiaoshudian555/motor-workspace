@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Internal skill backend for motor-workspace.
 
-Product entry points are `.agents/skills/*`. This CLI exists for scripts and
-tests that need shared lock/status helpers without importing skill paths.
+Product entry points are `.agents/skills/*`. This is their single internal
+backend for status, lock verification, parity, and Motor wheel construction.
 """
 
 from __future__ import annotations

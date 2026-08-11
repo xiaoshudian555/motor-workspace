@@ -9,7 +9,8 @@ repo-init（Git/gh 直接命令）
 → motor-build-wheel（确需替换 Motor 包时）
 ```
 
-交付物是可用 endpoint、固定远端源码目录，以及可选 parity/wheel 证据。
+交付物是可用 endpoint、固定远端源码目录、可选 parity state，以及 wheel 模式下
+直接返回的构建结果和远端 `wheel.sha256` marker。
 
 ## 2. Motor 部署
 

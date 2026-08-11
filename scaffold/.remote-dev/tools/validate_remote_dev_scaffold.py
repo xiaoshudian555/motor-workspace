@@ -157,9 +157,6 @@ def endpoint_payload(args: argparse.Namespace) -> dict[str, Any]:
         "cwd": cwd,
         "connect_timeout_ms": args.connect_timeout_ms,
         "alias": args.alias,
-        "session_id": args.session_id,
-        "session_file": args.session_file,
-        "machine": args.machine,
     }
     return {key: value for key, value in payload.items() if value is not None}
 
@@ -299,9 +296,6 @@ def main() -> int:
     parser.add_argument("--cwd")
     parser.add_argument("--connect-timeout-ms", type=int, default=10000)
     parser.add_argument("--alias")
-    parser.add_argument("--session-id")
-    parser.add_argument("--session-file")
-    parser.add_argument("--machine")
     parser.add_argument("--timeout-ms", type=int, default=30000)
     parser.add_argument("--parallel-workers", type=int, default=3)
     parser.add_argument("--skip-local", action="store_true")

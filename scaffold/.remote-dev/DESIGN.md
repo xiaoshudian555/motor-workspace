@@ -1,94 +1,78 @@
 # Remote Developer Substrate Design
 
-This package implements the design from
-`/Users/maoxx241/Downloads/remote_dev_substrate_design_for_codex.md`.
+`.remote-dev` provides native-shaped remote tools to MCP-capable agents. It is
+independent of Motor deployment policy: Motor Skills consume these tools, while
+the substrate only resolves endpoints and performs remote operations.
 
 ## Architecture
 
-Layer A is the remote-native developer tool surface:
+```text
+MCP client
+  → mcp/server.py
+  → mcp/tools.py + mcp/schemas.py
+  → core endpoint/file/shell/search/patch/job/artifact operations
+  → SSH or direct endpoint
+```
 
-- RemoteRead / `remote.read`
-- RemoteWrite / `remote.write`
-- RemoteEdit / `remote.edit`
-- RemoteMultiEdit / `remote.multi_edit`
-- RemoteBash / `remote.bash`
-- RemoteGlob / `remote.glob`
-- RemoteGrep / `remote.grep`
-- RemoteLS / `remote.ls`
-- RemoteMonitor / `remote.monitor`
-- RemoteApplyPatch / `remote.apply_patch`
+There is one MCP surface and no per-tool CLI fallback. The server supports
+standard stdio `Content-Length` JSON-RPC framing; newline-delimited JSON-RPC is
+retained only for lightweight local tests.
 
-Layer B is the shared substrate:
+## Endpoint model
 
-- endpoint resolution
-- SSH transport
-- full-permission default root with optional explicit root/cwd path policy
-- optional read-ledger concurrency checks
-- compact previews plus full refs
-- background job registry
-- artifact manifests and pull verification
-- Claude/Codex hook guards
-- MCP server
+Accepted selectors:
 
-Layer C is the vLLM-Ascend workflow layer under `.agents/skills/`. Those skills
-should consume remote-dev tools instead of teaching agents a separate remote
-interaction model.
+- direct `host + port`, with optional `user`, `root`, `cwd`, and identity file;
+- a configured alias from `.remote-dev/endpoints.json` or
+  `.remote-dev/endpoints.local.json`.
 
-## Implementation Phases
+Managed MWS `session_id`, `session_file`, and `machine` selectors are rejected.
+The default permission root is `/`; callers may pass a narrower root. The default
+working directory is `/mnt/motor-workspace` when no endpoint-specific cwd exists.
 
-Phase 0 establishes schemas, result contracts, endpoint identity, path policy,
-and hook tests.
+## Tool surface
 
-Phase 1 implements `remote.bash`, `remote.read`, and `remote.ls`.
+- file: `remote.read`, `remote.write`, `remote.edit`, `remote.multi_edit`,
+  `remote.ls`;
+- execution: `remote.bash`, `remote.monitor`, job status/tail/stop;
+- search: `remote.glob`, `remote.grep`;
+- patch: `remote.apply_patch`;
+- artifacts: manifest, pull, push;
+- context: snapshot and probe.
 
-Phase 2 implements `remote.write`, `remote.edit`, and `remote.multi_edit` with
-default write/edit permission, optional read-ledger concurrency checks, and
-atomic writes.
+MCP resources expose endpoint state, context, jobs, bounded stdout/stderr, and
+artifact manifests. Runtime state is local and untracked under
+`.remote-dev/state/`.
 
-Phase 3 implements `remote.apply_patch` for Codex apply_patch payloads,
-including file moves and end-of-file markers, plus unified diffs.
+## Safety properties
 
-Phase 4 implements search, monitor/jobs, and artifact manifest/pull/push tools.
+- endpoint root/cwd path policy is checked before remote operations;
+- edit/write can use read-ledger optimistic concurrency checks;
+- patch validates the complete operation set before writing and blocks unsafe
+  targets;
+- artifact transfer verifies manifests and hashes;
+- background jobs preserve endpoint identity and bounded model-visible output;
+- secrets are not written to tracked endpoint configuration.
 
-Phase 5 adds MCP, Claude/Codex configuration examples, hook guards, and
-generated lightweight Claude skill shims.
+## Claude Skill shims
 
-The MCP server supports standard stdio `Content-Length` JSON-RPC framing. The
-newline-delimited JSON-RPC mode is retained only as a lightweight local test
-fallback.
-
-MCP resources expose endpoint index/context, job registries and bounded
-stdout/stderr reads, and local artifact manifests:
-
-- `remote://endpoints`
-- `remote://endpoint/<endpoint-id>/context/latest`
-- `remote://endpoint/<endpoint-id>/jobs`
-- `remote://endpoint/<endpoint-id>/job/<job-id>/status`
-- `remote://endpoint/<endpoint-id>/job/<job-id>/stdout`
-- `remote://endpoint/<endpoint-id>/job/<job-id>/stderr`
-- `remote://endpoint/<endpoint-id>/artifacts`
-- `remote://endpoint/<endpoint-id>/artifacts/<artifact-id>/manifest`
-
-Phase 6 keeps existing MWS wrappers as compatibility backend while
-vLLM-Ascend skills are progressively rewritten as remote-dev consumers.
-
-Generated Claude Code skill shims are checked with:
+Canonical Skills live under `.agents/skills/`. Lightweight Claude discovery
+shims at both project levels are generated and checked with:
 
 ```bash
+python3 .remote-dev/tools/sync_claude_skills.py
 python3 .remote-dev/tools/sync_claude_skills.py --check
 ```
 
 ## Validation
 
-Expected scaffold checks:
-
 ```bash
 python3 -m compileall -q .agents .remote-dev
 python3 -m unittest discover -s .remote-dev/tests
-python3 -m unittest discover -s .agents/tests
+python3 -m pytest -q tests
 python3 .remote-dev/tools/validate_remote_dev_scaffold.py --local-only
 ```
 
-Remote endpoint behavior requires a reachable SSH endpoint or managed MWS
-session. Use `validate_remote_dev_scaffold.py` with either `--host/--port` or
-`--session-id` to run the live smoke, including parallel scratch workers.
+Live endpoint validation requires `--host` and `--port`, or a configured
+`--alias`. It creates a unique scratch directory, exercises the MCP-backed core
+operations, and removes that exact directory afterward.

@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/remote-toolbox/SKILL.md. Do not edit. -->
 ---
 name: remote-toolbox
-description: Remote target/probe/exec/job/sync/artifact/cleanup backend. Prefer .remote-dev for ad hoc remote work.
+description: Remote MCP read/edit/bash/search/job/artifact backend. Prefer .remote-dev for ad hoc remote work.
 ---
 
 # remote-toolbox

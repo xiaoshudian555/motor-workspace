@@ -66,7 +66,8 @@ missing fixed dir, or a digest failure never publishes a successful proof. No
 
 - Result JSON with local source digests, fixed remote paths, post-sync remote
   content digests, and remote proof results
-- `parity_complete: true` only when sync and post-sync proof both succeed
+- Success requires `status: ok` for sync or `status: ready` for identity, plus
+  non-empty content digests and successful remote proof entries
 
 ## Out of scope
 

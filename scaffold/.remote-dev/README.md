@@ -56,9 +56,9 @@ files are:
 - `.remote-dev/endpoints.json` for team-safe aliases with no secrets.
 - `.remote-dev/endpoints.local.json` for local aliases and ignored state.
 
-Managed MWS `session_id`, `session_file`, and `machine` resolution remain
-available as compatibility modes. Host plus port is the default remote-dev
-surface.
+Remote-dev accepts `host + port` or a configured endpoint alias. Managed MWS
+`session_id`, `session_file`, and `machine` selectors are intentionally rejected;
+the removed session/container framework is not a compatibility surface.
 
 Remote read ledgers are scoped by `client_context_id` when supplied, then by
 `CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, `CODEX_RUN_ID`, and
@@ -82,9 +82,9 @@ Scaffold validation is available as one JSON-reporting entry point:
 ```bash
 python3 .remote-dev/tools/validate_remote_dev_scaffold.py --local-only
 python3 .remote-dev/tools/validate_remote_dev_scaffold.py --host 173.131.1.2 --port 46000 --root /mnt/motor-workspace --cwd /mnt/motor-workspace
-python3 .remote-dev/tools/validate_remote_dev_scaffold.py --session-id <session-id> --root /mnt/motor-workspace --cwd /mnt/motor-workspace --skip-local
+python3 .remote-dev/tools/validate_remote_dev_scaffold.py --alias <endpoint-alias> --root /mnt/motor-workspace --cwd /mnt/motor-workspace --skip-local
 ```
 
-The validator runs local contract gates, reports MCP/CLI burden metrics, and can
-exercise a live endpoint or session with remote read/edit/write/bash/search,
+The validator runs local contract gates, reports MCP schema burden metrics, and can
+exercise a live endpoint with remote read/edit/write/bash/search,
 patch, artifacts, jobs, MCP resources, and parallel scratch workers.

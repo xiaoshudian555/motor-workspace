@@ -13,7 +13,7 @@ not rebuilding an image for every code change.
 ```text
 sources/          motor, vllm, vllm-ascend submodules
 scaffold/         skills, lib, remote-dev, profiles, tools, tests, docs
-.motor-workspace-local/   untracked machine and workflow run evidence (repo root)
+.motor-workspace-local/   untracked machine inventory and parity state (repo root)
 ```
 
 ## Remote development model
@@ -21,7 +21,7 @@ scaffold/         skills, lib, remote-dev, profiles, tools, tests, docs
 Use native client tools for local files and local shell work.
 
 Use `scaffold/.remote-dev` remote companion tools for remote endpoints on the
-shared mount root (default `/mnt`, configurable via profile `mount_root`):
+shared mount root (default `/mnt`, configured by the selected machine inventory record):
 
 | Local tool | Remote tool |
 |------------|-------------|
@@ -40,7 +40,7 @@ Default endpoint fields:
 - `host`
 - `port`
 - `user`, default `root`
-- `root`, default shared mount root
+- `root`, default `/`; pass an explicit narrower root when required
 - `cwd`, default fixed remote workspace directory
 
 Prefer `host + port` direct endpoints for ordinary remote development.
@@ -57,7 +57,7 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | `motor-deploy` | Natural-language deployment dispatcher: route launch/lifecycle, read-only feasibility, and unsupported Reliability fault-injection requests to the correct boundary |
 | `repo-init` | Agent-run Git/gh/submodule initialization; no repository wrapper script or readiness record |
 | `machine-management` | Maintain endpoint metadata and verify current connectivity with `remote.*`; no lifecycle service or readiness record |
-| `remote-toolbox` | Remote target/probe/exec/job/sync/artifact/cleanup backend |
+| `remote-toolbox` | Remote MCP read/edit/bash/search/job/artifact backend |
 | `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
 | `motor-deploy-preflight` | Agent-run, read-only K8s/MindCluster environment checks |
 | `motor-image-distribution-check` | Verify per-node local container image coverage via temporary DaemonSet probe (agent-run commands, no script); use before apply when ErrImagePull risk matters |
@@ -68,7 +68,7 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | `motor-benchmark` | Run aisbench against current native config and live K8s state |
 | `motor-diagnosis` | Collect current Pod/Event/log evidence with direct tools |
 | `motor-diagnosis-controller-recovery-terminate` | Diagnose PyMotor precision auto-recovery terminate failures from collected logs |
-| `motor-build-wheel` | Build a release-grade Motor wheel (protobuf + Rust kv-conductor) inside Docker; produces `motor-wheel-build` |
+| `motor-build-wheel` | Build a release-grade Motor wheel (protobuf + Rust kv-conductor) inside Docker; returns the wheel path and updates the fixed remote `boot.sh` |
 
 Deployment routing is mandatory: when the user says `拉起一个服务`, `拉起服务`,
 `启动服务`, `部署服务`, `能不能起服务`, `是否具备部署条件`, `部署前检查`,

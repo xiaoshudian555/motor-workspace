@@ -306,8 +306,8 @@ def build_motor_wheel_in_docker(
     """
     if not base_image_ref or base_image_ref == "UNRESOLVED":
         raise WorkspaceStateError(
-            "base_image_ref is required to build a motor wheel; set runtime.base_image_ref "
-            "in workspace.lock.yaml or motor_deploy_config.image_name"
+            "base_image_ref is required to build a motor wheel; pass the verified "
+            "runtime image explicitly"
         )
 
     source_root = motor_source_root(machine)

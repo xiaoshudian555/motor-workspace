@@ -46,9 +46,9 @@ scaffold/.agents/skills/       Agent 工作流说明
 scaffold/.agents/lib/          parity、wheel、inventory 等保留实现
 scaffold/.remote-dev/          通用远端原子工具
 scaffold/profiles/             可评审模板
-scaffold/tools/build/          可选 image build bypass
+scaffold/tools/build/          可选 image build bypass 说明
 scaffold/docs/                 当前架构和操作边界
-.motor-workspace-local/        ignored inventory、parity、wheel evidence
+.motor-workspace-local/        ignored machine inventory、parity state
 ```
 
 ## Quick start

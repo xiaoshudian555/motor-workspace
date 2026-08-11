@@ -51,8 +51,9 @@ scaffold/bin/motorws build-wheel \
    `MOTOR_WHEEL_DIR=<该 dist 绝对路径>` 写入远端固定 motor 树的
    `examples/deployer/startup/boot.sh`（`MWS_MOTOR_WHEEL_DIR_*` 标记块，可重复
    覆盖）。谁在哪编、编到哪个 sha，就写成谁的路径——下次重编再换。
-4. 在 untracked 本地状态目录记录构建结果（wheel_dir、source_sha、
-   base_image_ref、boot_sh_path），便于复用和排查；它不是部署前置 gate。
+4. 直接返回构建结果 JSON（wheel_dir、source_sha、base_image_ref、
+   boot_sh_path）。持久证据是远端 wheel、`wheel.sha256` 和 `boot.sh` 标记块；
+   不写本地 build run，也不是部署前置 gate。
 
 ## 替换链路
 

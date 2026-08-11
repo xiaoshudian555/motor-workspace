@@ -6,10 +6,10 @@
 | `.agents/lib/` | parity、wheel、inventory、transport、结果输出所需的共享代码 |
 | `.remote-dev/` | 与 Motor 无关的通用远端原子工具 |
 | `sources/` | motor、vllm、vllm-ascend 源码 submodule |
-| `.motor-workspace-local/` | untracked inventory、parity 和 wheel 构建证据 |
+| `.motor-workspace-local/` | untracked machine inventory 和 parity state |
 | `docs/` | 当前架构与操作边界；不保存历史工作单和已废弃方案 |
 | `profiles/` | 可评审模板，不保存密钥或运行状态 |
-| `tools/build/` | 可选镜像构建旁路 |
+| `tools/build/` | 可选镜像构建旁路说明；实际复用 Motor upstream Dockerfile/Makefile |
 | `tests/` | 保留执行器与公共工具的契约测试，不测试 Skill 文案流程 |
 
 Skill 目录不保留 Python scripts。repo-init、machine、deploy、smoke、functional、
