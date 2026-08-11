@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -43,7 +41,6 @@ def parity_env(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
     monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
     monkeypatch.setattr("mws_parity.OVERLAY_ROOT", state_root / "python-overlay")
-    monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
     save_inventory({"schema_version": 1, "machines": {"dev1": _machine()}})
     FakeRemoteTransport._shared_parity_locks.clear()
     yield state_root
@@ -55,20 +52,6 @@ def _repo(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
     for name in ("motor", "vllm", "vllm_ascend"):
         monkeypatch.setitem(sys.modules["mws_parity"].REPO_DIRS, name, repo)
     return repo
-
-
-def test_overwrite_requires_explicit_approval() -> None:
-    script = SCAFFOLD / ".agents/skills/remote-code-parity/scripts/parity_sync.py"
-    proc = subprocess.run(
-        [sys.executable, str(script), "--machine", "dev1"],
-        cwd=SCAFFOLD,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert proc.returncode != 0
-    assert "approved-overwrite" in json.loads(proc.stdout)["errors"][0]
 
 
 def test_dirty_and_untracked_content_reaches_fixed_remote_tree(

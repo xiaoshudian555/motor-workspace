@@ -81,8 +81,6 @@ def local_checks() -> list[dict[str, Any]]:
 def mcp_and_burden_checks() -> dict[str, Any]:
     tools = list_tools()
     names = [tool["name"] for tool in tools]
-    scripts = sorted((REMOTE_DEV_ROOT / "tools").glob("remote_*.py"))
-    expected_scripts = {REMOTE_DEV_ROOT / "tools" / (name.replace(".", "_") + ".py") for name in TOOL_SCHEMAS}
     endpoint_fields = set(ENDPOINT_PROPS)
     required_by_tool = {name: set(schema.get("required", [])) for name, schema in TOOL_SCHEMAS.items()}
     endpoint_required = {
@@ -107,8 +105,6 @@ def mcp_and_burden_checks() -> dict[str, Any]:
     failures: list[str] = []
     if set(names) != set(TOOL_SCHEMAS):
         failures.append("tools/list does not match TOOL_SCHEMAS")
-    if set(scripts) != expected_scripts:
-        failures.append("CLI remote_*.py wrappers do not match TOOL_SCHEMAS")
     if endpoint_required:
         failures.append("endpoint fields should not be top-level required by tool schemas")
     if endpoint_selector_missing:
@@ -124,7 +120,6 @@ def mcp_and_burden_checks() -> dict[str, Any]:
         "tool_count": len(tools),
         "tools": names,
         "resource_count": len(resources),
-        "cli_wrapper_count": len(scripts),
         "endpoint_required": endpoint_required,
         "endpoint_selector_missing": endpoint_selector_missing,
         "own_required_counts": own_required_counts,

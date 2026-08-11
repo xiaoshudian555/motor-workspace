@@ -36,7 +36,6 @@ def _setup_state(monkeypatch, state_root: Path) -> None:
     monkeypatch.setattr("mws_local_state.INVENTORY_LOCK_PATH", lock_path)
     monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
     monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
-    monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
     save_inventory({"schema_version": 1, "machines": {"dev-native": _machine()}})
 
 

@@ -18,11 +18,12 @@ Git/gh 初始化
 ```
 
 Skill 默认直接调用 Git、`gh`、`.remote-dev`、`kubectl` 和 Motor upstream
-deployer。仓库只为两项缺少现成工具替代的复杂能力保留 Python scripts：
+deployer。Skill 目录不再保留 scripts；parity 和 wheel 的复杂算法统一由现有
+内部 backend 提供：
 
 ```text
-scaffold/.agents/skills/remote-code-parity/scripts/
-scaffold/.agents/skills/motor-build-wheel/scripts/
+scaffold/bin/motorws parity ...
+scaffold/bin/motorws build-wheel ...
 ```
 
 ## 固定远端目录
@@ -65,7 +66,7 @@ benchmark 和 diagnosis 没有仓库 wrapper script。
 - parity 覆盖、配置修改、apply、restart、stop 分别需要明确授权；
 - dirty tree 可参与 parity，不要求日常改动 commit；
 - 本地机器不能验证 `torch`/`torch_npu` runtime，真实运行验证在远端 Host/Pod；
-- `scaffold/bin/motorws` 只是内部 status/lock 辅助，不是产品 CLI。
+- `scaffold/bin/motorws` 只是内部 Skill backend，不是产品 CLI。
 
 详见 [architecture](scaffold/docs/architecture.md)、
 [functional boundaries](scaffold/docs/functional-boundaries.md) 和

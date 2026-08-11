@@ -1,4 +1,4 @@
-# 目录责任已经收口为 Skill、远端工具和两个执行器
+# 目录责任已经收口为 Skill、远端工具和一个内部 backend
 
 | 目录 | 责任 |
 |---|---|
@@ -12,9 +12,9 @@
 | `tools/build/` | 可选镜像构建旁路 |
 | `tests/` | 保留执行器与公共工具的契约测试，不测试 Skill 文案流程 |
 
-只有 `remote-code-parity` 和 `motor-build-wheel` 当前保留 Python scripts。
-repo-init、machine、deploy、smoke、functional、benchmark、diagnosis 均由 Skill
-直接调用已有工具。
+Skill 目录不保留 Python scripts。repo-init、machine、deploy、smoke、functional、
+benchmark、diagnosis 直接调用已有工具；parity 和 wheel 复用同一个 `motorws`
+内部 backend。
 
-`src/motor_workspace/` 与 `bin/motorws` 只提供内部 status/lock 辅助，不是产品
-CLI，也不得扩张成第二套部署入口。
+`src/motor_workspace/` 与 `bin/motorws` 只提供内部 status、lock、parity 和 wheel
+能力，不是产品 CLI，也不得扩张成第二套部署入口。

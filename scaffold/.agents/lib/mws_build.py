@@ -56,20 +56,6 @@ def wheel_dist_dir(machine: dict[str, Any], source_sha: str) -> str:
     return f"{build_output_root(machine)}/{normalized}/dist"
 
 
-def motor_wheel_dir_from_build_run(run: dict[str, Any]) -> str:
-    """Resolve MOTOR_WHEEL_DIR from a motor-wheel-build run envelope."""
-    extra = run.get("extra") if isinstance(run.get("extra"), dict) else {}
-    for key in ("wheel_dir",):
-        value = extra.get(key) or run.get(key)
-        if value:
-            return str(value).rstrip("/")
-    artifacts = run.get("artifacts") if isinstance(run.get("artifacts"), list) else []
-    for item in artifacts:
-        if isinstance(item, dict) and item.get("name") == "motor-wheel" and item.get("path"):
-            return str(item["path"]).rstrip("/")
-    raise WorkspaceStateError("motor-wheel-build run missing wheel_dir artifact")
-
-
 def detect_build_gaps(source_root: str) -> dict[str, Any]:
     """Detect artifacts the parity source tree cannot provide at runtime.
 
@@ -124,7 +110,6 @@ def detect_build_gaps(source_root: str) -> dict[str, Any]:
         "missing": missing,
         "build_required": bool(missing),
     }
-
 
 def _remote_wheel_exists(adapter: ExecutionAdapter, build_dir: str) -> bool:
     """True when a completed wheel build already exists remotely.
@@ -456,53 +441,3 @@ def _build_record(
         "built_at": utc_now_iso(),
         "machine": machine.get("alias") or machine.get("host"),
     }
-
-
-def build_wheel_run_envelope(
-    *,
-    run_id: str,
-    workflow_run_id: str,
-    build_result: dict[str, Any],
-    started_at: str,
-    upstream_refs: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Wrap a wheel build result into an mws.result.v1 envelope for the skill."""
-    from mws_result import build_result_envelope
-
-    checks: list[dict[str, Any]] = [
-        {
-            "name": "wheel_build",
-            "status": "ok" if build_result.get("status") == "ok" else "error",
-            "message": build_result.get("message") or "motor wheel built in docker",
-        }
-    ]
-    artifacts: list[dict[str, Any]] = []
-    if build_result.get("wheel_dir"):
-        artifacts.append(
-            {
-                "name": "motor-wheel",
-                "path": build_result["wheel_dir"],
-                "source_sha": build_result.get("source_sha", ""),
-                "base_image_ref": build_result.get("base_image_ref", ""),
-            }
-        )
-    extra = {
-        "source_sha": build_result.get("source_sha"),
-        "base_image_ref": build_result.get("base_image_ref"),
-        "wheel_dir": build_result.get("wheel_dir"),
-        "build_dir": build_result.get("build_dir"),
-        "reused": build_result.get("reused", False),
-        "boot_sh_path": build_result.get("boot_sh_path"),
-    }
-    if build_result.get("machine"):
-        extra["machine"] = build_result["machine"]
-    return build_result_envelope(
-        kind="motor-wheel-build",
-        run_id=run_id,
-        workflow_run_id=workflow_run_id,
-        checks=checks,
-        started_at=started_at,
-        upstream_refs=upstream_refs,
-        artifacts=artifacts,
-        extra=extra,
-    )

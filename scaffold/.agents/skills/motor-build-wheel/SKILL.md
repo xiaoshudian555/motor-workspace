@@ -23,7 +23,7 @@ Rust kv-conductor + `pip wheel`），供运行 Pod 的 `boot.sh` 安装。
 ## Entry point
 
 ```bash
-python3 scaffold/.agents/skills/motor-build-wheel/scripts/build_wheel.py \
+scaffold/bin/motorws build-wheel \
   --machine dev1 \
   --source-sha <git-commit-sha> \
   --base-image-ref <runtime-image> \
@@ -34,8 +34,8 @@ python3 scaffold/.agents/skills/motor-build-wheel/scripts/build_wheel.py \
 
 - `--machine`：machine inventory 别名（必填）。
 - `--source-sha`：motor 源码 git commit sha，用于幂等缓存（必填，≥8 hex）。
-- `--base-image-ref`：构建容器使用的运行时镜像；缺省从 workspace.lock /
-  deploy config 解析。
+- `--base-image-ref`：构建容器使用的运行时镜像（必填，从当前 native config
+  或运行时工作负载确认后传入，不由 wrapper 猜测）。
 - 默认强制重建，确保同一 Git SHA 下的本地未提交改动也进入新 wheel。
 - `--reuse`：明确接受按 source-sha 复用已有 wheel 时才跳过构建（仍会刷新
   `boot.sh` 硬编码路径）。

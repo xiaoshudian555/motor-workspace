@@ -34,9 +34,8 @@ Primary tools:
 - `remote.context_snapshot`
 - `remote.probe`
 
-The MCP server is `.remote-dev/mcp/server.py`. CLI fallbacks live under
-`.remote-dev/tools/` and return a JSON object with a human-readable `text`
-field and `remote-dev.result.v1` metadata in `result`. The MCP server supports
+The MCP server is `.remote-dev/mcp/server.py`; remote operations are exposed
+only through MCP, without one-file-per-tool CLI fallbacks. The server supports
 standard stdio `Content-Length` framing and a newline-delimited JSON-RPC fallback
 for simple tests.
 
@@ -65,8 +64,7 @@ Remote read ledgers are scoped by `client_context_id` when supplied, then by
 `CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, `CODEX_RUN_ID`, and
 `REMOTE_DEV_SESSION_ID`. The MCP server sets `REMOTE_DEV_SESSION_ID` to a
 process-local value on startup, so MCP clients do not need to pass
-`client_context_id` explicitly. CLI fallback calls without a client/session id
-use the default scope. Ledgers are used as optimistic concurrency checks when
+`client_context_id` explicitly. Ledgers are used as optimistic concurrency checks when
 available; they are not required for default edit/write permission.
 
 Model-visible output is capped. Full command logs and job output are exposed

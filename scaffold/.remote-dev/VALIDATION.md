@@ -12,7 +12,7 @@ Last updated: 2026-05-25.
   - `git diff --check -- .remote-dev .agents AGENTS.md CLAUDE.md .mcp.json .codex .claude .gitignore`
 - `validate_remote_dev_scaffold.py --local-only` passes and reports:
   - 18 MCP tools
-  - 18 CLI fallbacks
+  - no duplicate per-tool CLI fallbacks; MCP is the only remote operation surface
   - endpoint selector `anyOf` expressed by normal remote tool schemas
   - max tool-specific required fields: 3
 - Direct live endpoint validation passed on `<direct-validation-endpoint>` with 3 parallel
@@ -78,8 +78,6 @@ Last updated: 2026-05-25.
 
 ## Fixes Made During Validation
 
-- CLI fallback errors now return a JSON `remote-dev.result.v1` result instead of
-  leaking tracebacks.
 - `remote.apply_patch` schema now requires either `patch` or `command`.
 - Artifact pull blocks unsafe manifest relpaths before writing local files.
 - Hook wrappers are covered by subprocess tests for permissive Claude/Codex

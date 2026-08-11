@@ -34,7 +34,7 @@ transfer only the object delta.
 ## Entry point
 
 ```bash
-python3 .agents/skills/remote-code-parity/scripts/parity_sync.py \
+scaffold/bin/motorws parity \
   --machine <alias> \
   --approved-overwrite
 ```
@@ -49,8 +49,7 @@ target NPU host), the local working tree **is** the machine's fixed source
 paths, so there is nothing to sync. Run identity parity instead:
 
 ```bash
-python3 .agents/skills/remote-code-parity/scripts/parity_identity.py \
-  --machine <alias>
+scaffold/bin/motorws parity --machine <alias>
 ```
 
 Identity parity proves source readiness without copying or overwriting:
@@ -65,8 +64,7 @@ missing fixed dir, or a digest failure never publishes a successful proof. No
 
 ## Deliverables
 
-- Parity run record under `.motor-workspace-local/parity-runs/{parity_run_id}/`
-- Manifest with local source digests, fixed remote paths, post-sync remote
+- Result JSON with local source digests, fixed remote paths, post-sync remote
   content digests, and remote proof results
 - `parity_complete: true` only when sync and post-sync proof both succeed
 

@@ -11,7 +11,7 @@ machine inventory 只保存 `host`、`port`、`user`、`mount_root`、
 用户授权覆盖固定目录后运行：
 
 ```bash
-python3 scaffold/.agents/skills/remote-code-parity/scripts/parity_sync.py \
+scaffold/bin/motorws parity \
   --machine <alias> --approved-overwrite
 ```
 
@@ -23,8 +23,7 @@ snapshot/bundle 只用于传输，不要求本地 commit，也不创建 session 
 当 Agent workspace 本身就是固定远端目录时运行：
 
 ```bash
-python3 scaffold/.agents/skills/remote-code-parity/scripts/parity_identity.py \
-  --machine <alias>
+scaffold/bin/motorws parity --machine <alias>
 ```
 
 identity 只证明三个源码仓与固定目录相同并记录 digest，不复制文件。

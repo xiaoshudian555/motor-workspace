@@ -21,10 +21,10 @@
 
 ```text
 local-control
-  local workspace → parity_sync.py → /mnt/motor-workspace/*
+  local workspace → motorws parity → /mnt/motor-workspace/*
 
 remote-native
-  workspace 已位于固定目录 → parity_identity.py 只证明路径和内容
+  workspace 已位于固定目录 → motorws parity 自动只证明路径和内容
 ```
 
 固定目录为：
