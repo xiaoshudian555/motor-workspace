@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-functional/SKILL.md. Do not edit. -->
 ---
 name: motor-functional
-description: Compile and run catalog-backed Motor functional validation from a user's natural-language goal. Use for real non-stream/stream inference requests and deployed feature behavior such as metrics, tracing, TLS, parameter passthrough, overload control, or later API-key checks.
+description: Run focused Motor functional checks with direct kubectl, HTTP, metrics, or tracing tools. Use for inference and deployed feature behavior.
 ---
 
 # motor-functional

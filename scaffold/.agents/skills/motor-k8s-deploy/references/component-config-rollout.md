@@ -9,7 +9,7 @@ Controller 或 Coordinator 配置，并且只重启对应组件，不重启 P/D�
 
 ## 核心原则
 
-1. 同时维护期望配置源和运行时 ConfigMap。修改宿主机或 bundle 中的
+1. 同时维护期望配置源和运行时 ConfigMap。修改宿主机中的
    `user_config.json` 只保证未来重新部署使用新值，不会自动更新现有
    `motor-config` ConfigMap。
 2. 运行中 Pod 的配置来源以 Deployment 实际挂载的 ConfigMap 为准。先从
@@ -19,8 +19,7 @@ Controller 或 Coordinator 配置，并且只重启对应组件，不重启 P/D�
    文件覆盖 ConfigMap。
 4. `motor_controller_config` 变更只 rollout Controller；
    `motor_coordinator_config` 变更只 rollout Coordinator。
-5. `deploy_restart.py` 会处理 deploy run 的完整 workload 集，不用于本手册的
-   单组件重启。
+5. 不得用完整部署重启替代本手册的单组件重启。
 
 ## 1. 发现目标资源
 
@@ -106,7 +105,7 @@ kubectl rollout restart deployment/"$TARGET" -n "$NS"
 kubectl rollout status deployment/"$TARGET" -n "$NS" --timeout=300s
 ```
 
-禁止为这类操作调用重启完整 workload 集的 `deploy_restart.py`，也不要删除
+禁止为这类操作重启完整 workload 集，也不要删除
 Controller、Coordinator 之外的 Pod。
 
 ## 4. 验证实际生效

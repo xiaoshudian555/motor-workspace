@@ -1,49 +1,40 @@
 ---
 name: motor-deploy-configure
-description: Generate or reuse immutable Motor deploy config bundles with upstream dry-run and server-side validation. Use for deploy configure, config bundle, deploy-config-ready.
+description: Validate Motor native user_config.json and env.json with the upstream deployer dry-run. Use for deploy configure or config validation.
 ---
 
 # motor-deploy-configure
 
-3+3 **第二部分第三步**：复制 Motor 原生配置、upstream dry-run、注入固定
-hostPath、校验 namespace 与 RBAC、server-side dry-run，产出不可变 bundle 和
-`deploy-config-ready`。不向 workload 注入源码 `PYTHONPATH` 或
-`MOTOR_WHEEL_DIR`。
+Motor's native `user_config.json` and `env.json` are the only deployment
+configuration. Do not generate a workspace-specific profile, plan, bundle,
+fingerprint, or digest contract.
 
-## 边界
+## Procedure
 
-**消费**：当前 workflow 的 `deploy-environment-ready`、`machine-ready`、
-`parity-complete`（仅 machine 固定路径映射）、Motor 原生 `user_config.json` +
-`env.json`。
-
-**不做**：自动 parity、创建 namespace、apply、诊断 Pod、字段级 CLI override。
-
-所有 Kubernetes 校验都在 machine inventory 指向的远端机器上执行
-`kubectl`。本地生成的 manifest 会上传到远端临时目录做 server-side
-dry-run，完成后清理；不使用开发机的 `kubectl` 或 kubeconfig。
-
-## Entry point
+1. Read the latest native config and summarize namespace/job ID, deploy mode,
+   image, model paths, P/D counts, node selectors, NPU requirements, ports, and
+   package mode. Do not invent missing values.
+2. Confirm referenced paths are under the selected shared mount and the
+   upstream YAML templates already mount that root.
+3. On the selected endpoint, from the fixed Motor source tree, run:
 
 ```bash
-python3 scaffold/.agents/skills/motor-deploy-configure/scripts/deploy_configure.py \
-  --machine dev1 \
-  --environment-run-id <environment-run-id> \
-  --parity-run-id <parity-run-id> \
-  --config-dir sources/motor/examples/infer_engines/vllm
+cd /mnt/motor-workspace/motor/examples/deployer
+python3 deploy.py --config_dir <remote-config-dir> --dry-run
 ```
 
-Motor-only wheel override：在 parity + `motor-build-wheel` 之后追加
-`--motor-wheel-build-run-id <motor-wheel-build-run-id>`。该 run 证明 wheel 已构建，
-且远端固定 Motor 树的 `boot.sh` 已写入对应 dist 路径；configure 只记录该证据和
-`motor-wheel` package policy，不再向 manifest 注入同名 env。
+4. Inspect every newly generated YAML. Check namespace, image, hostPath,
+   volumeMount, resources, NodePorts, workload names, and absence of source
+   `PYTHONPATH`.
+5. When API access exists, run server-side dry-run against the generated files:
 
-运行包策略只有两种：
+```bash
+kubectl --context "$CTX" apply --dry-run=server -f output_yamls/
+```
 
-- 不传 wheel build run：Motor、vLLM、vllm-ascend 全部使用镜像包；
-- 传 wheel build run：`boot.sh` 启动时只安装 Motor wheel，vLLM、vllm-ascend
-  继续使用镜像包。
+Dry-run must not apply resources or modify the user's config. A wheel build is
+handled by the remote fixed tree's existing `boot.sh`; do not inject a second
+`MOTOR_WHEEL_DIR` mechanism into YAML.
 
-两种模式都禁止源码 `PYTHONPATH`。从 wheel 模式切回全镜像模式时，必须先重新
-执行 parity，以未写死 wheel 路径的 workspace `boot.sh` 覆盖远端版本。
-
-Progress 在 stderr，JSON 结果在 stdout。
+Report the config directory, generated files, checks, diff from existing
+resources when available, and blockers. Do not produce `deploy-config-ready`.

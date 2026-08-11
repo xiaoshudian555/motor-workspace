@@ -1,159 +1,54 @@
-# Architecture and boundaries
+# motor-workspace 只保留远端底座、代码 parity 和 wheel 构建执行器
 
-The user-workflow boundaries are defined in
-[functional-boundaries.md](functional-boundaries.md). This document describes
-the implementation layers and runtime constraints underneath those boundaries.
+本仓库不再实现第二套部署平台。Agent Skill 负责说明顺序、授权门和通过标准，
+实际操作复用 Git、`gh`、`.remote-dev`、`kubectl` 和 Motor upstream deployer。
 
-## Implementation layers
+## 实现边界
 
-1. `.agents/skills/` provides Agent-facing workflow entry points.
-2. `.agents/lib/` provides shared workflow implementation and contracts.
-3. `.remote-dev/` provides generic remote endpoint operations without Motor or
-   Kubernetes workflow semantics.
-4. `.motor-workspace-local/` stores untracked machine state and
-   workspace/machine/parity/environment/config/deploy/validation run evidence.
+| 层 | 职责 |
+|---|---|
+| `scaffold/.agents/skills/` | 自然语言路由和操作说明；默认不配 Python script |
+| `scaffold/.remote-dev/` | 通用远端 read/edit/bash/search/job/artifact 能力 |
+| `remote-code-parity` | 唯一保留的代码同步执行器：dirty tree → 远端固定目录 |
+| `motor-build-wheel` | 唯一保留的构建执行器：在运行镜像环境中构建 Motor wheel |
+| `sources/motor/examples/deployer/` | Motor 配置生成、dry-run、apply、delete 的权威实现 |
 
-The three functional boundaries do not map one-to-one to these directories.
-For example, `.remote-dev` may be used by machine verification, diagnosis, or
-ad hoc remote development.
+不再存在 `workspace-ready`、`machine-ready`、`deploy-environment-ready`、
+`deploy-config-ready`、`deploy-complete` 状态交接。部署判断基于当前 endpoint、
+原生配置和实时 K8s 状态。
 
-## Primary runtime path
-
-1. Remote development preparation binds one local workspace to one fixed remote
-   source root; parity updates those fixed directories and produces content
-   evidence.
-2. Motor Deploy contains three explicit steps, mirroring the three-step
-   decomposition of the first major phase:
-   - `motor-deploy-preflight` proves that the K8s/MindCluster base environment
-     is usable without reading or validating a concrete Motor deploy config;
-   - `motor-deploy-configure` consumes environment and parity evidence,
-     generates or reuses the immutable deploy bundle (optional `--reuse`),
-     performs all substitutions and dry-runs, and proves that the bundle points
-     at the intended code paths;
-   - `motor-k8s-deploy` applies that exact bundle after approval, waits for
-     Ready, verifies minimal service access, and proves which code Pods actually
-     load via runtime `__file__` paths.
-3. Validation consumes a successful deploy run for formal smoke, benchmark,
-   profiling, and related pass/fail scenarios (see `docs/validation/`).
-   Diagnosis is a separate cross-cutting failure exit (see `docs/diagnosis/`),
-   invoked after deploy or validation failures—not a validation scenario.
-
-Minimal connectivity/readiness checks belong to deploy acceptance. Formal
-workloads and their pass/fail criteria belong to validation. Evidence
-collection after failure belongs to diagnosis.
-
-## Shared mount root
-
-- Profile field `mount_root`, default `/mnt`.
-- Fixed one-to-one remote source directories:
+## 两种开发拓扑
 
 ```text
-/mnt/motor-workspace/motor
-/mnt/motor-workspace/vllm
-/mnt/motor-workspace/vllm-ascend
-/mnt/motor-workspace/python-overlay
+local-control
+  local workspace → parity_sync.py → /mnt/motor-workspace/*
+
+remote-native
+  workspace 已位于固定目录 → parity_identity.py 只证明路径和内容
 ```
 
-- No workspace ID, session ID, or run ID is part of the remote source path.
-- Motor deployer templates already mount hostPath `/mnt:/mnt` on Controller,
-  Coordinator, Engine and related roles. The wrapper verifies/reuses that mount
-  and injects `PYTHONPATH` on runtime containers only.
-- Pure Python changes: parity overwrite + config-bundle compatibility/rebind +
-  `deploy_restart`.
-- Editable install / ABI-sensitive changes: bootstrap Pod/Job or image bypass.
-
-## Explicit non-goals
-
-- No runtime snapshot directories.
-- No `current` symlink.
-- No source-content digest gate that forces YAML regeneration for every Python
-  edit. Immutable deploy config bundles still require an integrity digest and
-  `config_fingerprint`.
-- No Git commit requirement for daily deploy/restart.
-- No node-local fanout (unsupported until explicitly implemented).
-- No default session-management layer.
-
-## Parity vs image bypass
-
-| Path | When |
-|------|------|
-| remote-code-parity → fixed remote dirs → hostPath → PYTHONPATH | Default daily development |
-| tools/build/ image bypass | Release, no shared storage, explicit user request |
-
-## Extension contracts
-
-`motor-deploy-preflight` owns only K8s/MindCluster environment evidence and
-does not read the Motor user config. `motor-deploy-configure` owns the upstream
-deployer dry-run, run-scoped staging, final YAML, hostPath/PYTHONPATH/image
-substitutions, config diff, manifest validation, server-side dry-run, and the
-immutable bundle contract. `motor-k8s-deploy` applies that exact bundle after
-user approval and owns post-apply Ready/runtime evidence. No step may rewrite
-AscendJob/HCCL/ranktable business logic.
-
-`tools/build/` is optional and non-default.
-
-## machine-management vs environment preflight vs deploy config
-
-Machine inventory records SSH endpoints, kube context references, `mount_root`,
-`remote_workspace_root`, and parity backend (`shared-hostpath` only).
-
-`machine-management` verifies only the stable remote-development facts needed
-before parity: SSH/remote execution, safe fixed paths, directory read/write,
-and required file-transfer tools. A recorded kube context or hardware profile
-is a reference, not proof that a Motor deployment is ready.
-
-`motor-deploy-preflight` owns the environment-level check. It combines the
-machine reference, kube context, and the workspace-versioned environment
-contract to check Kubernetes
-API access, baseline read permissions, MindCluster/Volcano/CRDs/controllers,
-device plugins, and the NPU resource types reported by the cluster. It does not
-consume parity, a Motor user config, namespace, model, image, or final
-manifests. Warnings are recorded and may continue; errors or unavailable
-requirements stop immediately. The result is not reused across workflows.
-
-`motor-deploy-configure` owns every check that depends on the concrete deploy
-inputs or final manifests. Its only business configuration sources are Motor's
-native `user_config.json` and `env.json`; it does not add a deploy profile or
-field-level CLI overrides. It requires the namespace from
-`motor_deploy_config.job_id` to exist, then owns exact namespace/RBAC,
-hostPath/volumeMount/PYTHONPATH injection, upstream deployer dry-run, manifest
-validation, and Kubernetes server-side dry-run. It does not perform pre-apply
-image-pull, model-readability, candidate-node hostPath, or diagnostic workload
-checks.
-
-The results are deliberately different:
+固定目录为：
 
 ```text
-machine-ready
-  = remote development and parity can proceed
-
-deploy-environment-ready
-  = the K8s/MindCluster base environment is usable
-
-deploy-config-ready
-  = this immutable Motor config bundle is ready to be applied
-
-deploy-complete
-  = the bundle was applied, Motor is Ready, and runtime source use is proven
+<mount_root>/motor-workspace/motor
+<mount_root>/motor-workspace/vllm
+<mount_root>/motor-workspace/vllm-ascend
+<mount_root>/motor-workspace/python-overlay
 ```
 
-The first two steps do not mutate Kubernetes state. Run-scoped local staging
-and evidence writes are allowed during configuration, but apply and all
-post-apply runtime evidence remain separate deployment responsibilities.
+这些目录用于构建和内容证明。Pod 运行时使用镜像包，或通过 `boot.sh` 安装显式
+构建的 Motor wheel；禁止源码树 `PYTHONPATH`。
 
-The three steps are separate responsibility units and target skills. A
-top-level workflow may invoke them in order, but no step owns another step's
-checks or result:
+## 部署主路径
 
 ```text
-motor-deploy-preflight
-  → deploy-environment-ready
-
-motor-deploy-configure
-  → deploy-config-ready + immutable config bundle
-
-motor-k8s-deploy
-  → deploy-complete + deploy run + Ready/runtime source evidence
+读取 endpoint 与原生 user_config.json/env.json
+→ remote.* + kubectl 做只读检查
+→ Motor deploy.py --dry-run
+→ 用户授权
+→ Motor deploy.py
+→ kubectl 检查 Ready/Service/runtime package
 ```
 
-None of these results may be reused as another step's completion result.
+preflight 不改用户配置。NodePort 冲突只报告，修改必须取得明确授权。parity
+覆盖、apply、restart、stop、ConfigMap 修改分别取得目标级授权。

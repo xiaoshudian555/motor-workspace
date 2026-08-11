@@ -84,7 +84,8 @@ description: Translate deployment intent into a validated Motor native user_conf
 - 输出配置目录绝对路径；
 - 字段 diff（改了什么、为什么）；
 - 每个改动的源码出处（映射表命中 → 表出处；搜索命中 → 代码文件:行号）；
-- 下一步：`motor-deploy-configure --config-dir <目录>`。
+- 下一步：交给 `motor-deploy-configure` 读取该目录，并在目标机器上调用 Motor
+  upstream `deploy.py --config_dir <目录> --dry-run`。
 
 ## 字段确认策略
 

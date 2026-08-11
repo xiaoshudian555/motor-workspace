@@ -25,5 +25,5 @@
 
 ## 交付
 
-`stability` validation run，包括 workload、观测周期、业务与资源时间序列、
+`stability` 证据目录包括 workload、观测周期、业务与资源时间序列、
 异常事件、趋势判定和 [`../../diagnosis/`](../../diagnosis/) 引用。

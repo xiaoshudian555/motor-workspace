@@ -27,6 +27,6 @@ profiling workload 能复现目标性能现象；采集范围、开销和环境�
 
 ## 交付
 
-`profiling` validation run，包括触发原因、复现 workload、采集配置、raw
+`profiling` 证据目录包括触发原因、复现 workload、采集配置、raw
 artifact、跨层时间线、瓶颈结论和基线关联。产物不足或无法归因时引用
 [`../../diagnosis/`](../../diagnosis/)。

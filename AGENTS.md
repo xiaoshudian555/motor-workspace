@@ -55,18 +55,18 @@ Repo-local skills live under `scaffold/.agents/skills/`. Each has its own
 | Skill | Purpose |
 |-------|---------|
 | `motor-deploy` | Natural-language deployment dispatcher: route launch/lifecycle, read-only feasibility, and unsupported Reliability fault-injection requests to the correct boundary |
-| `repo-init` | Initialize workspace: gh, GitHub auth, submodules, fork topology, lock; produces `workspace-ready` (audit only, not a downstream gate) |
-| `machine-management` | Add / verify / repair / remove remote NPU machine + kube context + mount root |
+| `repo-init` | Agent-run Git/gh/submodule initialization; no repository wrapper script or readiness record |
+| `machine-management` | Maintain endpoint metadata and verify current connectivity with `remote.*`; no lifecycle service or readiness record |
 | `remote-toolbox` | Remote target/probe/exec/job/sync/artifact/cleanup backend |
 | `remote-code-parity` | Sync local dirty tree to fixed remote directories before deploy/verify |
-| `motor-deploy-preflight` | K8s/MindCluster environment preflight (read-only); produces `deploy-environment-ready` |
+| `motor-deploy-preflight` | Agent-run, read-only K8s/MindCluster environment checks |
 | `motor-image-distribution-check` | Verify per-node local container image coverage via temporary DaemonSet probe (agent-run commands, no script); use before apply when ErrImagePull risk matters |
-| `motor-deploy-configure` | Motor native config → immutable bundle + dry-run; produces `deploy-config-ready` |
-| `motor-k8s-deploy` | Apply immutable config bundle, Ready/runtime source proof; produces `deploy-complete` |
+| `motor-deploy-configure` | Validate Motor native config with upstream `deploy.py --dry-run` and server-side dry-run |
+| `motor-k8s-deploy` | Use upstream `deploy.py`/`delete.sh` and direct `kubectl` for lifecycle operations |
 | `motor-smoke` | Prove the deployed Coordinator management Service reports `/readiness ready=true` |
-| `motor-functional` | Compile natural-language feature goals into catalog-backed functional validation specs and dispatch cases |
-| `motor-benchmark` | Benchmark a successful deploy run (third major part) |
-| `motor-diagnosis` | Collect run-scoped deploy/diagnostic artifacts, including the recorded upstream `auto_log_collect` session |
+| `motor-functional` | Run focused inference/metrics/tracing checks with direct tools |
+| `motor-benchmark` | Run aisbench against current native config and live K8s state |
+| `motor-diagnosis` | Collect current Pod/Event/log evidence with direct tools |
 | `motor-diagnosis-controller-recovery-terminate` | Diagnose PyMotor precision auto-recovery terminate failures from collected logs |
 | `motor-build-wheel` | Build a release-grade Motor wheel (protobuf + Rust kv-conductor) inside Docker; produces `motor-wheel-build` |
 
@@ -86,28 +86,29 @@ skills for domain workflows.
 - Keep runtime state under `.motor-workspace-local/` and remote-dev state under
   `scaffold/.remote-dev/state/`. Both are untracked.
 - Keep `.gitmodules` on community upstream URLs.
-- Prefer `scaffold/.remote-dev` or skill wrapper scripts over raw SSH for remote work.
-- Skill wrappers: progress on `stderr`, final JSON on `stdout`.
+- Prefer `scaffold/.remote-dev` over raw SSH for remote work.
+- Skills describe orchestration and call existing tools directly. Add a script
+  only for substantial deterministic logic that existing tools do not provide.
 - Development binds one local workspace to one machine and one fixed
   `remote_workspace_root` under the shared mount root.
 - Development parity syncs source once to fixed directories under the shared
-  mount root; Pods pick it up via existing hostPath (default `/mnt:/mnt`) and
-  injected `PYTHONPATH`. Do not fan out copies to per-session paths. Image
-  rebuild is an optional bypass for release/delivery, not the default loop.
+  mount root for wheel builds and content proof; runtime uses image packages or
+  a boot.sh-installed Motor wheel. Source-tree `PYTHONPATH` is forbidden. Do
+  not fan out copies to per-session paths.
 - Reuse Motor's current deployer and MindCluster resources. Do not implement a
   competing P/D controller or generic serving engine.
-- Environment preflight and deploy configuration must not mutate Kubernetes
-  state. Apply, scale, delete, restart, and overwriting fixed remote source
-  directories require explicit consent.
+- Environment preflight and deploy dry-run must not mutate Kubernetes or user
+  config. Apply, scale, delete, restart, config edits, and overwriting fixed
+  remote source directories require explicit consent.
 - Profiling integration is second-phase work.
 - This repo targets Huawei Ascend NPU. Local machines cannot run
   `torch`/`torch_npu`-dependent code — validate on remote cluster/Pods.
 
 ## Maintenance
 
-When changing a skill, update the whole package together: `SKILL.md`, `scripts/`,
-`references/`, and supporting files. When the change affects shared state, also
-update `scaffold/.agents/lib/mws_*.py` and `scaffold/.agents/scripts/` as applicable.
+When changing a skill, update its `SKILL.md`, relevant references, and any
+retained executable implementation together. Do not create one wrapper script
+per Skill action.
 
 The live authoring source for `motor-deploy` is
 `~/.hermes/skills/local/motor-deploy/`; keep the tracked mirror under

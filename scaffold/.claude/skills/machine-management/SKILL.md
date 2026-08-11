@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/machine-management/SKILL.md. Do not edit. -->
 ---
 name: machine-management
-description: Add, verify, repair, or remove remote NPU machines and kube context references. Use for "添加服务器", "登记机器", machine inventory.
+description: Register or inspect an existing remote NPU host endpoint. Use for 添加服务器, 登记机器, machine inventory, or checking remote connectivity.
 ---
 
 # machine-management

@@ -17,15 +17,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from mws_local_state import LOCAL_ROOT, WorkspaceStateError, get_machine, utc_now_iso
-from mws_machine_target import (
-    MACHINE_READY_REQUIRED_CHECKS,
-    build_fixed_source_paths,
-    endpoint_matches_machine,
-    machine_identity_matches,
-    machine_ref,
-)
-from mws_result import RESULT_SCHEMA_VERSION
+from mws_local_state import LOCAL_ROOT, WorkspaceStateError, utc_now_iso
+from mws_machine_target import build_fixed_source_paths, machine_ref
 from mws_result import progress
 from mws_state import atomic_write_json, file_lock, load_json
 from mws_transport import RemoteTransport, shell_quote, transport_for_machine, validate_machine_transport_fields
@@ -43,7 +36,6 @@ REPO_REMOTE_KEYS = {
 }
 OVERLAY_ROOT = LOCAL_ROOT / "python-overlay"
 PARITY_STATE_DIR = LOCAL_ROOT / "parity-state"
-MACHINE_RUNS_DIR = LOCAL_ROOT / "machine-runs"
 REMOTE_LOCK_DIRNAME = ".parity-sync.lock"
 MIRROR_DIRNAME = ".mws-mirrors"
 PARITY_REF = "refs/parity/current"
@@ -288,124 +280,6 @@ def verify_remote_content(
         "missing_files": missing,
         "extra_files": extra,
         "mismatched_files": mismatched,
-    }
-
-
-def load_machine_ready_evidence(
-    machine_alias: str,
-    *,
-    machine_run_id: str | None = None,
-) -> dict[str, Any]:
-    run_id = str(machine_run_id or "").strip()
-    if not run_id:
-        candidates = []
-        if MACHINE_RUNS_DIR.exists():
-            candidates = sorted(
-                MACHINE_RUNS_DIR.glob("*/run.json"),
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
-            )
-        for candidate in candidates:
-            record = load_json(candidate, default={})
-            if not isinstance(record, dict):
-                continue
-            if (
-                record.get("kind") == "machine-ready"
-                and record.get("status") == "ready"
-                and str(record.get("alias") or record.get("machine") or "") == machine_alias
-            ):
-                run_id = candidate.parent.name
-                break
-        if not run_id:
-            raise WorkspaceStateError(
-                f"no successful machine-ready run found for {machine_alias!r}"
-            )
-    run_path = MACHINE_RUNS_DIR / run_id / "run.json"
-    if not run_path.exists():
-        raise WorkspaceStateError(
-            f"machine-ready run not found: {run_id} ({run_path})"
-        )
-    data = load_json(run_path, default={})
-    if not isinstance(data, dict):
-        raise WorkspaceStateError(f"invalid machine run record: {run_path}")
-    return _validate_machine_ready_record(data, machine_alias, run_id)
-
-
-def _validate_machine_ready_record(
-    record: dict[str, Any],
-    machine_alias: str,
-    run_id: str,
-) -> dict[str, Any]:
-    schema_version = str(record.get("schema_version", ""))
-    if schema_version != RESULT_SCHEMA_VERSION:
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} has unsupported schema_version: {schema_version!r}"
-        )
-    kind = str(record.get("kind", ""))
-    if kind != "machine-ready":
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} kind mismatch: expected machine-ready, got {kind!r}"
-        )
-    if str(record.get("run_id", run_id)) != run_id:
-        raise WorkspaceStateError(f"machine-ready run {run_id} run_id mismatch")
-    status = str(record.get("status", ""))
-    if status != "ready":
-        raise WorkspaceStateError(f"machine-ready run {run_id} is not ready (status={status!r})")
-
-    alias = str(record.get("alias") or record.get("machine") or "")
-    if alias != machine_alias:
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} is for {alias!r}, not {machine_alias!r}"
-        )
-
-    machine = get_machine(machine_alias)
-    ref = record.get("machine_ref")
-    endpoint = record.get("endpoint")
-    if not isinstance(ref, dict) or not isinstance(endpoint, dict):
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} missing machine_ref/endpoint evidence"
-        )
-    if not machine_identity_matches(machine, ref):
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} machine_ref does not match inventory for {machine_alias!r}"
-        )
-    if not endpoint_matches_machine(machine, endpoint):
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} endpoint does not match inventory for {machine_alias!r}"
-        )
-
-    checks = record.get("checks")
-    if not isinstance(checks, list):
-        raise WorkspaceStateError(f"machine-ready run {run_id} missing checks list")
-
-    seen_names: set[str] = set()
-    for item in checks:
-        if not isinstance(item, dict):
-            raise WorkspaceStateError(f"machine-ready run {run_id} has invalid check entry")
-        name = str(item.get("name", "")).strip()
-        if not name:
-            raise WorkspaceStateError(f"machine-ready run {run_id} has unnamed check")
-        seen_names.add(name)
-        check_status = str(item.get("status", ""))
-        if check_status not in {"ok", "warning"}:
-            raise WorkspaceStateError(
-                f"machine-ready run {run_id} check {name!r} has invalid status {check_status!r}"
-            )
-
-    missing = sorted(MACHINE_READY_REQUIRED_CHECKS - seen_names)
-    if missing:
-        raise WorkspaceStateError(
-            f"machine-ready run {run_id} missing required checks: {', '.join(missing)}"
-        )
-
-    return {
-        "machine_run_id": run_id,
-        "workflow_run_id": record.get("workflow_run_id"),
-        "alias": machine_alias,
-        "machine_ref": ref,
-        "endpoint": endpoint,
-        "checks": checks,
-        "verified_at": record.get("finished_at") or record.get("created_at"),
     }
 
 
@@ -787,7 +661,6 @@ def _try_no_change_fast_path(
         {key: digest for key, digest in remote_digests.items()}
     )
     manifest["remote_proof"] = proof
-    manifest["machine_ready"] = prior.get("machine_ready")
     manifest["parity_state_ref"] = str(parity_state_path(machine_alias))
     manifest["target"] = machine.get("host")
     manifest["status"] = "ok"
@@ -811,24 +684,14 @@ def sync_workspace_to_remote(
     *,
     transport: RemoteTransport | None = None,
     fake_root: Path | None = None,
-    machine_ready: dict[str, Any] | None = None,
     skip_fast_path: bool = False,
 ) -> dict[str, Any]:
     validate_machine_transport_fields(machine)
-    if machine_ready is None:
-        machine_alias = str(machine.get("alias") or machine.get("host"))
-        raise WorkspaceStateError(
-            f"machine-ready evidence required for parity sync on {machine_alias!r}; "
-            "run machine-management verify first"
-        )
     machine_alias = str(machine.get("alias") or machine.get("host"))
     paths = build_fixed_source_paths(machine)
     manifest = build_source_manifest(machine)
     tx = transport or transport_for_machine(machine, fake_root=fake_root)
     lock_path = remote_lock_path(machine)
-
-    if machine_ready:
-        manifest["machine_ready"] = machine_ready
 
     progress(f"sync target host={machine.get('host')}")
 
@@ -952,7 +815,6 @@ def sync_workspace_to_remote(
                     "remote_content_digest": manifest["remote_content_digest"],
                     "remote_content_digests": remote_digests,
                     "snapshot_commits": snapshot_commits,
-                    "machine_ready": machine_ready,
                     "source_dirs": manifest["source_dirs"],
                 },
             )
@@ -965,7 +827,6 @@ def sync_workspace_fanout(
     machine: dict[str, Any],
     *,
     fake_roots: dict[str, Path] | None = None,
-    machine_ready: dict[str, Any] | None = None,
     skip_fast_path: bool = False,
 ) -> dict[str, Any]:
     nodes = fanout_nodes(machine, machine.get("candidate_nodes", []))
@@ -977,7 +838,6 @@ def sync_workspace_fanout(
             manifest = sync_workspace_to_remote(
                 machine,
                 fake_root=fake_root,
-                machine_ready=machine_ready,
                 skip_fast_path=skip_fast_path,
             )
             targets.append({"node": node, "status": "ok", "manifest": manifest})
@@ -999,7 +859,6 @@ def prove_identity_parity(
     machine: dict[str, Any],
     *,
     transport: RemoteTransport | None = None,
-    machine_ready: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Prove source readiness for the remote-native topology via identity.
 
@@ -1016,11 +875,6 @@ def prove_identity_parity(
     """
     validate_machine_transport_fields(machine)
     machine_alias = str(machine.get("alias") or machine.get("host"))
-    if machine_ready is None:
-        raise WorkspaceStateError(
-            f"machine-ready evidence required for identity parity on {machine_alias!r}; "
-            "run machine-management verify first"
-        )
     paths = build_fixed_source_paths(machine)
     tx = transport or transport_for_machine(machine)
     lock_path = remote_lock_path(machine)
@@ -1078,7 +932,6 @@ def prove_identity_parity(
                 "remote_content_digest": aggregate_content_digest(local_bundle),
                 "remote_content_digests": local_bundle,
                 "content_digests": local_bundle,
-                "machine_ready": machine_ready,
                 "target": machine.get("host"),
                 "sync_mode": "identity",
             }
@@ -1092,7 +945,6 @@ def prove_identity_parity(
                     "remote_content_digest": identity_manifest["remote_content_digest"],
                     "remote_content_digests": local_bundle,
                     "snapshot_commits": {},
-                    "machine_ready": machine_ready,
                     "source_dirs": identity_manifest["source_dirs"],
                 },
             )

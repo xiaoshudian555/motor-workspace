@@ -21,7 +21,7 @@ from mws_lock import load_lock, resolve_base_image_ref, verify_lock  # noqa: E40
 from mws_local_state import WorkspaceStateError, get_machine  # noqa: E402
 from mws_machine_target import resolve_machine  # noqa: E402
 from mws_result import emit, progress, utc_now_iso  # noqa: E402
-from mws_run_state import load_run, new_run_id, write_run  # noqa: E402
+from mws_run_state import new_run_id, write_run  # noqa: E402
 from mws_validate import require_safe_id  # noqa: E402
 
 
@@ -44,8 +44,6 @@ def main() -> int:
     )
     parser.set_defaults(reuse=False)
     parser.add_argument("--workflow-run-id", default="")
-    parser.add_argument("--machine-run-id", default="")
-    parser.add_argument("--config-run-id", default="")
     args = parser.parse_args()
 
     alias = require_safe_id(args.machine, label="machine")
@@ -91,11 +89,7 @@ def main() -> int:
         workflow_run_id=workflow_run_id,
         build_result=build_result,
         started_at=started_at,
-        upstream_refs=(
-            [{"kind": "machine-ready", "run_id": args.machine_run_id}]
-            if args.machine_run_id
-            else []
-        ),
+        upstream_refs=[],
     )
     if envelope["status"] == "ready":
         write_run("motor-wheel-build", run_id, {**envelope, "machine": alias})

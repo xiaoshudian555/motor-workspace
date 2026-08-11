@@ -51,7 +51,7 @@ def local_checks() -> list[dict[str, Any]]:
     commands = [
         ("compileall", ["python3", "-m", "compileall", "-q", ".remote-dev", ".agents"]),
         ("remote_dev_unittest", ["python3", "-m", "unittest", "discover", "-s", ".remote-dev/tests"]),
-        ("agents_unittest", ["python3", "-m", "unittest", "discover", "-s", ".agents/tests"]),
+        ("workspace_pytest", ["python3", "-m", "pytest", "-q", "tests"]),
         ("claude_skill_shims", ["python3", ".remote-dev/tools/sync_claude_skills.py", "--check"]),
         (
             "diff_check",

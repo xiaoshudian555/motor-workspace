@@ -11,7 +11,7 @@ Motor Coordinator 在 Kubernetes 里通常拆成 **三个 Service**，端口固�
 | **mgmt** | `mindie-motor-coordinator-mgmt` | **1026** | 管理：`/readiness`、`/startup`、`/liveness` |
 | **obs** | `mindie-motor-coordinator-obs` | **1027** | 可观测：`/metrics`、`/health` |
 
-代码常量：`scaffold/.agents/lib/mws_smoke.py` 中 `COORDINATOR_PORTS`。
+实际端口以当前 Kubernetes Service 为准；上表是 Motor 的默认约定。
 
 ## 常见错误（禁止）
 
@@ -36,8 +36,8 @@ Motor Coordinator 在 Kubernetes 里通常拆成 **三个 Service**，端口固�
 ### 2. motor-functional — 验推理 / metrics / tracing
 
 - 发现 **infer**（1025）和/或 **obs**（1027）Service
-- **`port-forward` 到 infer Service**（`functional_run.py`），不手工拼 NodePort
-- 从 deploy bundle 的 `user_config.json` 经 **`resolve_model_name()`** 解析 model
+- **`port-forward` 到 infer Service**，不手工拼 NodePort
+- 从本次部署使用的原生 `user_config.json` 解析 served model name
 - 推理 case 默认：`POST /v1/completions`（见下文「与部署文档差异」）
 
 ### 3. 集群内手工 curl（仅当无法 port-forward 时）
@@ -71,7 +71,7 @@ kubectl get nodes -o wide
 - `motor_engine_prefill_config.engine_config.served_model_name`
 - 或 `motor_engine_decode_config.engine_config.served_model_name`
 
-Functional / Smoke 共用 `resolve_model_name()`（`mws_smoke.py`），不要手写顶层字段。
+直接从本次部署使用的原生 `user_config.json` 读取上述字段，不要从顶层猜测。
 
 ## 与部署文档的差异
 
@@ -83,8 +83,7 @@ Motor 部署指南（`sources/motor/docs/.../pd_disaggregation_deployment.md`）
 
 - `POST /v1/completions` + `prompt`
 
-两者 Coordinator 均支持；Functional 选 completions 是为了最小 payload 与稳定断言（`choices[].text`）。
-若要对齐压测或 Chat 模型路径，可改 functional 或手工 curl 走 chat 接口。
+选择与当前模型和验证目标匹配的接口；不要由 wrapper 固定接口或返回字段。
 
 ## Skill 边界
 

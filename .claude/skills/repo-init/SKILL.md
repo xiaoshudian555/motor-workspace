@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/repo-init/SKILL.md. Do not edit. -->
 ---
 name: repo-init
-description: Initialize motor-workspace after clone — gh/GitHub auth probe, submodules, lock verify, fork topology hints for workspace + motor + vllm + vllm-ascend. Use for "初始化仓库", "配置 workspace", "配置 remotes", first-time setup.
+description: Initialize a motor-workspace clone with Git, gh, submodules, and fork remotes. Use for 初始化仓库, 配置 workspace, 配置 remotes, first-time setup.
 ---
 
 # repo-init

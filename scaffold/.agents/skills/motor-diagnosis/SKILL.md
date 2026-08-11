@@ -1,33 +1,27 @@
 ---
 name: motor-diagnosis
-description: Collect run-scoped Motor deploy diagnostic artifacts from deploy/config/bundle runs.
+description: Collect live Motor deployment evidence with direct kubectl and remote artifact tools.
 ---
 
 # motor-diagnosis
 
-Collects Pod/Event evidence and the recorded upstream `--auto_log_collect`
-session for a **deploy run** using explicit `config_run_id`, `bundle_dir`, and
-`bundle_digest` — not legacy `plan_dir`.
+Use the selected endpoint, kube context, namespace, and current cluster state.
+Do not require a deploy run, config bundle, digest, or workspace diagnosis
+script.
+
+Collect with `remote.bash` and remote artifact tools:
 
 ```bash
-python3 .agents/skills/motor-diagnosis/scripts/diagnosis_collect.py \
-  --machine <alias> \
-  --deploy-run-id <id>
+kubectl --context "$CTX" get all -n "$NS" -o wide
+kubectl --context "$CTX" get events -n "$NS" --sort-by=.lastTimestamp
+kubectl --context "$CTX" describe pod -n "$NS" <pod>
+kubectl --context "$CTX" logs -n "$NS" <pod> --all-containers --timestamps
+kubectl --context "$CTX" logs -n "$NS" <pod> --all-containers --previous --timestamps
 ```
 
-Progress on stderr; `mws.result.v1` envelope on stdout (`kind=deploy-diagnosis`).
-Artifacts land under `.motor-workspace-local/validation-runs/{diagnosis_run_id}/`.
-Pod logs are copied beneath `logs/<auto_log_collect_session>/`; the manifest
-records their remote source, digest, and any PyMotor diagnosis route match.
-
-**Requires:** existing deploy run (ready or failed) with `config_run_id` and bundle
-references. Fails closed on machine mismatch or bundle digest tampering.
-
-Pod/Event collection runs `kubectl` on the selected remote machine with its
-recorded kube context; it never uses the development host's kubeconfig.
-
-## PyMotor routing
-
-When collected logs match precision auto-recovery markers, the result recommends
-`motor-diagnosis-controller-recovery-terminate`. cmotor diagnosis skills are not
-part of this workspace package.
+Also inspect the native deployer's `--auto_log_collect` output when present.
+Do not restart, delete, repair, or inject faults while collecting evidence.
+Save artifacts only to a user-approved path or untracked
+`.motor-workspace-local/`, with source command and timestamp. When logs match
+precision auto-recovery terminate markers, recommend the corresponding
+specialized diagnosis skill.

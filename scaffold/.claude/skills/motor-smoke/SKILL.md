@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-smoke/SKILL.md. Do not edit. -->
 ---
 name: motor-smoke
-description: Validate that a successful Motor deploy has a live Coordinator management Service whose GET /readiness body reports ready=true. Use for the minimal post-deploy Coordinator readiness gate; real inference requests belong to motor-functional.
+description: Validate the deployed Coordinator management readiness endpoint. Use for the minimal post-deploy readiness check.
 ---
 
 # motor-smoke

@@ -6,8 +6,8 @@ Last updated: 2026-05-25.
 
 - Local contract gates pass:
   - `python3 -m compileall -q .remote-dev .agents`
-  - `python3 -m unittest discover -s .remote-dev/tests` -> 71 tests
-  - `python3 -m unittest discover -s .agents/tests` -> 15 tests
+  - `python3 -m unittest discover -s .remote-dev/tests`
+  - `python3 -m pytest -q tests`
   - `python3 .remote-dev/tools/sync_claude_skills.py --check`
   - `git diff --check -- .remote-dev .agents AGENTS.md CLAUDE.md .mcp.json .codex .claude .gitignore`
 - `validate_remote_dev_scaffold.py --local-only` passes and reports:

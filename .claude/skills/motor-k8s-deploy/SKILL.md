@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/motor-k8s-deploy/SKILL.md. Do not edit. -->
 ---
 name: motor-k8s-deploy
-description: Apply, status, stop, and restart Motor using an immutable deploy-config-ready bundle.
+description: Deploy, inspect, restart, or stop Motor with its native deploy.py, delete.sh, and kubectl. Use for apply deployment and Motor lifecycle requests.
 ---
 
 # motor-k8s-deploy

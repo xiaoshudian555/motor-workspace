@@ -24,6 +24,6 @@
 
 ## 交付
 
-`benchmark` validation run，包括环境指纹、workload 参数、warmup、raw result、
+`benchmark` 证据目录包括环境指纹、workload 参数、warmup、raw result、
 聚合指标、基线比较和结论。失败时引用
 [`../../diagnosis/`](../../diagnosis/)。

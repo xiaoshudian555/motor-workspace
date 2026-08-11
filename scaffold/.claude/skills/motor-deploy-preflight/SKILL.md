@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-deploy-preflight/SKILL.md. Do not edit. -->
 ---
 name: motor-deploy-preflight
-description: Validate K8s API and MindCluster base environment before deploy configure. Use for environment preflight, K8s/MindCluster checks, deploy-environment-ready.
+description: Read-only K8s and MindCluster checks before Motor deploy. Use for environment preflight, 部署前检查, or 检查部署环境.
 ---
 
 # motor-deploy-preflight

@@ -1,58 +1,31 @@
 # motor-workspace
 
-Independent meta-repository for developing and validating MindIE Motor with vLLM
-and vLLM Ascend on MindCluster Kubernetes. It does not replace Motor's deployer.
+MindIE Motor + vLLM + vLLM Ascend 的远端开发工作区。它复用 Motor 原生 deployer，
+不实现第二套部署平台。
 
-## Primary workflow
-
-motor-workspace 按用户工作流划分为三个主要部分：
-
-1. 远程开发准备与代码同步：证明远端目录中是目标代码。
-2. Motor Deploy：拉起服务，并证明 Pod 实际运行的是目标代码。
-3. 部署后验证与测试：对运行中的服务执行 smoke、benchmark、profiling
-   和诊断。
-
-三部分的详细职责、完成标志和交接物见
-[scaffold/docs/functional-boundaries.md](scaffold/docs/functional-boundaries.md)。
+## 主流程
 
 ```text
-本地 dirty tree
-  -> SSH 覆盖同步到远端固定目录 (/mnt/motor-workspace/)
-  -> Pod 通过 /mnt:/mnt hostPath 读取同一路径
-  -> PYTHONPATH 优先加载 motor / vllm / vllm-ascend / python-overlay
-  -> 首次 deploy 或后续 deploy_restart
+Git/gh 初始化
+→ machine inventory + remote.* 当前状态检查
+→ remote-code-parity（仅 local-control 需要）
+→ motor-build-wheel（仅 Motor 包替换需要）
+→ 原生 user_config.json + env.json
+→ deploy.py --dry-run
+→ 用户授权
+→ deploy.py
+→ kubectl / readiness / functional / benchmark / diagnosis
 ```
+
+Skill 默认直接调用 Git、`gh`、`.remote-dev`、`kubectl` 和 Motor upstream
+deployer。仓库只为两项缺少现成工具替代的复杂能力保留 Python scripts：
 
 ```text
-repo-init
-  -> machine-management
-  -> remote-code-parity
-  -> motor-config-edit          (generate user_config.json + env.json)
-  -> motor-deploy-preflight       (K8s/MindCluster environment)
-  -> motor-deploy-configure       (immutable config bundle + dry-run)
-  -> motor-k8s-deploy
-  -> deploy_restart (日常改码)
-  -> OpenAI smoke
+scaffold/.agents/skills/remote-code-parity/scripts/
+scaffold/.agents/skills/motor-build-wheel/scripts/
 ```
 
-The middle Motor deploy skills (`motor-deploy-preflight`, `motor-deploy-configure`)
-are implemented with fixture coverage; `motor-k8s-deploy` consumes immutable
-config bundles. The 3+3 contract is defined in
-[scaffold/docs/motor-deploy.md](scaffold/docs/motor-deploy.md); remaining gaps
-are tracked in [scaffold/docs/technical-debt.md](scaffold/docs/technical-debt.md).
-Agent execution order and remaining gaps:
-[scaffold/docs/technical-debt.md](scaffold/docs/technical-debt.md).
-Historical work packages: [scaffold/docs/implementation-plan.md](scaffold/docs/implementation-plan.md).
-
-Development uses **parity sync to fixed remote directories** under the shared
-mount root (profile `mount_root`, default `/mnt`). No snapshot, no `current`
-symlink, and no Git commit is required for daily Python edits. Immutable deploy
-config bundles do use an integrity digest/fingerprint, while code-only changes
-may reuse the same bundle after rebinding it to the current parity result.
-Image build under `scaffold/tools/build/` remains an optional bypass for
-release/delivery.
-
-## Fixed remote workspace layout
+## 固定远端目录
 
 ```text
 /mnt/motor-workspace/motor
@@ -61,63 +34,39 @@ release/delivery.
 /mnt/motor-workspace/python-overlay
 ```
 
-`PYTHONPATH`:
+这些目录用于内容证明和 wheel 构建。Pod 运行时使用 image package，或由
+`boot.sh` 安装显式构建的 Motor wheel；禁止源码树 `PYTHONPATH`。
+
+## 目录
 
 ```text
-<motor>:<vllm>:<vllm-ascend>:<python-overlay>
+sources/                       上游源码 submodule
+scaffold/.agents/skills/       Agent 工作流说明
+scaffold/.agents/lib/          parity、wheel、inventory 等保留实现
+scaffold/.remote-dev/          通用远端原子工具
+scaffold/profiles/             可评审模板
+scaffold/tools/build/          可选 image build bypass
+scaffold/docs/                 当前架构和操作边界
+.motor-workspace-local/        ignored inventory、parity、wheel evidence
 ```
-
-## Repository layout
-
-```text
-sources/                       Upstream source submodules
-  motor/                       MindIE Motor
-  vllm/                        vLLM
-  vllm-ascend/                 vLLM Ascend
-scaffold/                      Workflow and remote-dev substrate
-  .agents/skills/              Agent-facing workflows (primary entry)
-  .agents/lib/                 Shared workflow implementation
-  .remote-dev/                 Generic remote operation substrate
-  profiles/                    Shared machine and deploy inputs
-  workspace.lock.yaml          diagnostic lock (dirty tree allowed)
-  bin/motorws                  internal skill backend (not the product CLI)
-  tools/build/                 optional image bypass (non-default)
-  docs/                        architecture and boundary docs
-.motor-workspace-local/        ignored machine state and workflow run evidence
-```
-
-The three functional boundaries do not map one-to-one to directories.
-Skills are user-facing workflows; `scaffold/.agents/lib/` and
-`scaffold/.remote-dev/` are shared implementation layers. Directory ownership
-is defined in [scaffold/docs/directory-ownership.md](scaffold/docs/directory-ownership.md).
 
 ## Quick start
 
 ```bash
-git submodule update --init --recursive
+git submodule update --init
 ```
 
-```bash
-python3 scaffold/.agents/skills/repo-init/scripts/repo_init_probe.py --compact
-python3 scaffold/.agents/skills/machine-management/scripts/inventory.py list
-```
+随后让 Agent 读取对应 Skill。repo-init、machine、deploy、smoke、functional、
+benchmark 和 diagnosis 没有仓库 wrapper script。
 
-Every skill script writes progress to stderr and one JSON object to stdout.
+## 安全边界
 
-## Version locking
+- 不把凭据、kubeconfig 内容、token 或本地 inventory 写进 tracked 文件；
+- parity 覆盖、配置修改、apply、restart、stop 分别需要明确授权；
+- dirty tree 可参与 parity，不要求日常改动 commit；
+- 本地机器不能验证 `torch`/`torch_npu` runtime，真实运行验证在远端 Host/Pod；
+- `scaffold/bin/motorws` 只是内部 status/lock 辅助，不是产品 CLI。
 
-Three submodule gitlinks under `sources/` record source commits.
-`scaffold/workspace.lock.yaml` is diagnostic only: dirty working trees are
-allowed, and HEAD/lock mismatch is a warning—not a deploy blocker. Base image
-comes from deploy `user_config.json` first.
-
-## Safety
-
-- Credentials, kubeconfig content, model paths and local inventory are never tracked.
-- Apply, stop, restart and remote directory overwrite require explicit consent flags.
-- Deployment adapters invoke Motor's existing deployer/config semantics.
-
-See [scaffold/docs/functional-boundaries.md](scaffold/docs/functional-boundaries.md)
-for the three user-workflow boundaries and
-[scaffold/docs/architecture.md](scaffold/docs/architecture.md) for implementation
-layers and runtime constraints.
+详见 [architecture](scaffold/docs/architecture.md)、
+[functional boundaries](scaffold/docs/functional-boundaries.md) 和
+[Motor deploy](scaffold/docs/motor-deploy.md)。

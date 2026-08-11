@@ -51,8 +51,8 @@ python3 scaffold/.agents/skills/motor-build-wheel/scripts/build_wheel.py \
    `MOTOR_WHEEL_DIR=<该 dist 绝对路径>` 写入远端固定 motor 树的
    `examples/deployer/startup/boot.sh`（`MWS_MOTOR_WHEEL_DIR_*` 标记块，可重复
    覆盖）。谁在哪编、编到哪个 sha，就写成谁的路径——下次重编再换。
-4. 产出 `motor-wheel-build` run 证据（wheel_dir、source_sha、base_image_ref、
-   boot_sh_path）。
+4. 在 untracked 本地状态目录记录构建结果（wheel_dir、source_sha、
+   base_image_ref、boot_sh_path），便于复用和排查；它不是部署前置 gate。
 
 ## 替换链路
 
@@ -60,8 +60,8 @@ python3 scaffold/.agents/skills/motor-build-wheel/scripts/build_wheel.py \
 deploy/restart 把这份 `boot.sh` 打进 ConfigMap → Pod 启动直接
 `pip install` 该 wheel。
 
-不依赖 K8s `MOTOR_WHEEL_DIR` env 注入；configure 只消费 build run 作为证据并
-记录 package policy，不再改 manifest env。
+不依赖 K8s `MOTOR_WHEEL_DIR` env 注入；后续部署直接使用已更新的 `boot.sh`，
+不消费 build run，也不再改 manifest env。
 
 ## 边界
 

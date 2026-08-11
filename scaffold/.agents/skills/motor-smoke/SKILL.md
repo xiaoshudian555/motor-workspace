@@ -1,37 +1,23 @@
 ---
 name: motor-smoke
-description: Validate that a successful Motor deploy has a live Coordinator management Service whose GET /readiness body reports ready=true. Use for the minimal post-deploy Coordinator readiness gate; real inference requests belong to motor-functional.
+description: Validate the deployed Coordinator management readiness endpoint. Use for the minimal post-deploy readiness check.
 ---
 
 # motor-smoke
 
-Consume a successful `deploy-complete` run and produce a run-scoped readiness
-result. Read `references/motor-readiness.md` before changing the readiness
-criterion.
+Read `references/motor-readiness.md`, resolve the current namespace from the
+native Motor config or cluster, and use `remote.bash`/`kubectl` directly.
 
-```bash
-python3 .agents/skills/motor-smoke/scripts/smoke_run.py \
-  --machine <alias> \
-  --deploy-run-id <id>
-```
+1. Discover the Coordinator management Service and its ready endpoint.
+2. Reach it from the remote host, or start a temporary `kubectl port-forward`
+   with the remote job/monitor tool.
+3. Request `GET /readiness` on management port 1026.
+4. Always stop the temporary port-forward.
 
-## Pass criteria
+Pass requires HTTP 200 and a JSON body with `ready=true`. Pod `Ready`, TCP
+connect, `/health`, `/startup`, `/liveness`, or `/v1/models` do not replace
+this check. Do not use management port 1026 for inference; inference uses the
+separate Coordinator Service on port 1025.
 
-Require both:
-
-1. The Coordinator management Service has a ready endpoint.
-2. Management `GET /readiness` returns HTTP 200 with JSON `ready=true`.
-
-Pod `Ready`, TCP connect, `/startup`, `/liveness`, `/health`, and `/v1/models`
-do not replace the readiness-body check.
-
-Do not send inference requests in this skill. Non-stream/stream inference,
-metrics, tracing, and feature behavior belong to `motor-functional`.
-
-**Do not** reuse the mgmt Service ClusterIP or port 1026 for inference curl.
-Mgmt is readiness only (1026); infer is port 1025 on a separate Service. See
-`../motor-functional/references/coordinator-endpoints.md`.
-
-Write artifacts under `.motor-workspace-local/validation-runs/{smoke_run_id}/`.
-The remote machine runs `kubectl port-forward`; an SSH tunnel exposes its
-temporary loopback listener locally. Clean up the forward on exit.
+Report the discovered Service, endpoint method, HTTP status, response body,
+and cleanup result directly. Do not create a validation run record.

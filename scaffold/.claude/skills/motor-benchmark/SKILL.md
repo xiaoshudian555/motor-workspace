@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-benchmark/SKILL.md. Do not edit. -->
 ---
 name: motor-benchmark
-description: Run benchmarks against a successful motor-k8s-deploy run (second phase).
+description: Run repeatable aisbench online-serving performance validation against a live Motor deployment.
 ---
 
 # motor-benchmark

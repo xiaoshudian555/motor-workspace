@@ -27,6 +27,6 @@
 
 ## 交付
 
-`reliability` validation run，包括 consent、注入动作、持续 workload、故障与
+`reliability` 证据目录包括 consent、注入动作、持续 workload、故障与
 恢复时间线、业务影响、状态证据和完整
 [`../../diagnosis/`](../../diagnosis/) artifacts。

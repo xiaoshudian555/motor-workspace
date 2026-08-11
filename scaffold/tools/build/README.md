@@ -1,7 +1,8 @@
 # Optional image build bypass (non-default)
 
 **Not the primary development path.** Daily validation uses
-`remote-code-parity` → shared mount root → Pod hostPath + `PYTHONPATH`.
+`remote-code-parity` → shared mount root → Motor wheel build → `boot.sh`
+installation. Runtime source-tree `PYTHONPATH` is forbidden.
 
 Use this directory only when:
 

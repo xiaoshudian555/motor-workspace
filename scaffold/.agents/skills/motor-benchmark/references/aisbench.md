@@ -12,13 +12,13 @@
 
 ## 运行前输入
 
-优先从 `deploy-complete`、对应 config bundle 和机器 inventory 推导值。只有无法从
-证据中确定时才询问用户。
+优先从当前原生配置、机器 inventory 和真实 K8s 状态推导值。只有无法从
+当前事实确定时才询问用户。
 
 | 变量 | 来源或要求 |
 |---|---|
-| `MACHINE` | `deploy-complete.machine` |
-| `USER_CONFIG_JSON` | deploy run 引用的 immutable bundle |
+| `MACHINE` | 当前选定的 machine inventory 记录 |
+| `USER_CONFIG_JSON` | 本次部署使用的原生配置目录 |
 | `MODEL_NAME` | 各 active engine section 的 `served_model_name`，必须一致 |
 | `HOST_IP` / `HOST_PORT` | 压测执行环境可达的 Coordinator inference Service |
 | `BENCH_CONTAINER` | 用户指定的已有压测容器；不得猜测 |
@@ -30,7 +30,7 @@
 
 ### 1. 上下文长度 Gate
 
-从 immutable `user_config.json` 读取所有 active engine section 的
+从原生 `user_config.json` 读取所有 active engine section 的
 `max_model_len`：
 
 ```bash

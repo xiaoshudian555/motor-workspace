@@ -1,4 +1,4 @@
 interface:
   display_name: "Motor Functional Validation"
-  short_description: "Compile and run Motor functional validation cases"
-  default_prompt: "Use $motor-functional to turn my goal into cases and run supported Motor functional validation."
+  short_description: "Run focused Motor functional checks with direct tools"
+  default_prompt: "Use $motor-functional to select minimal cases and validate them against current Motor services."

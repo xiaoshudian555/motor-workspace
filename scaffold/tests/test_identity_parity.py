@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -12,9 +11,8 @@ sys.path.insert(0, str(LIB))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_fixtures import init_repo  # noqa: E402
-from machine_ready_fixtures import write_valid_machine_ready_run  # noqa: E402
-from mws_local_state import upsert_machine  # noqa: E402
-from mws_parity import load_machine_ready_evidence, prove_identity_parity  # noqa: E402
+from mws_local_state import save_inventory  # noqa: E402
+from mws_parity import prove_identity_parity  # noqa: E402
 
 
 def _machine() -> dict:
@@ -38,14 +36,8 @@ def _setup_state(monkeypatch, state_root: Path) -> None:
     monkeypatch.setattr("mws_local_state.INVENTORY_LOCK_PATH", lock_path)
     monkeypatch.setattr("mws_parity.LOCAL_ROOT", state_root)
     monkeypatch.setattr("mws_parity.PARITY_STATE_DIR", state_root / "parity-state")
-    monkeypatch.setattr("mws_parity.MACHINE_RUNS_DIR", state_root / "machine-runs")
     monkeypatch.setattr("mws_run_state.LOCAL_ROOT", state_root)
-    upsert_machine(_machine())
-
-
-def _machine_ready(monkeypatch, state_root: Path) -> dict:
-    write_valid_machine_ready_run(_machine(), run_id="machine-native-1")
-    return load_machine_ready_evidence("dev-native", machine_run_id="machine-native-1")
+    save_inventory({"schema_version": 1, "machines": {"dev-native": _machine()}})
 
 
 def _remote_native_fixture(tmp_path: Path, monkeypatch) -> dict[str, str]:
@@ -95,8 +87,7 @@ def test_identity_parity_ready_when_local_repos_are_fixed_dirs(
 
     paths = _remote_native_fixture(tmp_path, monkeypatch)
 
-    ready = _machine_ready(monkeypatch, state_root)
-    manifest = prove_identity_parity(_machine(), machine_ready=ready)
+    manifest = prove_identity_parity(_machine())
 
     assert manifest["status"] == "ready"
     assert manifest["source_mode"] == "identity"
@@ -128,59 +119,6 @@ def test_identity_parity_fails_closed_when_local_repo_is_not_fixed_dir(
     monkeypatch.setitem(mws_parity.REPO_DIRS, "vllm_ascend", stray_root / "vllm-ascend")
     del paths
 
-    ready = _machine_ready(monkeypatch, state_root)
     with pytest.raises(Exception) as exc:
-        prove_identity_parity(_machine(), machine_ready=ready)
+        prove_identity_parity(_machine())
     assert "does not resolve to fixed source dir" in str(exc.value)
-
-
-def test_identity_parity_fails_closed_on_missing_fixed_dir(
-    tmp_path: Path, monkeypatch
-) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir()
-    _setup_state(monkeypatch, state_root)
-
-    paths = _remote_native_fixture(tmp_path, monkeypatch)
-    shutil.rmtree(paths["vllm_source"])
-
-    ready = _machine_ready(monkeypatch, state_root)
-    with pytest.raises(Exception) as exc:
-        prove_identity_parity(_machine(), machine_ready=ready)
-    assert "fixed source dir missing" in str(exc.value)
-
-
-def test_identity_parity_run_consumable_by_configure(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """M0 acceptance: an identity parity proof is an immutable parity-complete
-    run that the configure consumer can load, with machine identity intact."""
-    from mws_run_state import load_run, new_run_id, write_parity_run
-
-    state_root = tmp_path / "state"
-    state_root.mkdir()
-    _setup_state(monkeypatch, state_root)
-
-    paths = _remote_native_fixture(tmp_path, monkeypatch)
-
-    ready = _machine_ready(monkeypatch, state_root)
-    manifest = prove_identity_parity(_machine(), machine_ready=ready)
-
-    run_id = new_run_id("parity")
-    write_parity_run(
-        run_id,
-        {
-            "status": "ready",
-            "parity_complete": True,
-            "machine": "dev-native",
-            "machine_run_id": ready.get("machine_run_id"),
-            "manifest_path": "scaffold/runs/parity/manifest.json",
-            "manifest": manifest,
-        },
-    )
-    run = load_run("parity-complete", run_id)
-    assert run["status"] == "ready"
-    assert run["parity_complete"] is True
-    assert run["machine"] == "dev-native"
-    # configure consumer checks parity run machine/alias against the deploy alias
-    assert run.get("machine") == _machine()["alias"]

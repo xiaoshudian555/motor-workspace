@@ -25,6 +25,6 @@
 
 ## 交付
 
-`routing-topology` validation run，包括拓扑、scheduler 配置、特征化 workload、
+`routing-topology` 证据目录包括拓扑、scheduler 配置、特征化 workload、
 实例选择证据、状态变化时间线和判定结果。失败时引用
 [`../../diagnosis/`](../../diagnosis/)。

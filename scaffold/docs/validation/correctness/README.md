@@ -25,6 +25,6 @@
 
 ## 交付
 
-`correctness` validation run，包括数据集或 case 版本、随机性配置、基线引用、
+`correctness` 证据目录包括数据集或 case 版本、随机性配置、基线引用、
 逐项结果、聚合分数、容差和判定。失败时引用
 [`../../diagnosis/`](../../diagnosis/)。

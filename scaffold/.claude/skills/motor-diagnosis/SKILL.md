@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-diagnosis/SKILL.md. Do not edit. -->
 ---
 name: motor-diagnosis
-description: Collect run-scoped Motor deploy diagnostic artifacts from deploy/config/bundle runs.
+description: Collect live Motor deployment evidence with direct kubectl and remote artifact tools.
 ---
 
 # motor-diagnosis

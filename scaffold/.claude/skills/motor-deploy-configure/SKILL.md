@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-deploy-configure/SKILL.md. Do not edit. -->
 ---
 name: motor-deploy-configure
-description: Generate or reuse immutable Motor deploy config bundles with upstream dry-run and server-side validation. Use for deploy configure, config bundle, deploy-config-ready.
+description: Validate Motor native user_config.json and env.json with the upstream deployer dry-run. Use for deploy configure or config validation.
 ---
 
 # motor-deploy-configure

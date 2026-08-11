@@ -1,6 +1,6 @@
 ---
 name: motor-diagnosis-controller-recovery-terminate
-description: Diagnose PyMotor precision auto-recovery terminate failures from a motor-diagnosis run.
+description: Diagnose PyMotor precision auto-recovery terminate failures from collected Motor logs.
 ---
 
 # PyMotor controller recovery terminate diagnosis
@@ -11,19 +11,13 @@ or generic mindie-llm link failures.
 
 ## Input contract
 
-Consume a completed `motor-diagnosis` run under:
+Consume the read-only log directory collected by `motor-diagnosis` or supplied by
+the user. No fixed run envelope is required. A typical directory is:
 
 ```text
-.motor-workspace-local/validation-runs/<diagnosis_run_id>/
-├── context.json
-├── manifest.json
-└── logs/<auto_log_collect_session>/*.log
+.motor-workspace-local/diagnosis/<case>/
+└── logs/**/*.log
 ```
-
-`manifest.json.diagnosis_routes` should contain
-`motor-diagnosis-controller-recovery-terminate`. If it does not, this skill may
-still run when the user explicitly identifies a precision auto-recovery issue,
-but it must report that automatic routing did not match.
 
 Treat all logs as read-only evidence. Preserve file name and line number for
 every quoted event. Correlate Coordinator and Controller records by timestamp,
@@ -54,7 +48,7 @@ PrecisionReporter threshold
 
 ## Entry patterns
 
-Search all files under the diagnosis run's `logs/` directory:
+Search all files under the supplied log directory:
 
 ```bash
 rg -n "PrecisionReporter: threshold reached|Reporting alarm to controller|Report alarms success|Exception occurred while reporting alarms" <logs_dir>

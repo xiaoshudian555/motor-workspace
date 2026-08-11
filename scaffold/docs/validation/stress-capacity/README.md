@@ -26,5 +26,5 @@
 
 ## 交付
 
-`stress-capacity` validation run，包括负载阶段、容量曲线、成功率、延迟、资源、
+`stress-capacity` 证据目录包括负载阶段、容量曲线、成功率、延迟、资源、
 瓶颈位置、恢复结果和 [`../../diagnosis/`](../../diagnosis/) 引用。

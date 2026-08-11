@@ -19,7 +19,7 @@ sys.path.insert(0, str(LIB))
 
 from mws_lock import verify_lock  # noqa: E402
 from mws_local_state import load_inventory, redact_secrets  # noqa: E402
-from mws_result import emit, progress  # noqa: E402
+from mws_result import emit  # noqa: E402
 
 
 def command_status(_: argparse.Namespace) -> int:
