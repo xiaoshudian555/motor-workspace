@@ -39,7 +39,7 @@ deploy-complete
 
 - 同步本地代码或维护远端固定源码目录。
 - 生成、修改或 apply Motor 部署配置。
-- 修复 Pod Ready、hostPath、`PYTHONPATH` 或运行代码加载问题。
+- 修复 Pod Ready、hostPath 挂载或 runtime package policy（boot.sh / wheel / 镜像包）问题。
 - 用一次 HTTP 连通性探测代替正式场景验证。
 - 实现诊断 skill 族本身；见 [`../diagnosis/`](../diagnosis/)。
 

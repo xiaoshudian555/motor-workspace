@@ -23,6 +23,7 @@ from mws_deploy import (  # noqa: E402
     _run_deploy_full_remote,
     apply_config_bundle,
     collect_runtime_code_paths,
+    reconcile_boot_package_policy,
     stop_via_upstream_delete_sh,
     verify_min_service_access,
     verify_runtime_code_paths,
@@ -172,6 +173,43 @@ def test_apply_does_not_call_render_or_dry_run(local_state_root) -> None:
                         )
     dry_run.assert_not_called()
     configure.assert_not_called()
+
+
+def test_reconcile_boot_package_policy_rejects_unknown_policy(local_state_root) -> None:
+    import json
+
+    import pytest
+
+    meta = _write_bundle(local_state_root)
+    bundle_dir = Path(meta["bundle_dir"])
+    bundle_json = bundle_dir / "bundle.json"
+    data = json.loads(bundle_json.read_text(encoding="utf-8"))
+    data["runtime_package_policy"] = "motor_wheel"
+    bundle_json.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    with pytest.raises(WorkspaceStateError, match="unsupported runtime_package_policy"):
+        reconcile_boot_package_policy(bundle_dir, _machine())
+
+
+def test_apply_fails_closed_when_deployer_missing(local_state_root) -> None:
+    bundle_meta = _write_bundle(local_state_root)
+    bundle_dir = Path(bundle_meta["bundle_dir"])
+    if not bundle_dir.is_absolute():
+        bundle_dir = REPO_ROOT / bundle_dir
+
+    with patch("mws_deploy.run_deploy_full", return_value={"status": "error", "reason": "remote deployer not found: /x/deploy.py"}):
+        with patch(
+            "mws_deploy.reconcile_boot_package_policy",
+            return_value={"status": "ok", "policy": "image", "wheel_dir": "", "boot_sh_path": ""},
+        ):
+            result = apply_config_bundle(
+                bundle_dir=bundle_dir,
+                machine=_machine(),
+                kube_context="ctx-a",
+                namespace="ns1",
+            )
+    assert result["status"] == "error"
+    assert result["fallback"] is False
+    assert "motor-config ConfigMap" in result["errors"][0]
 
 
 def test_remote_full_deploy_records_new_auto_log_collect_session(tmp_path) -> None:

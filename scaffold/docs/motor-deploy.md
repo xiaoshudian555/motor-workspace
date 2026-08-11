@@ -60,8 +60,8 @@ Ready 状态并证明 Pod 使用目标代码结束。
 
 ### 明确不负责
 
-- 部署、dry-run、hostPath/`PYTHONPATH` 注入或 server-side 校验——这些属于
-  第三、四步。
+- 部署、dry-run、hostPath/volumeMount 注入或 server-side 校验——这些属于
+  第三、四步（运行时禁止源码 PYTHONPATH）。
 - 不调用 `motor-deploy-configure`。
 - 不创建 namespace、不修改 Kubernetes 资源。
 
@@ -173,8 +173,9 @@ Kubernetes 状态。
 - 验证本次操作需要的精确 namespace/RBAC 和配置依赖。
 - 复制到 run-scoped staging 目录，不直接修改用户原始配置。
 - 调用 Motor upstream deployer dry-run 生成本次新增的 YAML。
-- 对最终 YAML 完成共享 hostPath、volumeMount 和 `PYTHONPATH` 注入；业务
-  镜像、模型、NPU 和调度配置继续由 Motor 原生配置和 deployer 决定。
+- 对最终 YAML 完成共享 hostPath 与 volumeMount 注入；业务镜像、模型、NPU
+  和调度配置继续由 Motor 原生配置和 deployer 决定。运行时 package policy
+  只有 image 与 motor-wheel 两档；apply 在 run_deploy_full 前收敛远端 boot.sh。
 - 只处理并保存本次生成的 manifest，展示最终配置和相对上一次的 diff。
 - 校验 manifest 结构并执行 Kubernetes server-side dry-run。
 - 验证最终配置引用的固定远端目录与当前 parity manifest 完全对应；证明
@@ -223,7 +224,7 @@ dry-run，但不能仅凭“上次部署成功”猜测相同。
 - 输入引用及其摘要；
 - staging config、最终 manifest、diff 和 dry-run 证据；
 - Motor 原生配置副本、namespace/job-id 和最终资源摘要；
-- 当前 parity manifest 与最终 hostPath/`PYTHONPATH` 的对应证据；
+- 当前 parity manifest 与 bundle 固定路径的对应证据；
 - 是否复用历史配置包及复用依据。
 
 完成必须同时满足：
@@ -232,7 +233,7 @@ dry-run，但不能仅凭“上次部署成功”猜测相同。
 当前工作流的环境证据成功
 + Motor 原生配置可被 upstream deployer 接受
 + 最终 manifest 已生成或经 fingerprint 确认可复用
-+ 替换、挂载、PYTHONPATH 和 parity 路径对应正确
++ 替换、挂载、package policy 和 parity 路径对应正确
 + 必需的 manifest 校验与 dry-run 通过
 ```
 
@@ -271,8 +272,8 @@ render 后再 apply。
 - 记录 apply 的每个资源、返回结果和失败位置。
 - 等待并判断 Motor 关键资源、组件和 Pod 达到约定 Ready 状态。
 - 验证服务最小可访问性。
-- 在 Pod 内验证 `motor`、`vllm`、`vllm_ascend` 的实际加载路径，并与当前
-  parity manifest 和固定远端目录对应。
+- 在 Pod 内验证 `motor`、`vllm`、`vllm_ascend` 的实际加载路径为镜像
+  site/dist-packages（motor-wheel 模式下 Motor 来自 boot.sh 安装的 wheel）。
 - 拉取、调度、挂载或模型问题导致无法 Ready 时停止并保留现场，交给
   diagnosis；正常部署流程不额外创建诊断 workload。
 - 支持与本次 deploy run 关联的 status、restart、stop 和诊断入口。
@@ -308,7 +309,7 @@ render 后再 apply。
 + 资源已实际 apply
 + Motor 关键 Pod/组件达到约定 Ready 状态
 + 服务具备最小可访问性
-+ Pod 内实际加载当前 parity 对应的目标源码目录
++ Pod 内实际加载路径符合 bundle 的 runtime package policy（image 或 motor-wheel）
 ```
 
 只有环境通过、只有配置包、只 apply 成功或只有 Pod Ready，都不能声明本步骤

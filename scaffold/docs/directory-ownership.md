@@ -44,7 +44,7 @@ Kubernetes 生命周期属于对应业务 skill。
 | 逻辑责任 | 当前实现 |
 |---|---|
 | 本地状态和运行目录 | `mws_local_state.py` |
-| machine 固定远端路径与 PYTHONPATH | `mws_machine_target.py` |
+| machine 固定远端路径 | `mws_machine_target.py` |
 | parity/deploy run 记录 | `mws_run_state.py` |
 | 通用 JSON/lock 工具 | `mws_state.py` |
 | 代码 parity | `mws_parity.py` |

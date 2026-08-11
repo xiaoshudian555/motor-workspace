@@ -91,8 +91,9 @@ skills for domain workflows.
 - Development binds one local workspace to one machine and one fixed
   `remote_workspace_root` under the shared mount root.
 - Development parity syncs source once to fixed directories under the shared
-  mount root; Pods pick it up via existing hostPath (default `/mnt:/mnt`) and
-  injected `PYTHONPATH`. Do not fan out copies to per-session paths. Image
+  mount root for wheel builds and content proof; runtime loads image packages,
+  or a boot.sh-installed Motor wheel in motor-wheel mode. Source-tree
+  `PYTHONPATH` is forbidden. Do not fan out copies to per-session paths. Image
   rebuild is an optional bypass for release/delivery, not the default loop.
 - Reuse Motor's current deployer and MindCluster resources. Do not implement a
   competing P/D controller or generic serving engine.

@@ -84,7 +84,7 @@ remote-code-parity` 三个阶段。详细功能归属见
 
 明确不负责：
 
-- 部署、dry-run、hostPath/`PYTHONPATH` 注入或 server-side 校验（属第三、四步）。
+- 部署、dry-run、hostPath/volumeMount 注入或 server-side 校验（属第三、四步；运行时禁止源码 PYTHONPATH）。
 - 创建 namespace、修改 Kubernetes 资源。
 
 完成标志：
@@ -141,7 +141,8 @@ remote-code-parity` 三个阶段。详细功能归属见
 - 调用 Motor upstream deployer dry-run，在 staging 中生成本次配置。
 - namespace 只取 `motor_deploy_config.job_id`，要求已经存在；workspace 不
   提供 deploy profile 或字段级 CLI override。
-- 完成共享 hostPath、volumeMount 和 `PYTHONPATH` 注入。
+- 完成共享 hostPath 与 volumeMount 注入；bundle 记录 runtime package policy
+  （image 或 motor-wheel），apply 收敛 boot.sh 后再走 upstream deployer。
 - 验证最终 manifest、精确 RBAC、结构路径和代码路径映射。
 - 执行 manifest 校验和 Kubernetes server-side dry-run。
 - 通过明确的 fingerprint 判断历史配置包能否复用。
@@ -165,7 +166,7 @@ remote-code-parity` 三个阶段。详细功能归属见
 
 - 独立的 `deploy-config-ready`。
 - immutable config bundle、`config_fingerprint`、最终 manifest 和 diff。
-- 当前 parity 与最终 hostPath/`PYTHONPATH` 的对应证据。
+- 当前 parity 与 bundle 固定路径的对应证据。
 
 ### 2.4 Motor 实际部署与运行验收
 

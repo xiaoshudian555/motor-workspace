@@ -253,8 +253,7 @@ NPU 或调度字段 override。
 1. 复制原生配置到 run-scoped staging。
 2. 使用 upstream Motor `deploy.py --config_dir ... --dry-run` 或等价原生入口。
 3. 只收集本次生成的 manifest。
-4. 根据当前 machine/parity 固定路径注入共享 hostPath、volumeMount 和
-   `PYTHONPATH`。
+4. 根据当前 machine/parity 固定路径注入共享 hostPath 与 volumeMount。
 5. 从 `motor_deploy_config.job_id` 取得 namespace；不存在立即报错。
 6. 校验 manifest 结构和本次资源所需 RBAC。
 7. 执行 Kubernetes server-side dry-run，不持久化资源。

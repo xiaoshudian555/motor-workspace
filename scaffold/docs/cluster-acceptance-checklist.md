@@ -39,9 +39,9 @@ motor-smoke                        → motor-smoke validation run
 ## 通过标准
 
 1. **Preflight（只读）**：Kubernetes API、MindCluster/Volcano CRD、device plugin 等基础检查为 `ok` 或已记录 `warning`；不创建任何 K8s 资源。
-2. **Configure**：Motor 原生 `user_config.json` / `env.json` 生成不可变 bundle；namespace 已存在；server-side dry-run 通过；manifest hostPath/`PYTHONPATH` 与 parity 固定路径一致。
-3. **Apply**：bundle digest/fingerprint 与 config run 匹配；关键 Pod Ready；最小服务可访问。
-4. **Runtime proof**：Pod 内 `motor`、`vllm`、`vllm_ascend` 加载路径与当前 parity 固定目录一致。
+2. **Configure**：Motor 原生 `user_config.json` / `env.json` 生成不可变 bundle；namespace 已存在；server-side dry-run 通过；manifest hostPath/volumeMount 与 parity 固定路径一致；bundle 记录 runtime package policy。
+3. **Apply**：bundle digest/fingerprint 与 config run 匹配；apply 在 run_deploy_full 前收敛 boot.sh；关键 Pod Ready；最小服务可访问。
+4. **Runtime proof**：Pod 内 `motor`、`vllm`、`vllm_ascend` 加载路径符合 bundle policy（site/dist-packages；motor-wheel 时 Motor 来自 wheel 安装）。
 5. **Smoke**：Coordinator management `/readiness` 响应体为 `ready=true`；Pod Ready、TCP 可连或 `/health` 单独成功均不算通过。
 6. **Functional / inference-request**：完成 non-stream 与 stream 两条真实推理请求并保存响应证据；metrics/tracing 是下一优先能力。
 7. **Diagnosis（失败路径，见 [diagnosis/](diagnosis/)，非 validation 场景）**：能从 deploy run + config/bundle 收集 pods/events，**不依赖** legacy `plan_dir`。

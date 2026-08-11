@@ -1,7 +1,8 @@
 # Optional image build bypass (non-default)
 
-**Not the primary development path.** Daily validation uses
-`remote-code-parity` → shared mount root → Pod hostPath + `PYTHONPATH`.
+**Not the primary development path.** Motor code replace uses
+`remote-code-parity` → `motor-build-wheel` → configure/apply with boot.sh
+reconcile; runtime loads image packages or a boot.sh-installed Motor wheel.
 
 Use this directory only when:
 

@@ -18,6 +18,7 @@ from mws_build import (  # noqa: E402
     build_motor_wheel_in_docker,
     build_wheel_run_envelope,
     reconcile_motor_wheel_override,
+    validate_wheel_build_run_for_configure,
 )
 from mws_local_state import WorkspaceStateError  # noqa: E402
 
@@ -376,4 +377,61 @@ def test_reconcile_detects_content_mismatch(tmp_path) -> None:
     with pytest.raises(WorkspaceStateError, match="does not match bundle wheel_dir"):
         reconcile_motor_wheel_override(
             _CorruptAdapter(boot), source_root=source_root, wheel_dir="/mnt/wheels/abc/dist"
+        )
+
+
+def test_reconcile_rejects_partial_marker(tmp_path) -> None:
+    source_root, boot = _write_source_tree_boot(tmp_path)
+    text = boot.read_text(encoding="utf-8")
+    boot.write_text(
+        text.replace(
+            "#!/bin/bash",
+            "#!/bin/bash\n# >>> MWS_MOTOR_WHEEL_DIR_BEGIN\nMOTOR_WHEEL_DIR=\"/stale/dist\"\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    import pytest
+
+    with pytest.raises(WorkspaceStateError, match="mismatched MWS_MOTOR_WHEEL_DIR markers"):
+        reconcile_motor_wheel_override(
+            _BootShAdapter(boot), source_root=source_root, wheel_dir=None
+        )
+
+
+def test_validate_wheel_build_run_rejects_machine_mismatch() -> None:
+    import pytest
+
+    run = {
+        "kind": "motor-wheel-build",
+        "status": "ready",
+        "extra": {
+            "machine": "dev2",
+            "base_image_ref": "img:1",
+            "wheel_dir": "/mnt/w/dist",
+        },
+        "artifacts": [{"name": "motor-wheel", "path": "/mnt/w/dist", "base_image_ref": "img:1"}],
+    }
+    with pytest.raises(WorkspaceStateError, match="dev2"):
+        validate_wheel_build_run_for_configure(
+            run, machine_alias="dev1", base_image_ref="img:1"
+        )
+
+
+def test_validate_wheel_build_run_rejects_base_image_mismatch() -> None:
+    import pytest
+
+    run = {
+        "kind": "motor-wheel-build",
+        "status": "ready",
+        "extra": {
+            "machine": "dev1",
+            "base_image_ref": "img:old",
+            "wheel_dir": "/mnt/w/dist",
+        },
+        "artifacts": [{"name": "motor-wheel", "path": "/mnt/w/dist", "base_image_ref": "img:old"}],
+    }
+    with pytest.raises(WorkspaceStateError, match="base_image_ref"):
+        validate_wheel_build_run_for_configure(
+            run, machine_alias="dev1", base_image_ref="img:new"
         )

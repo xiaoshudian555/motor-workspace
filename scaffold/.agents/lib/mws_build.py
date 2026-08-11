@@ -70,6 +70,57 @@ def motor_wheel_dir_from_build_run(run: dict[str, Any]) -> str:
     raise WorkspaceStateError("motor-wheel-build run missing wheel_dir artifact")
 
 
+def validate_wheel_build_run_for_configure(
+    run: dict[str, Any],
+    *,
+    machine_alias: str,
+    base_image_ref: str,
+) -> str:
+    """Ensure a motor-wheel-build run matches the current configure context."""
+    kind = str(run.get("kind") or "")
+    if kind != "motor-wheel-build":
+        raise WorkspaceStateError(
+            f"expected motor-wheel-build run, got {kind!r}"
+        )
+    if str(run.get("status") or "") not in {"ready", "ok"}:
+        raise WorkspaceStateError(
+            f"motor-wheel-build run is not ready (status={run.get('status')!r})"
+        )
+    extra = run.get("extra") if isinstance(run.get("extra"), dict) else {}
+    run_machine = str(extra.get("machine") or run.get("machine") or "").strip()
+    if run_machine and run_machine != machine_alias:
+        raise WorkspaceStateError(
+            f"motor-wheel-build run is for machine {run_machine!r}, not {machine_alias!r}"
+        )
+    run_image = str(extra.get("base_image_ref") or "").strip()
+    artifacts = run.get("artifacts") if isinstance(run.get("artifacts"), list) else []
+    for item in artifacts:
+        if isinstance(item, dict) and item.get("name") == "motor-wheel":
+            run_image = str(item.get("base_image_ref") or run_image).strip()
+    if run_image and base_image_ref and run_image != base_image_ref:
+        raise WorkspaceStateError(
+            f"motor-wheel-build run base_image_ref {run_image!r} "
+            f"does not match configure base_image_ref {base_image_ref!r}"
+        )
+    return motor_wheel_dir_from_build_run(run)
+
+
+def _assert_boot_sh_markers_well_formed(content: str) -> None:
+    begin_count = content.count(_BOOT_WHEEL_BEGIN)
+    end_count = content.count(_BOOT_WHEEL_END)
+    if begin_count == 0 and end_count == 0:
+        return
+    if begin_count != end_count:
+        raise WorkspaceStateError(
+            "boot.sh has mismatched MWS_MOTOR_WHEEL_DIR markers "
+            f"(BEGIN={begin_count}, END={end_count})"
+        )
+    if begin_count > 1:
+        raise WorkspaceStateError(
+            f"boot.sh has duplicate MWS_MOTOR_WHEEL_DIR marker blocks ({begin_count})"
+        )
+
+
 def detect_build_gaps(source_root: str) -> dict[str, Any]:
     """Detect artifacts the parity source tree cannot provide at runtime.
 
@@ -257,6 +308,7 @@ def _read_remote_boot_sh(adapter: Any, *, source_root: str) -> str:
 
 
 def _verify_boot_sh_wheel_override(content: str, *, wheel_dir: str | None) -> None:
+    _assert_boot_sh_markers_well_formed(content)
     has_block = _BOOT_WHEEL_BEGIN in content and _BOOT_WHEEL_END in content
     if wheel_dir is None:
         if has_block:
@@ -286,6 +338,8 @@ def reconcile_motor_wheel_override(
     path. Apply-time callers treat the bundle as the source of truth and pass
     its wheel_dir (or None for image mode) here unconditionally.
     """
+    content = _read_remote_boot_sh(adapter, source_root=source_root)
+    _assert_boot_sh_markers_well_formed(content)
     if wheel_dir is None:
         boot_path = _remove_motor_wheel_dir_block_in_boot_sh(adapter, source_root=source_root)
     else:

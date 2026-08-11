@@ -1672,7 +1672,16 @@ def reconcile_boot_package_policy(bundle_dir: Path, machine: dict[str, Any]) -> 
     from mws_execution import execution_adapter_for_machine
 
     bundle = load_config_bundle(bundle_dir)
-    policy = str(bundle.get("runtime_package_policy") or "image")
+    raw_policy = bundle.get("runtime_package_policy")
+    if raw_policy is None or raw_policy == "":
+        policy = "image"
+    else:
+        policy = str(raw_policy)
+    if policy not in {"image", "motor-wheel"}:
+        raise WorkspaceStateError(
+            f"unsupported runtime_package_policy: {policy!r}; "
+            "expected 'image' or 'motor-wheel'"
+        )
     wheel_dir = str(bundle.get("motor_wheel_dir") or "").rstrip("/")
     if policy == "motor-wheel":
         if not wheel_dir:
@@ -1742,18 +1751,17 @@ def apply_config_bundle(
         }
 
     if "deployer not found" in str(deploy.get("reason", "")):
-        fallback = _apply_bundle_direct(
-            manifest_dir=manifest_dir,
-            machine=machine,
-            kube_context=kube_context,
-            namespace=namespace,
-            kubectl=kubectl,
-        )
         return {
-            "status": fallback["status"],
+            "status": "error",
             "upstream_deploy": deploy,
-            "apply_results": fallback.get("apply_results", []),
-            "fallback": True,
+            "boot_policy": reconcile,
+            "errors": [
+                "upstream deployer unavailable; cannot apply package policy because "
+                "motor-config ConfigMap is created only by deploy.py. "
+                "Direct bundle apply would leave Pods on a stale ConfigMap even "
+                "though boot.sh was reconciled on the host."
+            ],
+            "fallback": False,
         }
 
     return {

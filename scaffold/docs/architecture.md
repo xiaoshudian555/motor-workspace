@@ -57,7 +57,8 @@ collection after failure belongs to diagnosis.
 - No workspace ID, session ID, or run ID is part of the remote source path.
 - Motor deployer templates already mount hostPath `/mnt:/mnt` on Controller,
   Coordinator, Engine and related roles. The wrapper verifies/reuses that mount
-  and injects `PYTHONPATH` on runtime containers only.
+  for shared workspace access; runtime code comes from image packages (and a
+  boot.sh-installed Motor wheel in motor-wheel mode), not source-tree PYTHONPATH.
 - Pure Python changes: parity overwrite + config-bundle compatibility/rebind +
   `deploy_restart`.
 - Editable install / ABI-sensitive changes: bootstrap Pod/Job or image bypass.
@@ -77,14 +78,14 @@ collection after failure belongs to diagnosis.
 
 | Path | When |
 |------|------|
-| remote-code-parity → fixed remote dirs → hostPath → PYTHONPATH | Default daily development |
+| remote-code-parity → wheel build → apply boot.sh reconcile → image or motor-wheel runtime | Default Motor code replace |
 | tools/build/ image bypass | Release, no shared storage, explicit user request |
 
 ## Extension contracts
 
 `motor-deploy-preflight` owns only K8s/MindCluster environment evidence and
 does not read the Motor user config. `motor-deploy-configure` owns the upstream
-deployer dry-run, run-scoped staging, final YAML, hostPath/PYTHONPATH/image
+deployer dry-run, run-scoped staging, final YAML, hostPath/volumeMount/image
 substitutions, config diff, manifest validation, server-side dry-run, and the
 immutable bundle contract. `motor-k8s-deploy` applies that exact bundle after
 user approval and owns post-apply Ready/runtime evidence. No step may rewrite
@@ -116,7 +117,7 @@ inputs or final manifests. Its only business configuration sources are Motor's
 native `user_config.json` and `env.json`; it does not add a deploy profile or
 field-level CLI overrides. It requires the namespace from
 `motor_deploy_config.job_id` to exist, then owns exact namespace/RBAC,
-hostPath/volumeMount/PYTHONPATH injection, upstream deployer dry-run, manifest
+hostPath/volumeMount injection, upstream deployer dry-run, manifest
 validation, and Kubernetes server-side dry-run. It does not perform pre-apply
 image-pull, model-readability, candidate-node hostPath, or diagnostic workload
 checks.

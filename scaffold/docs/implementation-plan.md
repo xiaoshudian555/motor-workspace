@@ -191,7 +191,7 @@ affinity 等字段的第二套 CLI override 或 deploy profile。
 - Workspace 的命令参数只允许选择 machine/run/config 文件路径和操作，
   不得成为 Motor 字段的第二配置源。
 - 第二步在 run-scoped staging 中复制原生配置，调用 upstream `--dry-run`，
-  再对生成 manifest 做共享 hostPath、volumeMount 和 `PYTHONPATH` 注入。
+  再对生成 manifest 做共享 hostPath 与 volumeMount 注入（运行时禁止源码 PYTHONPATH）。
 - `workspace.lock.yaml` 只提供诊断信息，不覆盖 Motor 原生配置。
 
 ### 3. Namespace 策略

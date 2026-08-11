@@ -13,7 +13,7 @@ sys.path.insert(0, str(LIB))
 
 from repo_paths import MOTOR_ROOT, REPO_ROOT, SCAFFOLD_ROOT  # noqa: E402
 
-from mws_build import motor_wheel_dir_from_build_run  # noqa: E402
+from mws_build import validate_wheel_build_run_for_configure  # noqa: E402
 from mws_deploy import (  # noqa: E402
     compute_config_fingerprint,
     configure_deploy_bundle,
@@ -91,8 +91,24 @@ def main() -> int:
     parity_paths = build_fixed_source_paths(machine)
     motor_wheel_dir = ""
     if args.motor_wheel_build_run_id.strip():
-        wheel_run = load_run("motor-wheel-build", args.motor_wheel_build_run_id.strip())
-        motor_wheel_dir = motor_wheel_dir_from_build_run(wheel_run)
+        try:
+            wheel_run = load_run("motor-wheel-build", args.motor_wheel_build_run_id.strip())
+            motor_wheel_dir = validate_wheel_build_run_for_configure(
+                wheel_run,
+                machine_alias=alias,
+                base_image_ref=base_image_ref,
+            )
+        except WorkspaceStateError as exc:
+            envelope = build_result_envelope(
+                kind="deploy-config-ready",
+                run_id=config_run_id,
+                workflow_run_id=workflow_run_id,
+                checks=[],
+                started_at=started_at,
+                errors=[str(exc)],
+                status="failed",
+            )
+            return emit(envelope)
     reuse_bundle_dir = None
     if args.reuse:
         native_config = normalize_native_config(config_dir)

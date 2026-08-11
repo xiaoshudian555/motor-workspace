@@ -89,8 +89,8 @@ VAWS remote 迁移处理矩阵：
 | `remote_service_start/status/logs/stop` 的 vLLM container service adapter | 删除或重写 | Motor 服务生命周期只由 `motor-k8s-deploy`/upstream deployer 管理 |
 | `remote_cleanup` 中的 container/session/lease cleanup | 删除或重写 | 仅保留明确的 Host temp/job/artifact cleanup；K8s 删除/停止必须走 Motor workflow 和 consent |
 | VAWS `remote_code_parity.py` 的 synthetic snapshot / bundle / mirror / materialize | 保留并适配 | 复用为 git 对象增量 parity（`mws_parity` 已落地：temp-index synthetic snapshot → `git bundle` → bare mirror → worktree `checkout -f -B` + `reset --hard` + `clean -ffd`），输出仍是固定 shared-hostPath 目录 |
-| VAWS 的 container mirror/cache（Docker image 层）、runtime install/editable install、image package replacement | 删除 | 属 Docker session 专属能力，与固定 hostPath + `PYTHONPATH` 运行模型冲突 |
-| `install_consent.py` 的 image package replacement、editable install、container marker | 删除 | Motor daily Python loop 使用 hostPath + `PYTHONPATH`；ABI/install 走明确 bootstrap Job 或 image bypass |
+| VAWS 的 container mirror/cache（Docker image 层）、runtime install/editable install、image package replacement | 删除 | 属 Docker session 专属能力；Motor 运行时使用 image 或 motor-wheel（boot.sh），禁止源码 PYTHONPATH |
+| `install_consent.py` 的 image package replacement、editable install、container marker | 删除 | Motor 代码替换走 parity + wheel build + apply boot.sh reconcile；禁止 editable install / 源码 PYTHONPATH |
 | managed `session_id`/`session_file` endpoint selector | 从通用 `.remote-dev` 移除 | direct `host+port`/alias 是通用层；Motor machine 解析在 `.agents/lib` adapter 完成 |
 | `machine` endpoint selector | 不进入通用 core | 如需保留便利入口，只能作为 Motor adapter，解析后仍传 direct endpoint |
 
@@ -432,28 +432,16 @@ R1 关闭记录（2026-08-03）：
 - 测试中使用 `/vllm-workspace` 只能作为明确的隔离 fixture，不能出现在 Motor
   产品默认值或 live validation 结论中。
 
-### TD-P2-07：发布级代码替换需支持 Motor 完整构建（protobuf + Rust），而非仅 hostPath/PYTHONPATH
+### TD-P2-07（已完成）：发布级 Motor 代码替换走 wheel build + boot.sh reconcile
 
-现状：
+现行模型（2026-08-10 起）：
 
-- 快路径（固定共享目录 hostPath + `PYTHONPATH`）只覆盖纯 Python 修改：远端
-  `motor/vllm/vllm-ascend` 源码树可被 Pod 直接加载，无需重新打包镜像。
-- Motor 运行时还依赖两类产物，快路径无法提供：
-  - protobuf 生成文件（`*_pb2.py`）：由 `.proto` 编译生成，若源码树缺少
-    `pb2`，`import` 阶段即失败，hostPath 同步成功并不能代表代码已可用；
-  - Rust 扩展（如 kv-connector）：需要 `cargo build` 产出动态库并打成 wheel
-    安装进 Python 环境。
+- parity 同步源码到固定共享目录，仅供 `motor-build-wheel` 构建；
+- configure 记录 `runtime_package_policy`（`image` 或 `motor-wheel`）与 wheel build run；
+- apply 在 `run_deploy_full` 前按 bundle 收敛远端 `boot.sh`，upstream deployer 将其写入 motor-config ConfigMap；
+- 运行时禁止源码 PYTHONPATH；Motor 仅通过 boot.sh 安装 wheel（motor-wheel）或全镜像包（image）。
 
-目标：
-
-- 发布级替换提供 build 路径：编译 protobuf、构建 kv-connector wheel、重新
-  打包基础镜像（image rebuild），作为 release/delivery 的显式旁路。
-- 明确两条路径分工：日常 Python 迭代走快路径；涉及 pb2 / Rust 扩展 / 打包
-  产物时必须走 build 路径。
-- 快路径对"覆盖不到什么"有显式声明，避免同步成功后误认为代码已完整生效；
-  build 路径有可执行的构建命令、产物落盘位置和镜像引用记录。
-
-2026-08-03 历史落地记录（当时 **build 路径已实现；replace/deploy 集成未落地**）：
+历史背景（已废止的快路径描述）：
 
 - 新增 `scaffold/.agents/lib/mws_build.py`：
   - `detect_build_gaps`：扫描 `*.proto` 对应 `*_pb2.py` 与 `kv_conductor/bin`

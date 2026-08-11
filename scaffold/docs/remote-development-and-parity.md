@@ -202,8 +202,7 @@ session ID、deploy run ID 或 validation run ID。
 
 - 读取 Motor 原生 `user_config.json` 和 `env.json`，不引入第二套部署字段。
 - 检查本次 namespace 和资源操作所需的精确 RBAC。
-- 对 upstream 生成的 manifest 注入共享 hostPath、volumeMount 和
-  `PYTHONPATH`，并验证其固定路径映射。
+- 对 upstream 生成的 manifest 注入共享 hostPath 与 volumeMount，并验证其固定路径映射（运行时禁止源码 PYTHONPATH）。
 - 运行 upstream deployer dry-run、manifest 校验和 Kubernetes
   server-side dry-run。
 - 不在 apply 前验证候选节点 hostPath、实际 image pull 或模型容器内可读性；
@@ -309,7 +308,7 @@ manifest 是同步结果证据，不是 source snapshot、build context 或镜�
 - `pip install` 或 editable install。
 - 镜像构建。
 - namespace 或 job-id 分配。
-- 向 Pod 注入 `PYTHONPATH`。
+- 运行时禁止向 Pod 注入源码 `PYTHONPATH`；Motor 替换走 boot.sh wheel 安装。
 - 创建、重启或删除 Pod。
 - Pod 内 `__file__` 验证。
 - Motor Deploy、OpenAI smoke、benchmark 或 profiling。

@@ -83,7 +83,7 @@ remote-native
 - 不引入通用 distributed workflow framework、调度中心或服务端数据库。
 - 不恢复 VAWS managed Docker session、container sshd、NPU lease 或 per-session
   source path。
-- 不改变共享 hostPath + 固定 source root + `PYTHONPATH` 的默认开发模型。
+- 默认开发模型：parity 同步源码供 wheel 构建；运行时 image 或 motor-wheel（boot.sh），禁止源码 PYTHONPATH。
 - 不以本 Roadmap 宣称当前尚未实现的 Benchmark、Correctness、Stability、
   Reliability 或 Profiling 已经可用。
 - 不把目标侧共享 WorkflowStateStore 与自动跨端接力纳入首期范围；首期每个
