@@ -38,9 +38,14 @@ events, and selected logs. Do not infer success from old local evidence.
 ## Restart
 
 Obtain explicit consent, discover the concrete Deployments/StatefulSets, then
-restart only those targets and wait for rollout. Never use `--all`. For a
-single Controller/Coordinator config change, follow
-`references/component-config-rollout.md` and restart only that component.
+restart only those targets and wait for rollout. Never use `--all`.
+
+- Controller/Coordinator debug loop: changed `yaml_template` and/or
+  `user_config` and/or a component-only wheel, and P/D must keep running.
+  Follow `../../../docs/controller-coordinator-debug-rollout.md`. Never run
+  full `deploy.py` or `--update_config` for this path.
+- Single live ConfigMap JSON field only: follow
+  `references/component-config-rollout.md` and restart only that component.
 
 ## Stop
 

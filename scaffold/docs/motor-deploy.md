@@ -51,7 +51,10 @@ python3 deploy.py --config_dir <remote-config-dir>
 - status：直接 `kubectl get/describe/logs`；
 - restart：只 restart 明确发现并经授权的 workload，禁止 `--all`；
 - stop：优先 upstream `delete.sh`，否则只删除生成的 manifest；
-- 单组件配置更新：按 Skill reference 修改当前 ConfigMap 的单个字段，并只 rollout
-  Controller 或 Coordinator。
+- 单组件配置更新：只改 ConfigMap 单个 JSON 字段时，按 Skill reference
+  `component-config-rollout.md` 只 rollout Controller 或 Coordinator；
+- Controller/Coordinator 调试循环（换 `yaml_template` / `user_config` / 组件
+  whl，且不重启 P/D）：按
+  `docs/controller-coordinator-debug-rollout.md`，禁止全量 `deploy.py`。
 
 Coordinator smoke、functional、benchmark 和 diagnosis 属于部署后的独立目标。

@@ -22,7 +22,7 @@ description: Verify which cluster nodes actually have a given container image on
 **产出**：每个镜像在哪些节点缺失的清单（直接展示给用户）。
 
 **不做**：不拉取/导入/分发镜像（补 load 见 `scaffold/docs/technical-debt.md`
-TD-P2-07）；不修改业务负载；不验证 registry 可拉取性，只查节点本地是否已有。
+TD-P2-08）；不修改业务负载；不验证 registry 可拉取性，只查节点本地是否已有。
 
 ## 前置
 
@@ -176,4 +176,4 @@ ssh root@<entry-host> "kubectl delete daemonset mws-img-scan -n default --wait=f
 ## 参考
 
 - `references/approach.md`：临时 DaemonSet 方案原理、为何不用 ssh 逐台查、局限。
-- `scaffold/docs/technical-debt.md` TD-P2-07：补 load / 自动分发后续工作。
+- `scaffold/docs/technical-debt.md` TD-P2-08：补 load / 自动分发后续工作。

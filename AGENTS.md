@@ -32,6 +32,8 @@ Environment preflight and deploy dry-run must stay read-only. Apply, scale, dele
 
 ## Skill maintenance
 
+Route every request against the available Skills before taking task actions. If no Skill matches, proceed normally. If a Skill matches, it is the execution contract: read its `SKILL.md` completely and follow it. Do not bypass the matched Skill with generic search, shell commands, or an improvised workflow. Fall back only when the Skill cannot be loaded or executed; report the exact failure before falling back.
+
 Repo-local Skills live under `scaffold/.agents/skills/`; read the selected `SKILL.md` before use. Skills orchestrate existing tools directly. Add a script only for substantial deterministic logic that native tools do not provide.
 
 The live authoring source for `motor-deploy` is `~/.hermes/skills/local/motor-deploy/`. Keep its tracked mirror and Claude shims synchronized. `scaffold/bin/motorws` is an internal parity backend only; other workflows run directly from Skills.

@@ -1,8 +1,12 @@
 # Controller / Coordinator 单组件配置更新与重启
 
-本手册用于已经运行的 Motor Kubernetes 部署。适用场景是用户明确要求修改
-Controller 或 Coordinator 配置，并且只重启对应组件，不重启 P/D、KV Store 或
-其他 workload。
+本手册只覆盖：已经运行的集群上，改 ConfigMap 里**单个 JSON 字段**，并且只
+restart 对应组件。
+
+若还改了 `yaml_template`、组件 whl、`coordinator.sh` / `controller.sh`，不要用
+本手册。改走
+`../../../../docs/controller-coordinator-debug-rollout.md`。
+`--update_config` 和全量 `deploy.py` 也不是这条路径。
 
 这是一条有状态的线上维护路径。修改 ConfigMap 和执行 rollout 前必须获得用户
 明确同意。
