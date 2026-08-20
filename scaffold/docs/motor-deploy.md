@@ -57,4 +57,4 @@ python3 deploy.py --config_dir <remote-config-dir>
   whl，且不重启 P/D）：按
   `docs/controller-coordinator-debug-rollout.md`，禁止全量 `deploy.py`。
 
-Coordinator smoke、functional、benchmark 和 diagnosis 属于部署后的独立目标。
+Coordinator smoke、functional、reliability、benchmark 和 diagnosis 属于部署后的独立目标。

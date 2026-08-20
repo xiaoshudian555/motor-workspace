@@ -9,3 +9,7 @@ events、当前与 previous container logs，以及 upstream `--auto_log_collect
 
 通用采集完成后，按日志事实路由专项诊断；precision terminate 失败可交给
 `motor-diagnosis-controller-recovery-terminate`。
+
+部署或启动失败统一交给 `motor-startup-diagnosis`：它复用通用采集，并按证据选择
+environment、deployer、config、runtime-code 一个或多个方向。分类允许主因、伴随因素
+和 `unknown`；自动诊断保持只读，不自动重试、修复或修改配置。

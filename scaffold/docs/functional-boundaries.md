@@ -31,6 +31,7 @@ repo-init（Git/gh 直接命令）
   `ready=true`（`ready=false` 为等待；Pod Ready 不能替代）；
 - functional：真实 inference、metrics、tracing 等目标行为；
 - benchmark：明确 workload 下的性能数据；
+- reliability：显式授权的受控故障、隔离、恢复和故障期间业务影响；
 - diagnosis：失败时收集当前 Pod/Event/log 和 upstream auto-log 证据。
 
 各验证 Skill 直接读取原生配置与实时集群状态。它们不能互相冒充，也不能把

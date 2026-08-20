@@ -24,6 +24,11 @@ cd <source_dirs.motor>/examples/deployer
 python3 deploy.py --config_dir <remote-config-dir> --dry-run
 ```
 
+If the native dry-run exits non-zero, automatically invoke
+`motor-startup-diagnosis` with the exact command, stdout/stderr, exit status,
+config paths, and any files generated before failure. This is a read-only
+diagnosis route and does not authorize editing the config or rerunning deploy.
+
 4. Inspect every newly generated Kubernetes manifest under `output_yamls/`.
    Check namespace, image, hostPath, volumeMount, resources, NodePorts,
    workload names, and absence of source `PYTHONPATH`. Ignore non-manifest
@@ -59,6 +64,10 @@ fi
 kubectl --context "$CTX" apply --dry-run=server \
   $(printf ' -f %s' "${YAML_FILES[@]}")
 ```
+
+If server-side dry-run fails, pass its complete response and the implicated
+manifests to `motor-startup-diagnosis` so it can distinguish configuration,
+deployer translation, and cluster environment causes.
 
 Dry-run must not apply resources, create a namespace, or modify the user's
 config. A wheel build is handled by the remote fixed tree's existing `boot.sh`;

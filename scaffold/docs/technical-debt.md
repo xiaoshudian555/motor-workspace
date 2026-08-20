@@ -27,6 +27,10 @@
 | TD-P1-09 | 并入 TD-P2-01 | Skill 已写走 `remote.bash`；剩余是两套 SSH 实现 |
 | TD-P1-10 | 关闭 | 旧文已关；`smoke_run.py` 已删 |
 | TD-P1-11 | **打开** | Cursor 不加载根目录 `.mcp.json`；本轮只补了 `.cursor/mcp.json` |
+| TD-R1-01 | **打开（首版已落）** | `motor-reliability` 已定义三类 RAS 实验并接入部署 dispatcher；仍缺真实集群验收和失败场景专项诊断 |
+| TD-R1-02 | **打开** | GPQA 等 correctness 尚无独立 Skill、结果契约和可复现证据链 |
+| TD-R1-03 | **打开** | 通用 diagnosis 能取证，但 readiness、P/D 注册、推理路径和 RAS 恢复的专项定位覆盖不足 |
+| TD-R1-04 | **打开** | 冒烟/可靠性/精度的模型、拓扑、阈值、超时和基线仍缺版本化测试 profile |
 | TD-P2-01 | **打开** | `mws_transport.SshScpTransport` 与 `.remote-dev/core/ssh_transport.py` 仍各拼一套 ssh argv |
 | TD-P2-02 | 关闭 | `mws_deploy.py` 已删 |
 | TD-P2-03 | **打开（改写）** | `bench_plan.py` 已删；Skill 改为 agent 跑 aisbench，仍无结构化证据落盘 |
@@ -70,6 +74,64 @@
 有最小 live smoke。`remote.*` 未注册时 fail-closed，给出修复步骤，不静默改手搓 SSH。
 
 Cursor 特例见 TD-P1-11。
+
+### TD-R1-01：motor-reliability 首版已落，尚未完成真实集群闭环
+
+2026-08-20 已新增 `motor-reliability` Skill，覆盖三个显式授权场景：
+
+- Coordinator active/standby 主备切换；
+- Decode engine-server 进程强杀后的重拉和重新注册；
+- Prefill NPU 参数面 link 故障后的实例隔离、冗余补齐和物理链路恢复。
+
+Skill 已要求精确目标、注入前基线、一次性授权、轮询代替固定 sleep、失败先取证、
+以及 linkdown 的强制物理恢复。当前仍缺：
+
+- 在真实 Ascend/MindCluster 集群逐场景验收，确认各版本的进程名、日志、状态转换和
+  `hccn_tool` 查询/恢复语法；
+- `motor-deploy` dispatcher 已补 reliability 路由；仍需保持其 live authoring source、
+  tracked mirror 和 Claude shims 在后续修改中同步；
+- Coordinator failover、Decode 重拉和 P link 隔离失败后的专项 diagnosis Skill；
+- 连续请求探针的低负载、错误预算和最长中断统计契约。
+
+验收：三个场景各至少一次真实 PASS 和一次受控 FAIL；FAIL 时证据足以区分症状、
+近因和根因；任何超时/失败路径都完成目标恢复，或明确报告 `RESTORATION FAILED` 并
+转人工处理。
+
+### TD-R1-02：correctness / GPQA 缺独立执行与归因契约
+
+旧 Pymotor 用例会就地修改 AISBench 接口文件，运行 GPQA 后用写死的 0.807 基线
+判断 accuracy。workspace 目前没有 `motor-correctness`，不能保证数据集版本、prompt、
+chat template、thinking 参数、模型/tokenizer、评测器和原始产物一致，也无法可靠区分
+模型回归与评测环境问题。
+
+目标：使用 run-scoped 可变目录，保存版本指纹、精确生成/评测参数、数据集校验和、
+逐题原始结果及聚合指标；只有可比条件一致时才应用版本化基线。精度失败先证明评测
+有效，再进入专门归因；不能路由成性能问题或 generic smoke 通过。
+
+### TD-R1-03：冒烟与 RAS 的专项诊断覆盖不足
+
+`motor-diagnosis` 已能收集 Pod、Event、describe、current/previous logs 和 deployer
+auto-log；现有专项只覆盖 precision auto-recovery terminate。仍缺以下决策树：
+
+- workload 启动失败和 Coordinator `/readiness` 长期不收敛；
+- P/D 实例注册、拓扑计数和 Controller/Coordinator 状态不同步；
+- inference connect、timeout、5xx 和流式响应未完成；
+- Coordinator 主备未切换、Decode engine 未重拉、P link 故障未隔离或冗余未补齐。
+
+目标：每个专项消费通用 diagnosis 的只读证据，按时间、Pod UID、instance/job ID 和
+请求 ID 关联，输出阶段、证据链、根因分类、可信度与最小下一步。不因单条错误日志
+直接建议修复或代码修改。
+
+### TD-R1-04：缺少版本化测试 profile
+
+旧用例把端口、模型参数、拓扑、等待时间、GPQA 基线、GSM8K 并发/速率和吞吐阈值
+写死在用例中。Agent 当前可以要求用户确认，但没有统一、可审查、可版本化的 profile，
+容易把不兼容的模型、硬件、软件 revision 或 workload 结果直接比较。
+
+目标：定义只包含测试输入和判据的 profile schema，不复制 Motor 原生部署配置；至少
+覆盖模型/tokenizer、硬件和 P/D/TP/DP/EP 拓扑、case 列表、deadline/error budget、
+数据集和生成参数、benchmark workload 与版本化基线。profile 不能隐含部署、故障注入
+或配置修改授权，也不能变成新的 deploy bundle/run gate。
 
 ### TD-P1-11：Cursor 不加载根目录 `.mcp.json`，agent 连远程会改走 paramiko / sshpass
 

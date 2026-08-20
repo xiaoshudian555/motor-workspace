@@ -10,7 +10,7 @@
 | stress-capacity | 饱和点和容量 |
 | stability | 长时间稳定运行 |
 | profiling | 性能瓶颈归因 |
-| reliability | 故障注入、隔离和恢复；当前执行能力未实现 |
+| reliability | 由 `motor-reliability` 执行已支持的故障注入、隔离和恢复场景；其他场景显式报告 capability gap |
 
 所有场景直接使用当前 native config 和 K8s/Service 状态，不消费
 `deploy-complete` 或生成 validation run。原始证据按用户指定路径保存；未指定时

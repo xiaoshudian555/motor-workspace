@@ -39,6 +39,12 @@ native Motor config or cluster, and use `remote.bash`/`kubectl` directly.
    - response is not parseable JSON when HTTP 200.
 6. Always stop the temporary port-forward.
 
+On FAIL, automatically invoke `motor-startup-diagnosis` with the readiness poll
+timeline, final response, endpoint discovery evidence, and cleanup result. Do
+this before any retry, restart, config edit, or redeploy. A port-forward setup
+failure may still be a client access problem; provide its evidence and let the
+diagnosis route classify it rather than assuming a Motor startup defect.
+
 Pass requires the final poll to satisfy HTTP 200 and `ready=true`. `/health`,
 `/startup`, `/liveness`, TCP connect, or `/v1/models` do not replace this
 check. Do not use management port 1026 for inference; inference uses the

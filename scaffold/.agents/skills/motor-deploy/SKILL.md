@@ -19,6 +19,7 @@ skills.
 | Deploy, status, restart, stop | `motor-k8s-deploy` |
 | Coordinator readiness | `motor-smoke` |
 | Inference or feature behavior | `motor-functional` |
+| Authorized RAS fault and recovery validation | `motor-reliability` |
 | Performance workload | `motor-benchmark` |
 | Failure evidence | `motor-diagnosis` |
 
@@ -51,7 +52,8 @@ the current endpoint, and the current cluster every time.
   engine or immutable bundle format in this workspace.
 - Never inject source-tree `PYTHONPATH`. Runtime uses image packages or the
   explicitly built Motor wheel through the existing `boot.sh` mechanism.
-- Reliability fault injection is not implemented. Stop at that boundary; do
-  not relabel functional or diagnosis checks as recovery validation.
+- Reliability fault injection belongs to `motor-reliability`. Its read-only
+  plan and baseline do not authorize injection; obtain explicit consent for
+  the exact target and mandatory restoration transaction.
 - Report commands, endpoint, namespace, observed resources, and artifacts
   directly. Do not manufacture local workflow run IDs.

@@ -15,6 +15,18 @@
 故障注入对象和预期策略明确；业务影响、状态转换和恢复结果均有证据，恢复后
 服务重新达到目标状态且持续请求能够正常完成。
 
+## 当前执行入口
+
+`scaffold/.agents/skills/motor-reliability/` 当前支持：
+
+- Coordinator active/standby 主备切换；
+- Decode engine-server 进程被强杀后的自动重拉和重新注册；
+- Prefill NPU 参数面 link 故障后的隔离、冗余补齐和物理链路恢复。
+
+其他故障类型仍应报告 capability gap。执行前必须完成只读基线和精确目标解析，
+并对一次注入及其强制恢复事务取得明确授权。当前 Skill 通过本地结构校验，但尚未在
+真实 Ascend/MindCluster 集群完成纵向验收，见 `TD-R1-01`。
+
 ## 不负责
 
 - 未经明确授权执行破坏性故障注入。

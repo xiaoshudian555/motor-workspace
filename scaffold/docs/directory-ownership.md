@@ -13,7 +13,7 @@
 | `tests/` | 保留执行器与公共工具的契约测试，不测试 Skill 文案流程 |
 
 Skill 目录不保留 Python scripts。repo-init、machine、build-wheel、deploy、smoke、
-functional、benchmark、diagnosis 直接调用已有工具；只有 parity 复用 `motorws`
+functional、reliability、benchmark、diagnosis 直接调用已有工具；只有 parity 复用 `motorws`
 内部 backend。
 
 `bin/motorws` 只提供 parity 能力，不是产品 CLI，也不得扩张成第二套部署入口。

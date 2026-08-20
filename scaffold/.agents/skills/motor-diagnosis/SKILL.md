@@ -20,6 +20,10 @@ kubectl --context "$CTX" logs -n "$NS" <pod> --all-containers --previous --times
 ```
 
 Also inspect the native deployer's `--auto_log_collect` output when present.
+For a deploy or startup failure, return the evidence to
+`motor-startup-diagnosis` for cross-domain attribution; this Skill remains the
+common collector and does not force an environment, deployer, config, or code
+category.
 Do not restart, delete, repair, or inject faults while collecting evidence.
 Save artifacts only to a user-approved path or untracked
 `.motor-workspace-local/`, with source command and timestamp. When logs match
