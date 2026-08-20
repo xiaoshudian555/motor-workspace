@@ -27,3 +27,9 @@
 `benchmark` 证据目录包括环境指纹、workload 参数、warmup、raw result、
 聚合指标、基线比较和结论。失败时引用
 [`../../diagnosis/`](../../diagnosis/)。
+
+## 设计记录
+
+- [`aisbench-wrapper-review.md`](aisbench-wrapper-review.md)：2026-08-20 对
+  `motor-benchmark`、AISBench 官方仓库和 `aisbench_auto_tools_prefix` wrapper 的
+  审查过程与建议修改顺序。

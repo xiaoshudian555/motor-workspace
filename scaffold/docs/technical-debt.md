@@ -35,8 +35,8 @@
 | TD-P2-08 | **打开** | 旧文第二节误标成第二个 TD-P2-07。镜像检查 skill 只报不补 |
 | TD-A3-01 | 关闭 | workspace 私有 `namespace` 随 `mws_deploy.py` 删除；现行 `job_id` 即 namespace |
 | TD-A3-02 | 关闭 | 旧文已关 |
-| TD-A3-03 | 关闭 | `environment-contract.yaml` 已删。残留死配置见 TD-A3-07 |
-| TD-A3-04 | **打开（改写）** | 脚本版检查已删；Skill 只要求 agent 目视，apply 前无 fail-closed |
+| TD-A3-03 | 关闭 | `environment-contract.yaml` 已恢复到 skill `references/`；one-of 仍在 yaml。死配置 a2-dev.yaml 见 TD-A3-07 |
+| TD-A3-04 | **打开（改写）** | yaml 已恢复；Python 仍不恢复。Agent 读 yaml 再 kubectl。Apply 前镜像/容量仍无脚本级 fail-closed |
 | TD-A3-05 | **打开（回退）** | 自动避让代码已随 preflight 脚本删除；现行 Skill 只报告、等授权再改 |
 | TD-A3-06 | 关闭 | `motor-k8s-deploy` 主路径已是 upstream `delete.sh` |
 | TD-A3-07 | **打开** | 周边项部分仍在 |
@@ -143,11 +143,16 @@ wheel 后改远端 `boot.sh`。`mws_build.py` 已不存在。
 目标（按优先级）：内部 registry + 带前缀镜像引用，让 K8s 自拉；过渡期经授权做
 save/load 分发。全程不依赖节点间 SSH 互信。
 
-### TD-A3-04：部署前验证仍是 agent 目视，apply 前无 fail-closed
+### TD-A3-04：部署前验证由 agent 读契约后 kubectl，apply 前无脚本级 fail-closed
 
-原脚本（逐节点镜像、组件 Ready、NPU 容量）已删。现行 preflight Skill 要求看
-nodes / CRD / controller Ready / 镜像覆盖 / NodePort，但只出表格，不写 run
-记录，也不在「候选节点全无镜像且无法证明可拉」时阻断 apply。
+2026-08-13：已从 `030b430^` 恢复
+`scaffold/.agents/skills/motor-deploy-preflight/references/environment-contract.yaml`。
+`environment_preflight.py` 仍不恢复。现行 Skill：先读 yaml，按 `deploy_mode`
+查 CRD / controller / 默认 NodePort，再由 agent 跑只读 kubectl；契约硬性项
+缺失 fail-closed，禁止猜 CRD 名。不写 run 记录。
+
+仍缺：镜像缺失且不可拉时 apply 前的硬门禁、NPU 容量未验证的显式阻断——仍靠
+agent 报告，没有脚本/run-gate。
 
 目标：镜像缺失且不可拉时 apply 前 fail-closed；关键组件非 Ready 要标 error；
 NPU 容量未验证须在报告里显式标记，不得静默当通过。
