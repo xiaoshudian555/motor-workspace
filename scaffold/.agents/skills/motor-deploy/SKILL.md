@@ -14,6 +14,7 @@ skills.
 | Endpoint metadata or connectivity | `machine-management` |
 | Copy local dirty source to fixed `/mnt` paths | `remote-code-parity` |
 | Build a Motor wheel | `motor-build-wheel` |
+| Edit native deployment intent, including P/D placement | `motor-config-edit` |
 | Read-only K8s/MindCluster checks | `motor-deploy-preflight` |
 | Validate native Motor config and generated YAML | `motor-deploy-configure` |
 | Deploy, status, restart, stop | `motor-k8s-deploy` |

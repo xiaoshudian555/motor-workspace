@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/motor-benchmark/SKILL.md. Do not edit. -->
 ---
 name: motor-benchmark
-description: Run repeatable aisbench online-serving performance validation against a live Motor deployment.
+description: Run repeatable AISBench online-serving performance validation against a live Motor deployment. Use for 压测, AISBench, 打流, prefix cache, QPS, TTFT, or TPOT. Prefer native ais_bench; use the legacy prefix wrapper only for capabilities native AISBench cannot provide. Performance attribution belongs to motor-performance-analysis.
 ---
 
 # motor-benchmark

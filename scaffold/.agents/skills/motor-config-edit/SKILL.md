@@ -1,6 +1,6 @@
 ---
 name: motor-config-edit
-description: Translate deployment intent into a validated Motor native user_config.json + env.json. Use when the user says things like 开启精度检测、开 XX 开关、起 qwen-72B 8卡、验证 XX 功能、改下模型、帮我生成部署配置, or asks to edit Motor deploy configuration fields. Output is a native config directory ready for motor-deploy-configure.
+description: Translate deployment intent into a validated Motor native user_config.json + env.json. Use when the user asks to configure a model or feature, generate or edit Motor deployment configuration, or constrain Prefill/Decode placement. Output is a native config directory ready for motor-deploy-configure.
 ---
 
 # motor-config-edit
@@ -56,6 +56,10 @@ description: Translate deployment intent into a validated Motor native user_conf
 - 搜到后把结果**回写映射表**（追加表格行，带出处），越用越准。
 - 搜不到 = 停下问用户，不发明字段。
 
+当用户要求 Prefill/Decode 固定节点或节点集时，读
+`references/pd-placement.md`，先确认当前 Motor 版本的原生表达能力，再决定
+是配置编辑、代码功能缺口，还是集群标签/约束前置条件。
+
 ### 4. 改配置
 
 - **全新部署**：复制 `sources/motor/examples/infer_engines/<engine>/`（默认
@@ -99,6 +103,7 @@ description: Translate deployment intent into a validated Motor native user_conf
 
 - `references/feature-schema-map.md`：常用 feature → 配置字段路径 → 取值 → 出处。
 - `references/config-structure.md`：`user_config.json` 各配置节结构与加载机制。
+- `references/pd-placement.md`：Prefill/Decode 固定放置的意图建模、能力确认和安全边界。
 - **全量字段权威源（本地 motor 源码内）**：
   - `sources/motor/docs/zh/user_guide/configuration/config_reference.md`
   - `sources/motor/examples/features/config_sample.json`

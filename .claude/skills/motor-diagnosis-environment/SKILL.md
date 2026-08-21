@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/motor-diagnosis-environment/SKILL.md. Do not edit. -->
 ---
 name: motor-diagnosis-environment
-description: Diagnose external environment causes of Motor startup failure, including Kubernetes access, operators, scheduling, nodes, NPU resources, image access, mounts, storage, and network. Use after common failure evidence points outside Motor configuration or runtime code.
+description: Diagnose external MindCluster and Kubernetes platform causes of Motor failures, including API access, operators, scheduling, NPU resources, images, storage, node runtimes, and networking. Use when valid Motor deployment intent cannot be created, scheduled, started, or connected. This is read-only diagnosis, not configuration editing, node maintenance, or authorization to repair the cluster.
 ---
 
 # Motor environment diagnosis
