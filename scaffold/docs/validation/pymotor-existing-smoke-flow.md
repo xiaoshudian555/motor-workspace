@@ -159,7 +159,8 @@ management `/readiness` 返回 `ready=true`。后续 Agent 化时，应把现场
 | 管理面就绪 | Coordinator endpoint | HTTP 200 且 `ready=true` | `motor-smoke` |
 | 推理功能 | inference endpoint、请求样本 | 协议、状态码、有效响应 | functional |
 | 故障实验 | 故障类型、目标、恢复条件 | 注入前/中/后拓扑和请求证据 | `motor-reliability`（当前支持三个场景） |
-| 精度 | 数据集、生成参数、阈值 | 原始结果、accuracy、阈值结论 | correctness/benchmark |
+| 精度 | 数据集、生成参数、阈值 | 原始结果、accuracy、阈值结论 | `motor-accuracy` |
+| 在线扩容 | 目标 P/D 数、Scaler 命令 | 拓扑前后、推理结论 | `motor-scale` |
 | 性能 | workload、并发、速率、阈值 | 原始 AISBench 产物和指标结论 | `motor-benchmark` |
 | 清理/恢复 | 本次创建或修改的资源清单 | 恢复证据和残留检查 | deploy stop/recovery |
 
@@ -201,19 +202,27 @@ management `/readiness` 返回 `ready=true`。后续 Agent 化时，应把现场
 
 ## 8. 已落地的编排入口
 
-`scaffold/.agents/skills/motor-smoke-suite/` 已提供第一版冒烟验收编排：
+`scaffold/.agents/skills/motor-smoke-suite/` 提供冒烟与 Pymotor 全量验收编排：
 
 ```text
-当前 K8s 状态
-→ Coordinator readiness
-→ non-stream inference
-→ stream inference
-→ 任一失败时自动进入只读 diagnosis
+Profile minimal:
+  当前 K8s 状态
+  → Coordinator readiness
+  → non-stream inference
+  → stream inference
+  → 任一失败时自动进入只读 diagnosis
+
+Profile pymotor-acceptance:
+  Phase A（默认可自动跑）= minimal 四阶段
+  Phase B（逐项授权）=
+    motor-scale prefill 1→2
+    → motor-reliability（主备 / D 重拉 / P 掉卡）
+    → motor-accuracy GPQA
+    → motor-benchmark GSM8K
 ```
 
 该 Skill 复用 `motor-k8s-deploy`、`motor-smoke`、`motor-functional`、
-`motor-diagnosis`、`motor-benchmark` 和 `motor-performance-analysis`，不复制原子能力。
-RAS 场景现可显式路由到 `motor-reliability` 支持的 Coordinator 主备切换、Decode
-EngineServer 重拉和 Prefill NPU link 故障隔离/冗余恢复，但不属于默认冒烟，且注入前
-需要独立授权。GPQA correctness 仍未实现；请求包含未支持阶段时必须报告
-`CAPABILITY GAP`，不能以基础冒烟通过代替。
+`motor-scale`、`motor-reliability`、`motor-accuracy`、`motor-benchmark`、
+`motor-diagnosis` 和 `motor-performance-analysis`，不复制原子能力。Phase B
+的扩缩容、故障注入和 AISBench 负载都需要独立授权；未选阶段报告 `NOT RUN`，
+不支持的场景报告 `CAPABILITY GAP`。

@@ -9,7 +9,7 @@
 - Claude Code 看到的 `.claude/skills/*/SKILL.md` 是生成 shim，改 Skill 只改本目录。
 - 远端读写搜命令走 `.remote-dev` 的 `remote.*`，不要为连机器装 `paramiko` / `sshpass`。
 
-当前 canonical Skill：**25 个**。
+当前 canonical Skill：**27 个**。
 
 ## 一张图看完
 
@@ -24,7 +24,9 @@
 部署后验证（互相不能冒充）
   motor-smoke          Coordinator /readiness
   motor-functional     推理/特性是否工作
-  motor-smoke-suite    把上面串成冒烟验收
+  motor-smoke-suite    把上面串成冒烟/完整验收
+  motor-scale          在线扩缩容
+  motor-accuracy       GPQA 等精度评测
   motor-benchmark      打流出数
   motor-performance-analysis  性能归因（只读）
   motor-reliability    授权后的故障注入与恢复
@@ -70,7 +72,9 @@
 |---|---|---|
 | `motor-smoke` | 最小就绪：Coordinator 管理口 `GET /readiness` 且 `ready=true`。Pod Ready 不算过。 | 功能/性能/可靠性证明 |
 | `motor-functional` | 真发推理、看 metrics/tracing、验某个已部署特性。 | 性能或 RAS 证明 |
-| `motor-smoke-suite` | 编排「状态 → readiness → 非流式/流式推理」冒烟；失败自动转只读诊断。 | 默认去打压测 |
+| `motor-smoke-suite` | 编排「状态 → readiness → 推理」冒烟，或 `pymotor-acceptance` 全量验收 | 默认去打压测/注入故障 |
+| `motor-scale` | 授权后的在线 P/D 扩缩容（`deploy.py --update_instance_num`） | 部署或 RAS 证明 |
+| `motor-accuracy` | AISBench GPQA 等精度评测与基线断言 | 性能或 RAS 证明 |
 | `motor-benchmark` | 对已部署服务跑 AISBench 打流，出 TTFT/TPOT/QPS。 | 瓶颈归因 |
 | `motor-performance-analysis` | 只读归因：调度开销、P/D 是否失衡、问题在 Motor 还是 vLLM-Ascend。 | 部署或启动诊断 |
 | `motor-reliability` | 授权后的 RAS 实验：Coordinator 主备、Decode 进程重拉、Prefill 掉卡隔离与恢复。 | 只读排障（那是 diagnosis） |
@@ -98,6 +102,8 @@
 | `agent-skill-evolution` | Skill 自身进化 |
 | `machine-management` | 机器登记 |
 | `motor-benchmark` | 压测出数 |
+| `motor-accuracy` | GPQA 等精度评测 |
+| `motor-scale` | 在线扩缩容 |
 | `motor-build-wheel` | 打 Motor wheel |
 | `motor-config-edit` | 写原生配置 |
 | `motor-deploy` | 部署总调度 |

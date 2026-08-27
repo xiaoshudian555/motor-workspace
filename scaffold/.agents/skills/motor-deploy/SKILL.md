@@ -20,7 +20,10 @@ skills.
 | Deploy, status, restart, stop | `motor-k8s-deploy` |
 | Coordinator readiness | `motor-smoke` |
 | Inference or feature behavior | `motor-functional` |
+| Pymotor smoke / full acceptance orchestration | `motor-smoke-suite` |
+| Authorized online instance scaling | `motor-scale` |
 | Authorized RAS fault and recovery validation | `motor-reliability` |
+| GPQA / accuracy evaluation | `motor-accuracy` |
 | Performance workload | `motor-benchmark` |
 | Failure evidence | `motor-diagnosis` |
 

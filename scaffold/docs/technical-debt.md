@@ -97,16 +97,16 @@ Skill 已要求精确目标、注入前基线、一次性授权、轮询代替�
 近因和根因；任何超时/失败路径都完成目标恢复，或明确报告 `RESTORATION FAILED` 并
 转人工处理。
 
-### TD-R1-02：correctness / GPQA 缺独立执行与归因契约
+### TD-R1-02：correctness / GPQA 专项归因仍缺
 
-旧 Pymotor 用例会就地修改 AISBench 接口文件，运行 GPQA 后用写死的 0.807 基线
-判断 accuracy。workspace 目前没有 `motor-correctness`，不能保证数据集版本、prompt、
-chat template、thinking 参数、模型/tokenizer、评测器和原始产物一致，也无法可靠区分
-模型回归与评测环境问题。
+`motor-accuracy` 现已提供 GPQA 的执行契约、run-scoped 可变目录、版本指纹、
+基线 gate（0.807）和产物归档；`motor-smoke-suite` 的 `pymotor-acceptance`
+profile 可路由到该 Skill。仍缺：精度失败后的专门归因 Skill（dataset /
+prompt / chat template / thinking 参数 / 评测器 / 模型回归的自动判别），以及
+多数据集 profile 库。
 
-目标：使用 run-scoped 可变目录，保存版本指纹、精确生成/评测参数、数据集校验和、
-逐题原始结果及聚合指标；只有可比条件一致时才应用版本化基线。精度失败先证明评测
-有效，再进入专门归因；不能路由成性能问题或 generic smoke 通过。
+目标：精度 FAIL 时先证明评测有效，再进入专门归因；不能路由成性能问题或
+generic smoke 通过。
 
 ### TD-R1-03：冒烟与 RAS 的专项诊断覆盖不足
 

@@ -30,9 +30,11 @@ Preserve the first failure before changing the deployment:
 | Streaming response incomplete | `motor-diagnosis` with request/response evidence | protocol termination, proxy, Coordinator, or engine failure |
 | Benchmark has failed requests, unhealthy Pods, or unreachable service | `motor-diagnosis` | service correctness before performance |
 | Benchmark is valid but misses throughput/latency baseline | `motor-performance-analysis` | Motor scheduling, P/D service, client limitation, transfer, or vLLM-Ascend candidate |
+| Online scale misses target topology or post-scale inference fails | `motor-diagnosis` | deployer scale path, Controller/Coordinator convergence, registration, or config drift |
+| Accuracy evaluator invalid or incomplete | `motor-diagnosis` | AISBench path, dataset, endpoint, model mismatch, or client failure |
+| Accuracy evaluation valid but misses GPQA baseline | preserve raw evaluator output; specialized accuracy attribution is not implemented | dataset/config/evaluator/model regression versus environment mismatch |
 | Precision auto-recovery terminate markers are present | `motor-diagnosis-controller-recovery-terminate` after generic collection | Coordinator delivery, Controller decision, recovery, or NodeManager stop |
 | Supported `motor-reliability` scenario fails without a matching specialized diagnosis | `motor-diagnosis`, then report diagnosis capability gap | preserve evidence without inventing a root-cause workflow |
-| Accuracy/correctness threshold fails | preserve raw evaluator output and report capability gap | dataset/config/evaluator/model attribution is not implemented |
 
 ## Diagnosis result contract
 
@@ -46,6 +48,8 @@ Use one primary category and a confidence level:
 | coordinator-control | Coordinator/Controller registration, topology, or convergence |
 | inference-path | Service/endpoint/protocol/request routing or engine request failure |
 | benchmark-client | load generator, dataset, config, rate/concurrency, or invalid result |
+| accuracy-client | evaluator, dataset, generation parameters, or invalid accuracy artifact |
+| scale-control | native `--update_instance_num`, topology convergence, or post-scale inference |
 | performance | valid workload misses baseline; requires performance attribution |
 | specialized-recovery | a supported recovery-specific diagnosis route matched |
 | unknown | evidence is insufficient or contradictory |

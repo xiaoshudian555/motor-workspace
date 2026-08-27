@@ -21,8 +21,9 @@ Read `references/scenario-contracts.md` for the selected scenario only.
 | Prefill NPU parameter-plane link fault, isolation, and redundant recovery | `prefill-link-isolation` |
 
 Online scaling, GPQA correctness, performance benchmarking, token-level replay,
-and ScaleP2D are outside this Skill. Route explicit performance work to
-`motor-benchmark`; do not treat a recovery experiment as performance evidence.
+and ScaleP2D are outside this Skill. Route scaling to `motor-scale`, accuracy to
+`motor-accuracy`, and explicit performance work to `motor-benchmark`; do not
+treat a recovery experiment as performance evidence.
 
 ## Common workflow
 
