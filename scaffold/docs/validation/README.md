@@ -6,6 +6,7 @@
 | functional | inference、metrics、tracing 等具体功能行为 |
 | benchmark | 给定 workload 下的性能数据 |
 | routing-topology | 请求路由和拓扑行为 |
+| scaling | 人工或指标驱动的副本数变化机制 |
 | correctness | 输出正确性 |
 | stress-capacity | 饱和点和容量 |
 | stability | 长时间稳定运行 |

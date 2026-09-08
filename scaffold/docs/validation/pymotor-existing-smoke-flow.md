@@ -160,7 +160,8 @@ management `/readiness` 返回 `ready=true`。后续 Agent 化时，应把现场
 | 推理功能 | inference endpoint、请求样本 | 协议、状态码、有效响应 | functional |
 | 故障实验 | 故障类型、目标、恢复条件 | 注入前/中/后拓扑和请求证据 | `motor-reliability`（当前支持三个场景） |
 | 精度 | 数据集、生成参数、阈值 | 原始结果、accuracy、阈值结论 | `motor-accuracy` |
-| 在线扩容 | 目标 P/D 数、Scaler 命令 | 拓扑前后、推理结论 | `motor-scale` |
+| 人工在线扩容 | 目标 P/D 数、Scaler 命令 | 拓扑前后、推理结论 | `scaling/manual` → `motor-scale` |
+| 自动弹性扩缩容 | HPA 指标、selector、阈值和 workload | 指标链路、HPA 状态、Pod 增减和回落 | `scaling/auto` |
 | 性能 | workload、并发、速率、阈值 | 原始 AISBench 产物和指标结论 | `motor-benchmark` |
 | 清理/恢复 | 本次创建或修改的资源清单 | 恢复证据和残留检查 | deploy stop/recovery |
 
@@ -210,7 +211,7 @@ management `/readiness` 返回 `ready=true`。后续 Agent 化时，应把现场
 
 ```text
 Pymotor validation suite:
-  motor-scale prefill 1→2
+  scaling/manual → motor-scale prefill 1→2
   → motor-reliability（主备 / D 重拉 / P 掉卡）
   → motor-accuracy GPQA
   → motor-benchmark GSM8K

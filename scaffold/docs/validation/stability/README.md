@@ -18,6 +18,8 @@
 - 用短时间 benchmark 推断长稳结果。
 - 主动注入硬件或组件故障；该责任属于
   [`../reliability/`](../reliability/)。
+- 把扩缩容触发链路当作本场景主责；该责任属于
+  [`../scaling/`](../scaling/)。
 - 把有意扩缩容后的路由收敛当作本场景主责；routing 验收属于
   [`../routing-topology/`](../routing-topology/)，本场景只观察长稳副作用
   （例如重启或扩缩容后是否积累脏状态）。
