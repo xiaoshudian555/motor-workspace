@@ -24,6 +24,11 @@ diagnose or fix it. A read-only diagnosis request does not authorize tracked
 Skill changes: report a lesson candidate and wait for an explicit improvement
 request. Never broaden deployment, remote mutation, or fault-injection consent.
 
+Repository `AGENTS.md` supplies the start/event/close triggers. Read
+`references/runtime-loop.md` when entering from any of these triggers. Capture
+sanitized pending candidates under its local-state contract without requesting
+another summary instruction. Candidate capture is not permission to promote.
+
 ## Learning loop
 
 1. Read `references/lessons/INDEX.md` and reuse or update a matching lesson
@@ -46,6 +51,20 @@ request. Never broaden deployment, remote mutation, or fault-injection consent.
 7. Validate the affected Skill and interception, synchronize generated Claude
    shims, then add or update the INDEX row. Report what was learned, what changed,
    and what remains unverified.
+8. At the next matching execution, read the indexed lesson, apply only its
+   verified scoped rule, and record the observed result in the task receipt.
+   Recurrence reopens investigation; never silently count retrieval as success.
+
+## Close procedure
+
+Write one receipt for this task using `references/runtime-loop.md`, including
+each learning event and each lesson actually used. Run the receipt check before
+the final response. A pending candidate must name its blocker and next action;
+resume it at the next relevant authorized task. Do not create a learning event
+for every tool error, run an unbounded self-rewrite loop, or claim behavioral
+improvement from a schema check. No-event receipts do not require reading the
+promotion references. If interrupted, leave the candidate recoverable; on resume
+complete the receipt rather than creating a duplicate.
 
 ## Guardrails
 

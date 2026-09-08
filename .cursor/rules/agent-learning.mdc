@@ -1,0 +1,8 @@
+---
+description: Repository agent learning entry and close checks
+alwaysApply: true
+---
+
+Read and follow the Agent learning lifecycle in `AGENTS.md` for repository work.
+Its canonical Skill is `scaffold/.agents/skills/agent-skill-evolution/SKILL.md`.
+Do not treat a successful workaround as a completed learning cycle.

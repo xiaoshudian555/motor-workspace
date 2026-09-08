@@ -37,6 +37,7 @@ candidate, verified, promoted, superseded, or retired; include replacement when
 superseded.
 ```
 
-Add one row to `references/lessons/INDEX.md`. Use `candidate` only when the user
-asked to preserve an unresolved learning item; candidates must not change Agent
-behavior until verified.
+Add one row to `references/lessons/INDEX.md` for a verified or promoted lesson.
+Unresolved candidates are automatically retained in local learning state under
+the repository lifecycle authorization; see `runtime-loop.md`. They must not
+change Agent behavior before verification and must not enter the tracked index.
