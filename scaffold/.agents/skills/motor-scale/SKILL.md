@@ -41,8 +41,15 @@ outside this Skill unless a new contract is added. Route deployment creation to
      user;
    - evidence directory;
    - rollback plan when the profile defines one.
-5. Obtain explicit consent immediately before config mutation and
-   `--update_instance_num`. Consent covers exactly one scaling transition.
+5. Authorization immediately before config mutation and
+   `--update_instance_num`:
+   - **Interactive:** obtain explicit consent. Consent covers exactly one
+     scaling transition.
+   - **Suite unattended:** when `motor-smoke-suite` passes suite
+     pre-authorization with matching `profile_id`, exact target
+     namespace/config, and `allowed_actions` containing `update_instance_num`,
+     do **not** re-prompt. Refuse and report `BLOCKED` if the requested
+     transition is outside that scope.
 6. Apply the config change, run the native scaler once, and poll convergence
    rather than sleeping a fixed duration. Correlate Coordinator log transitions
    `Refresh instances done: E=…, P=…, D=…, U=…` with `/readiness`, Pod state,
@@ -62,7 +69,7 @@ outside this Skill unless a new contract is added. Route deployment creation to
   config edits in one transaction.
 - Do not delete Pods or run rollout restart as a substitute for native scaling.
 - Downscale is not implicit cleanup; treat it as a separate profile with its own
-  consent when added later.
+  interactive consent or suite `allowed_actions` token when added later.
 
 ## Evidence and result
 

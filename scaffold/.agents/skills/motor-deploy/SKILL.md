@@ -36,7 +36,7 @@ resolve endpoint
 → edit/review native user_config.json + env.json
 → read-only preflight
 → Motor deploy.py --dry-run
-→ explicit user consent
+→ authorize (interactive consent, or suite unattended pre-authorization)
 → Motor deploy.py
 → readiness / functional validation
 ```
@@ -50,14 +50,21 @@ the current endpoint, and the current cluster every time.
 - Read-only feasibility authorizes probes and dry-run, never parity overwrite,
   config edits, apply, restart, stop, namespace creation, or fault injection.
 - Parity overwrite, config mutation, deploy, restart, and stop each require
-  explicit consent for the concrete target.
+  authorization for the concrete target:
+  - **Interactive:** explicit user consent in the same turn.
+  - **Suite unattended:** only when `motor-smoke-suite` supplies a valid signed
+    profile pre-authorization whose `allowed_actions` cover the exact action
+    (`deploy`, `delete_owned`, etc.) and target. Do not re-prompt inside that
+    scope; refuse with `BLOCKED` when the request is outside it. Ordinary chat
+    deploy requests are never treated as unattended.
 - Use the Motor source tree's native
   `examples/deployer/deploy.py` / `delete.sh`; do not recreate a second deploy
   engine or immutable bundle format in this workspace.
 - Never inject source-tree `PYTHONPATH`. Runtime uses image packages or the
   explicitly built Motor wheel through the existing `boot.sh` mechanism.
 - Reliability fault injection belongs to `motor-reliability`. Its read-only
-  plan and baseline do not authorize injection; obtain explicit consent for
-  the exact target and mandatory restoration transaction.
+  plan and baseline do not authorize injection; obtain interactive consent or a
+  matching suite `reliability:*` pre-authorization for the exact target and
+  mandatory restoration transaction.
 - Report commands, endpoint, namespace, observed resources, and artifacts
   directly. Do not manufacture local workflow run IDs.

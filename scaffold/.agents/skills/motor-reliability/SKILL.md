@@ -46,9 +46,17 @@ treat a recovery experiment as performance evidence.
    - exact cleanup/restoration plan and evidence directory;
    - low-impact continuous probe rate, request shape, and allowed error budget;
    - stop conditions.
-5. Obtain explicit consent immediately before the mutation. Consent covers
-   exactly one injection and the mandatory restoration stated in the same
-   transaction. A retry or different target requires new consent.
+5. Authorization immediately before the mutation:
+   - **Interactive:** obtain explicit consent. Consent covers exactly one
+     injection and the mandatory restoration stated in the same transaction. A
+     retry or different target requires new consent.
+   - **Suite unattended:** when `motor-smoke-suite` passes suite
+     pre-authorization with matching `profile_id`, exact target, and the
+     scenario's `reliability:<scenario>` token in `allowed_actions`, do **not**
+     re-prompt. Refuse and report `BLOCKED` if the scenario or target is outside
+     that scope. Restoration named in the same pre-authorized transaction is
+     included; a new target or retry outside the profile still needs a new
+     authorization path.
 6. Start the declared time-correlated request probe and state observation before
    injection, inject once, and poll states rather than sleeping a fixed
    duration. Preserve requests, events, and logs from before, during, and after

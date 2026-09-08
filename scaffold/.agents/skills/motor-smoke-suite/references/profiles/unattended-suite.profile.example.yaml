@@ -1,0 +1,84 @@
+# Example only — copy to an untracked runner profile path and sign.
+# (motor-workspace: .motor-workspace-local/suite-profiles/)
+# Do not commit a filled profile with real endpoints or credentials.
+#
+# workload_intent below records model / parallel / topology expectations.
+# Absolute host paths stay as REPLACE_*; fill them from the live endpoint.
+
+mode: unattended
+profile_id: pymotor-nightly-example
+approved_by: REPLACE_WITH_HUMAN
+approved_at: "2026-09-01T00:00:00Z"
+valid_until: "2026-12-31T23:59:59Z"
+
+endpoint: REPLACE_ENDPOINT_ID
+kube_context: REPLACE_KUBE_CONTEXT
+namespace: pymotor-nightly
+
+# Logical suite intent (see references/suite-profiles.md). Not host paths.
+workload_intent:
+  engine: vllm-ascend
+  hardware_class: 800I_A2
+  served_model_name: dsv3
+  model_family: DeepSeek-V3.1-Terminus-w8a8-mtp-QuaRot
+  quantization: ascend
+  speculative:
+    method: deepseek_mtp
+    num_speculative_tokens: 1
+  kv_connector: MooncakeConnectorV1
+  starting_topology:
+    p_instances_num: 2
+    d_instances_num: 1
+    single_p_instance_pod_num: 2
+    single_d_instance_pod_num: 4
+    p_pod_npu_num: 8
+    d_pod_npu_num: 8
+  prefill_parallel:
+    tensor_parallel_size: 8
+    data_parallel_size: 2
+    enable_expert_parallel: true
+  decode_parallel:
+    tensor_parallel_size: 1
+    data_parallel_size: 32
+    enable_expert_parallel: true
+  max_model_len: 16384
+  enable_master_standby: true
+
+cases:
+  - prefill-scale-up-1-to-2
+  - coordinator-failover
+  - decode-engine-restart
+  - prefill-link-isolation
+  - gpqa-accuracy
+  - gsm8k-performance
+
+allowed_actions:
+  - deploy
+  - delete_owned
+  - update_instance_num
+  - reliability:coordinator-failover
+  - reliability:decode-engine-restart
+  - reliability:prefill-link-isolation
+  - accuracy:gpqa
+  - benchmark:gsm8k
+
+config:
+  user_config_path: REPLACE_REMOTE_USER_CONFIG
+  env_config_path: REPLACE_REMOTE_ENV_CONFIG
+  weight_mount_path: REPLACE_WEIGHT_MOUNT
+
+baselines:
+  # Hard FAIL below 0.797; see suite-profiles.md for the legacy 0.807±0.01 rule.
+  gpqa_min_accuracy: 0.797
+  # Comparable formal workload only; leave null until supplied.
+  gsm8k_performance:
+    metric: REPLACE_METRIC_NAME
+    threshold: null
+    workload_notes: REPLACE_OR_REMOVE
+
+software_revisions:
+  motor: REPLACE_OR_OMIT
+  vllm: REPLACE_OR_OMIT
+  vllm_ascend: REPLACE_OR_OMIT
+  image: REPLACE_OR_OMIT
+  aisbench: REPLACE_OR_OMIT

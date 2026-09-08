@@ -11,7 +11,13 @@ not use workspace wrapper scripts or local run IDs.
 ## Deploy
 
 After a successful dry-run, show the exact endpoint, context, config directory,
-namespace, and command. Obtain explicit consent, then run:
+namespace, and command. Authorize, then run:
+
+- **Interactive:** obtain explicit consent for that concrete target.
+- **Suite unattended:** when `motor-smoke-suite` passes suite pre-authorization
+  with matching `profile_id`, exact endpoint/context/namespace/config, and
+  `allowed_actions` containing `deploy`, do **not** re-prompt. Otherwise
+  `BLOCKED`.
 
 ```bash
 cd /mnt/motor-workspace/motor/examples/deployer
@@ -45,8 +51,10 @@ events, and selected logs. Do not infer success from old local evidence.
 
 ## Restart
 
-Obtain explicit consent, discover the concrete Deployments/StatefulSets, then
-restart only those targets and wait for rollout. Never use `--all`.
+Authorize (interactive consent, or refuse under suite unattended unless the
+signed profile explicitly allows the exact restart scope), discover the concrete
+Deployments/StatefulSets, then restart only those targets and wait for rollout.
+Never use `--all`. Suite profiles do not imply restart permission via `deploy`.
 
 - Controller/Coordinator debug loop: changed `yaml_template` and/or
   `user_config` and/or a component-only wheel, and P/D must keep running.
@@ -57,9 +65,15 @@ restart only those targets and wait for rollout. Never use `--all`.
 
 ## Stop
 
-Obtain explicit consent and show the namespace/resources first. Prefer the
-source tree's `examples/deployer/delete.sh`; otherwise delete only the exact
-generated manifest files. Never delete a namespace or unrelated resources.
+Authorize and show the namespace/resources first:
+
+- **Interactive:** obtain explicit consent.
+- **Suite unattended:** require `delete_owned` for the profile namespace only; do
+  not re-prompt inside that scope.
+
+Prefer the source tree's `examples/deployer/delete.sh`; otherwise delete only
+the exact generated manifest files. Never delete a namespace or unrelated
+resources.
 
 Report commands and observed cluster state directly. Deployment success means
 the native command succeeded and the required current workloads are Ready;
