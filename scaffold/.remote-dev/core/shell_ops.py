@@ -57,6 +57,8 @@ def remote_bash(
     run_in_background: bool = False,
     runtime_env: bool | None = None,
     env: dict[str, str] | None = None,
+    execution_deadline_ms: int | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     env = env or {}
     runtime_enabled = endpoint.runtime_env if runtime_env is None else runtime_env
@@ -88,9 +90,10 @@ def remote_bash(
             command=command,
             cwd=cwd,
             env=env,
-            timeout_ms=timeout_ms,
+            execution_deadline_ms=execution_deadline_ms if execution_deadline_ms is not None else timeout_ms,
             runtime_env=runtime_enabled,
             description=description,
+            job_id=job_id,
         )
 
     invocation_id = new_invocation_id()
@@ -184,10 +187,31 @@ def _preview_text(item: Any) -> str:
     return str(item or "")
 
 
+def _bash_outcome_line(result: dict[str, Any]) -> str:
+    outcome = str(result.get("outcome"))
+    status = str(result.get("status"))
+    if outcome == "success":
+        return "result: request succeeded; command exited 0 (terminal)"
+    if outcome == "timeout":
+        return (
+            "result: REQUEST TIMED OUT waiting for the remote command; the remote "
+            "process may have been killed by the local ssh timeout. "
+            "Next: rerun with a larger timeout_ms, or use run_in_background with "
+            "remote.job_status/remote.job_tail to track it."
+        )
+    if outcome == "blocked":
+        return f"result: BLOCKED before execution (status={status}, terminal). Next: {result.get('next', {}).get('message', 'resolve the block and retry')}"
+    return (
+        f"result: request succeeded but the COMMAND FAILED (status={status}, terminal). "
+        "The query itself worked; inspect stderr below for the command failure."
+    )
+
+
 def _format_bash_text(endpoint: Endpoint, cwd: str, result: dict[str, Any]) -> str:
     preview = result.get("preview", {})
     lines = [
-        f"RemoteBash completed on {endpoint.user}@{endpoint.host}:{endpoint.port}",
+        f"RemoteBash on {endpoint.user}@{endpoint.host}:{endpoint.port}",
+        _bash_outcome_line(result),
         f"cwd: {cwd}",
         f"exit code: {result.get('exit_code')}",
         f"duration: {round((result.get('duration_ms') or 0) / 1000, 3)}s",

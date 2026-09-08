@@ -15,7 +15,14 @@ from core.artifact_ops import remote_artifact_manifest, remote_artifact_pull, re
 from core.context_snapshot import remote_context_snapshot, remote_probe  # noqa: E402
 from core.endpoint import resolve_endpoint  # noqa: E402
 from core.file_ops import remote_edit, remote_ls, remote_multi_edit, remote_read, remote_write  # noqa: E402
-from core.job_ops import endpoint_from_job_record, require_job_id, remote_job_status, remote_job_stop, remote_job_tail  # noqa: E402
+from core.job_ops import (  # noqa: E402
+    endpoint_from_job_record,
+    normalize_wait_timeout_ms,
+    remote_job_status,
+    remote_job_stop,
+    remote_job_tail,
+    require_job_id,
+)
 from core.monitor_ops import remote_monitor  # noqa: E402
 from core.patch_ops import remote_apply_patch  # noqa: E402
 from core.search_ops import remote_glob, remote_grep  # noqa: E402
@@ -211,13 +218,22 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     endpoint = None
     if name not in {"remote.job_status", "remote.job_tail", "remote.job_stop"} or any(args.get(k) for k in ("host", "port", "alias")):
         endpoint = resolve_endpoint(args)
-    timeout_ms = int(args.get("timeout_ms") or args.get("timeout") or 120000)
+    def _has(key: str) -> bool:
+        return key in args and args.get(key) is not None
+
+    # Request wait budget: explicit timeout_ms, then legacy timeout alias,
+    # else the default. Zero/negative values are rejected, never widened to
+    # "run forever".
+    timeout_ms = normalize_wait_timeout_ms(
+        int(args["timeout_ms"]) if _has("timeout_ms") else None,
+        int(args["timeout"]) if _has("timeout") else None,
+    )
     if name == "remote.bash":
         assert endpoint is not None
-        return remote_bash(endpoint, command=str(args["command"]), cwd=args.get("cwd"), description=args.get("description"), timeout_ms=timeout_ms, run_in_background=bool(args.get("run_in_background", False)), runtime_env=args.get("runtime_env"), env=args.get("env") if isinstance(args.get("env"), dict) else {})
+        return remote_bash(endpoint, command=str(args["command"]), cwd=args.get("cwd"), description=args.get("description"), timeout_ms=timeout_ms, run_in_background=bool(args.get("run_in_background", False)), runtime_env=args.get("runtime_env"), env=args.get("env") if isinstance(args.get("env"), dict) else {}, execution_deadline_ms=int(args["execution_deadline_ms"]) if _has("execution_deadline_ms") else None, job_id=args.get("job_id"))
     if name == "remote.monitor":
         assert endpoint is not None
-        return remote_monitor(endpoint, command=str(args["command"]), cwd=args.get("cwd"), description=args.get("description"), timeout_ms=timeout_ms, pattern=args.get("pattern"), runtime_env=args.get("runtime_env"), env=args.get("env") if isinstance(args.get("env"), dict) else {})
+        return remote_monitor(endpoint, command=str(args["command"]), cwd=args.get("cwd"), description=args.get("description"), timeout_ms=timeout_ms, pattern=args.get("pattern"), wait_timeout_ms=int(args["wait_timeout_ms"]) if _has("wait_timeout_ms") else None, runtime_env=args.get("runtime_env"), env=args.get("env") if isinstance(args.get("env"), dict) else {}, execution_deadline_ms=int(args["execution_deadline_ms"]) if _has("execution_deadline_ms") else None)
     if name == "remote.read":
         assert endpoint is not None
         return remote_read(endpoint, file_path=str(args["file_path"]), offset=int(args.get("offset") or 1), limit=int(args.get("limit") or 200), allow_symlink=bool(args.get("allow_symlink", False)), client_context_id=args.get("client_context_id"), timeout_ms=timeout_ms)
@@ -245,7 +261,7 @@ def call_tool(name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
     if name == "remote.job_status":
         return remote_job_status(endpoint, job_id=str(args["job_id"]))
     if name == "remote.job_tail":
-        return remote_job_tail(endpoint, job_id=str(args["job_id"]), lines=int(args.get("lines") or 80), stream=str(args.get("stream") or "both"))
+        return remote_job_tail(endpoint, job_id=str(args["job_id"]), lines=int(args.get("lines") or 80), stream=str(args.get("stream") or "both"), incremental=bool(args.get("incremental", False)))
     if name == "remote.job_stop":
         return remote_job_stop(endpoint, job_id=str(args["job_id"]), force=bool(args.get("force", False)))
     if name == "remote.artifact_manifest":

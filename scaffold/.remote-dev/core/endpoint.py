@@ -54,6 +54,10 @@ class Endpoint:
             "cwd": self.effective_cwd,
             "runtime_env": self.runtime_env,
         }
+        if self.identity_file:
+            payload["identity_file"] = self.identity_file
+        if self.connect_timeout_ms != 10000:
+            payload["connect_timeout_ms"] = self.connect_timeout_ms
         if self.alias:
             payload["alias"] = self.alias
         if self.source:

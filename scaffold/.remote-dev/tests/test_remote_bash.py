@@ -108,7 +108,7 @@ class RemoteBashTests(unittest.TestCase):
             state_store.substrate_root = original_state_root  # type: ignore[assignment]
             job_ops.run_script = original_runner  # type: ignore[assignment]
 
-    def test_background_remote_bash_duplicate_job_id_is_blocked(self) -> None:
+    def test_background_remote_bash_duplicate_job_id_conflicting_params_is_blocked(self) -> None:
         endpoint = Endpoint(host="1.2.3.4", port=46000)
         original_state_root = state_store.substrate_root
         original_runner = job_ops.run_script
@@ -119,10 +119,110 @@ class RemoteBashTests(unittest.TestCase):
                 job_ops.run_script = lambda *_args, **_kwargs: RemoteCompleted(0, "", "")  # type: ignore[assignment]
                 payload = job_ops.start_remote_job(endpoint, command="echo ok", job_id="job-existing")
                 self.assertEqual(payload["result"]["outcome"], "blocked")
-                self.assertEqual(payload["result"]["status"], "job_id_exists")
+                self.assertEqual(payload["result"]["status"], "job_id_conflict")
         finally:
             state_store.substrate_root = original_state_root  # type: ignore[assignment]
             job_ops.run_script = original_runner  # type: ignore[assignment]
+
+    def test_background_remote_bash_same_job_id_same_params_resumes(self) -> None:
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        original_state_root = state_store.substrate_root
+        original_runner = job_ops.run_script
+        calls: list[str] = []
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                state_store.substrate_root = lambda: Path(tmp)  # type: ignore[assignment]
+
+                def fake_run_script(_endpoint, script, **_kwargs):
+                    calls.append(script)
+                    if "REMOTE_DEV_VALIDATE" in script and "run.sh" not in script:
+                        return RemoteCompleted(0, "", "")
+                    if "nohup" in script:
+                        return RemoteCompleted(0, "4242\n", "")
+                    return RemoteCompleted(0, '{"status":"running","job_id":"job-same"}\n', "")
+
+                job_ops.run_script = fake_run_script  # type: ignore[assignment]
+                first = job_ops.start_remote_job(endpoint, command="sleep 300", job_id="job-same", execution_deadline_ms=60000)
+                self.assertEqual(first["result"]["outcome"], "success")
+                self.assertEqual(first["result"]["status"], "running")
+                started_scripts = len(calls)
+                # Retry with identical parameters (e.g. response was lost):
+                # must NOT run the start script again, must resume the record.
+                second = job_ops.start_remote_job(endpoint, command="sleep 300", job_id="job-same", execution_deadline_ms=60000)
+                self.assertEqual(second["result"]["outcome"], "success")
+                self.assertTrue(second["result"]["resumed"])
+                self.assertEqual(len(calls), started_scripts + 1)  # only the status check
+                self.assertNotIn("nohup", calls[-1])
+        finally:
+            state_store.substrate_root = original_state_root  # type: ignore[assignment]
+            job_ops.run_script = original_runner  # type: ignore[assignment]
+
+    def test_start_remote_job_records_intent_before_remote_action(self) -> None:
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        original_state_root = state_store.substrate_root
+        original_runner = job_ops.run_script
+        observed_phases: list[str] = []
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                state_store.substrate_root = lambda: Path(tmp)  # type: ignore[assignment]
+
+                def fake_run_script(_endpoint, script, **_kwargs):
+                    record_path = state_store.job_record_path(endpoint, "job-intent")
+                    if record_path.exists():
+                        import json as _json
+
+                        observed_phases.append(_json.loads(record_path.read_text())["phase"])
+                    if "REMOTE_DEV_VALIDATE" in script and "run.sh" not in script:
+                        return RemoteCompleted(0, "", "")
+                    return RemoteCompleted(0, "123\n", "")
+
+                job_ops.run_script = fake_run_script  # type: ignore[assignment]
+                payload = job_ops.start_remote_job(endpoint, command="echo ok", job_id="job-intent")
+                self.assertEqual(payload["result"]["outcome"], "success")
+                # The record existed (as intent) before the first remote call.
+                self.assertTrue(observed_phases)
+                self.assertEqual(observed_phases[0], "intent")
+                import json as _json
+
+                final = _json.loads(state_store.job_record_path(endpoint, "job-intent").read_text())
+                self.assertEqual(final["phase"], "started")
+                self.assertEqual(final["pid"], 123)
+        finally:
+            state_store.substrate_root = original_state_root  # type: ignore[assignment]
+            job_ops.run_script = original_runner  # type: ignore[assignment]
+
+    def test_execution_deadline_defaults_and_validation(self) -> None:
+        endpoint = Endpoint(host="1.2.3.4", port=46000)
+        original_state_root = state_store.substrate_root
+        original_runner = job_ops.run_script
+        scripts: list[str] = []
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                state_store.substrate_root = lambda: Path(tmp)  # type: ignore[assignment]
+
+                def fake_run_script(_endpoint, script, **_kwargs):
+                    scripts.append(script)
+                    return RemoteCompleted(0, "7\n", "")
+
+                job_ops.run_script = fake_run_script  # type: ignore[assignment]
+                job_ops.start_remote_job(endpoint, command="echo ok")
+                run_script_text = next(s for s in scripts if "run.sh" in s or "REMOTE_DEV_RUN" in s)
+                default_s = job_ops.JOB_EXECUTION_DEFAULT_MS // 1000
+                self.assertIn(f"timeout {default_s} ", run_script_text)
+                with self.assertRaises(ValueError):
+                    job_ops.start_remote_job(endpoint, command="echo ok", execution_deadline_ms=0)
+                with self.assertRaises(ValueError):
+                    job_ops.start_remote_job(endpoint, command="echo ok", execution_deadline_ms=-5)
+        finally:
+            state_store.substrate_root = original_state_root  # type: ignore[assignment]
+            job_ops.run_script = original_runner  # type: ignore[assignment]
+
+    def test_endpoint_from_record_preserves_identity_file(self) -> None:
+        endpoint = Endpoint(host="1.2.3.4", port=46000, identity_file="/keys/id_rsa", connect_timeout_ms=5000)
+        record = {"job_id": "job-x1", "target": endpoint.to_result_target(), "remote_dir": "/mnt/.remote-dev/jobs/job-x1"}
+        rebuilt = job_ops.endpoint_from_job_record(record)
+        self.assertEqual(rebuilt.identity_file, "/keys/id_rsa")
+        self.assertEqual(rebuilt.connect_timeout_ms, 5000)
 
     def test_remote_job_tail_clamps_lines_and_text(self) -> None:
         endpoint = Endpoint(host="1.2.3.4", port=46000)
