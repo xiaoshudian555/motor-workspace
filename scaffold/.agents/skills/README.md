@@ -19,17 +19,18 @@
 
 部署（dispatcher: motor-deploy）
   motor-config-edit → motor-deploy-preflight → motor-deploy-configure
-  → 用户授权 → motor-k8s-deploy
+  → 授权（interactive 当面同意，或 smoke-suite unattended 签名 profile）
+  → motor-k8s-deploy
 
 部署后验证（互相不能冒充）
   motor-smoke          Coordinator /readiness
   motor-functional     推理/特性是否工作
-  motor-smoke-suite    把上面串成冒烟/完整验收
+  motor-smoke-suite    编排 Pymotor 扩缩容/RAS/精度/性能验收套组
   motor-scale          在线扩缩容
   motor-accuracy       GPQA 等精度评测
   motor-benchmark      打流出数
   motor-performance-analysis  性能归因（只读）
-  motor-reliability    授权后的故障注入与恢复
+  motor-reliability    故障注入与恢复（interactive 授权 / suite 预授权）
 
 失败诊断（dispatcher: motor-startup-diagnosis）
   motor-diagnosis  采证
@@ -61,10 +62,10 @@
 | `motor-deploy-preflight` | 部署前只读检查：K8s/MindCluster CRD、节点、镜像可达性等。不改集群。 |
 | `motor-image-distribution-check` | 查各节点本地是否已有指定镜像，评估 `ErrImagePull` 风险。 |
 | `motor-deploy-configure` | 用上游 `deploy.py --dry-run` 校验原生配置和生成 YAML。 |
-| `motor-k8s-deploy` | 真正 apply / 查看 / 重启 / 停止。走 Motor 原生 `deploy.py` / `delete.sh`。覆盖前要明确授权。 |
+| `motor-k8s-deploy` | 真正 apply / 查看 / 重启 / 停止。走 Motor 原生 `deploy.py` / `delete.sh`。交互式要授权；suite unattended 可透传 `deploy`/`delete_owned`。 |
 | `motor-build-wheel` | 在目标运行时 Docker 里打 Motor wheel（protobuf + Rust kv-conductor），供 Pod `boot.sh` 安装。 |
 
-只读预检和 dry-run 不需要授权；parity 覆盖、改配置、apply、重启、停止、注入故障都要针对具体目标再授权一次。
+只读预检和 dry-run 不需要授权。交互式对话里：parity 覆盖、改配置、apply、重启、停止、注入故障都要针对具体目标再授权一次。`motor-smoke-suite` 的 `unattended` 模式除外：以已签名 profile 为预授权，匹配 scope 内不再逐步询问。
 
 ### 部署后验证
 
@@ -72,12 +73,12 @@
 |---|---|---|
 | `motor-smoke` | 最小就绪：Coordinator 管理口 `GET /readiness` 且 `ready=true`。Pod Ready 不算过。 | 功能/性能/可靠性证明 |
 | `motor-functional` | 真发推理、看 metrics/tracing、验某个已部署特性。 | 性能或 RAS 证明 |
-| `motor-smoke-suite` | 编排「状态 → readiness → 推理」冒烟，或 `pymotor-acceptance` 全量验收 | 默认去打压测/注入故障 |
-| `motor-scale` | 授权后的在线 P/D 扩缩容（`deploy.py --update_instance_num`） | 部署或 RAS 证明 |
+| `motor-smoke-suite` | 编排 Pymotor 扩缩容、RAS 恢复、GPQA 精度和 GSM8K 性能验收套组；**契约在** `sources/motor/.agent/skills/motor-smoke-suite/`，本目录是 workspace 适配层（endpoint / 签名 profile / 原子 Skill 路由） | Coordinator 最小 readiness（那是 `motor-smoke`） |
+| `motor-scale` | 在线 P/D 扩缩容（`deploy.py --update_instance_num`）；interactive 要授权，suite unattended 可透传 | 部署或 RAS 证明 |
 | `motor-accuracy` | AISBench GPQA 等精度评测与基线断言 | 性能或 RAS 证明 |
 | `motor-benchmark` | 对已部署服务跑 AISBench 打流，出 TTFT/TPOT/QPS。 | 瓶颈归因 |
 | `motor-performance-analysis` | 只读归因：调度开销、P/D 是否失衡、问题在 Motor 还是 vLLM-Ascend。 | 部署或启动诊断 |
-| `motor-reliability` | 授权后的 RAS 实验：Coordinator 主备、Decode 进程重拉、Prefill 掉卡隔离与恢复。 | 只读排障（那是 diagnosis） |
+| `motor-reliability` | RAS 实验：Coordinator 主备、Decode 进程重拉、Prefill 掉卡隔离与恢复；interactive 要授权，suite unattended 可透传 | 只读排障（那是 diagnosis） |
 
 ### 诊断
 

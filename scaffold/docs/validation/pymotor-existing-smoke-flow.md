@@ -178,7 +178,11 @@ management `/readiness` 返回 `ready=true`。后续 Agent 化时，应把现场
 以下边界应在编排层显式建模：
 
 - 环境预检和 deploy dry-run 保持只读。
-- 修改远端配置、部署、扩缩容、停止服务、重启、故障注入均需逐项明确授权。
+- 交互式对话：修改远端配置、部署、扩缩容、停止服务、重启、故障注入均需逐项明确授权。
+- `motor-smoke-suite` **unattended**（定时/CI）：以
+  `.motor-workspace-local/suite-profiles/*.yaml` 签名 profile 为预授权；匹配
+  `allowed_actions` 与精确目标时不再逐步询问，超 scope 则 `BLOCKED`。普通「拉起
+  一个服务」聊天请求不得当作 unattended。
 - `kill -9` 和 `hccn_tool ... link down` 必须绑定精确目标、超时和恢复动作；恢复动作
   不能只放在成功路径，失败和超时也必须执行或升级为人工接管。
 - Agent 不应直接修改共享 AISBench 安装目录；应使用 run-scoped 的可变工作目录，并保存
@@ -202,27 +206,22 @@ management `/readiness` 返回 `ready=true`。后续 Agent 化时，应把现场
 
 ## 8. 已落地的编排入口
 
-`scaffold/.agents/skills/motor-smoke-suite/` 提供冒烟与 Pymotor 全量验收编排：
+`scaffold/.agents/skills/motor-smoke-suite/` 提供 Pymotor 验收套组编排：
 
 ```text
-Profile minimal:
-  当前 K8s 状态
-  → Coordinator readiness
-  → non-stream inference
-  → stream inference
-  → 任一失败时自动进入只读 diagnosis
-
-Profile pymotor-acceptance:
-  Phase A（默认可自动跑）= minimal 四阶段
-  Phase B（逐项授权）=
-    motor-scale prefill 1→2
-    → motor-reliability（主备 / D 重拉 / P 掉卡）
-    → motor-accuracy GPQA
-    → motor-benchmark GSM8K
+Pymotor validation suite:
+  motor-scale prefill 1→2
+  → motor-reliability（主备 / D 重拉 / P 掉卡）
+  → motor-accuracy GPQA
+  → motor-benchmark GSM8K
 ```
 
-该 Skill 复用 `motor-k8s-deploy`、`motor-smoke`、`motor-functional`、
+服务拉起、readiness、推理探测、故障恢复和清理是现有用例的公共
+fixture 或断言，不是独立的顶层测试阶段。该 Skill 复用
 `motor-scale`、`motor-reliability`、`motor-accuracy`、`motor-benchmark`、
-`motor-diagnosis` 和 `motor-performance-analysis`，不复制原子能力。Phase B
-的扩缩容、故障注入和 AISBench 负载都需要独立授权；未选阶段报告 `NOT RUN`，
-不支持的场景报告 `CAPABILITY GAP`。
+`motor-diagnosis` 和 `motor-performance-analysis`，不复制原子能力，也不引入通用
+执行控制平台。
+
+定时/CI 走 `unattended`：外层调度调用固定入口，并指向已签名 profile（模板见
+`scaffold/.agents/skills/motor-smoke-suite/references/profiles/unattended-suite.profile.example.yaml`）。
+交互式全量验收仍要当面授权。

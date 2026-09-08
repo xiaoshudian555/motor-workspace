@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from scaffold/.agents/skills/motor-smoke-suite/SKILL.md. Do not edit. -->
 ---
 name: motor-smoke-suite
-description: Orchestrate the Pymotor post-deploy acceptance suite and automatically route failed stages into read-only diagnosis. Use for Pymotor 冒烟测试, 冒烟验收, full acceptance, or testing a deployed Motor service end to end. Minimal Coordinator readiness alone belongs to motor-smoke.
+description: Orchestrate the repeatable Pymotor validation suite covering online scale, RAS recovery, GPQA accuracy, and performance. Use for Pymotor 冒烟套组, 全量验收, full acceptance, or a nightly suite; minimal readiness alone belongs to motor-smoke.
 ---
 
 # Motor smoke suite

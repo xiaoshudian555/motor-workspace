@@ -1,89 +1,89 @@
-# Motor smoke suite profiles
+# Pymotor validation suite
 
-This suite runs only the full `pymotor-acceptance` profile. Minimal readiness
-alone belongs to `motor-smoke`.
+The suite is the collection of concrete Pymotor acceptance cases below. It has
+no A/B/C/D stage model. Deployment, readiness, inference probes, restoration,
+and cleanup are fixtures or case assertions rather than user-visible cases.
 
-## Profile `pymotor-acceptance`
+For scheduled/CI runs, use `unattended` mode and a signed profile as defined in
+[unattended-authorization.md](unattended-authorization.md). Case ids below map to
+profile `cases` / `allowed_actions` tokens. **Owning capability** names
+(`motor-scale`, `motor-reliability`, …) identify the contract owner; a
+workspace may expose them as Skills, or a real automation suite may implement
+them directly.
 
-Maps the legacy MindIE Pymotor smoke suite to atomic Skills. Stages run in order
-unless the user excludes them. Each stage keeps its owning Skill's pass criteria;
-the suite adds only the suite-owned gates listed below.
+## Cases
 
-### Phase A — read-only and functional (required unless excluded)
+The full suite runs these cases in the established order. A narrower run may
+select a subset explicitly.
 
-| Order | Stage | Owning Skill | Legacy case |
-|---|---|---|---|
-| A1 | Current K8s workload and Service status | `motor-k8s-deploy` status | common baseline |
-| A2 | Coordinator `GET /readiness` | `motor-smoke` | service ready |
-| A3 | Non-stream inference | `motor-functional` `inference-request.non-stream` | curl `/v1/completions` |
-| A4 | Stream inference | `motor-functional` `inference-request.stream` | streaming survival |
+| Order | Case id | Case | Owning capability | Allowed action | Legacy case | Pass condition |
+|---:|---|---|---|---|---|---|
+| 1 | `prefill-scale-up-1-to-2` | Prefill online scale 1→2 | `motor-scale` | `update_instance_num` | `pymotor_ras_up_down_scale_0001` | target topology is observed and post-scale inference succeeds |
+| 2 | `coordinator-failover` | Coordinator active/standby failover | `motor-reliability` | `reliability:coordinator-failover` | `ras_coordinator_active_passive_0004` | takeover occurs within the bounded wait and inference remains or becomes healthy |
+| 3 | `decode-engine-restart` | Decode engine-process restart | `motor-reliability` | `reliability:decode-engine-restart` | `ras_pd_restart_0002` | Decode returns to the expected topology and inference recovers |
+| 4 | `prefill-link-isolation` | Prefill link isolation and redundant recovery | `motor-reliability` | `reliability:prefill-link-isolation` | `ras_p_redundant_0001` | isolation, redundant recovery, inference recovery, and link restoration are all proved |
+| 5 | `gpqa-accuracy` | GPQA accuracy | `motor-accuracy` | `accuracy:gpqa` | `pymotor_acc_0008` | decimal accuracy is at least `0.797` |
+| 6 | `gsm8k-performance` | GSM8K performance | `motor-benchmark` | `benchmark:gsm8k` | `pymotor_performance_0009` | failed requests are zero and the measured workload passes a supplied comparable baseline |
 
-A blocking failure in A2–A4 stops downstream stages whose prerequisites are no
-longer valid.
+Shared fixtures that create or delete the service require `deploy` and
+`delete_owned` in the signed profile even though they are not separate cases.
 
-### Phase B — authorized mutation and load (optional unless user makes required)
+The GPQA boundary preserves the legacy rule
+`abs(actual - 0.807) <= 0.01 or actual > 0.807`. Performance must not compare
+results from incompatible hardware, topology, model, dataset, generation
+parameters, concurrency, request rate, or tool versions.
 
-Each stage below requires its owning Skill's explicit consent in the same run.
-Obtain consent per stage; one approval does not cover later stages.
+## Reference workload intent
 
-| Order | Stage | Owning Skill | Contract / profile | Legacy case |
-|---|---|---|---|---|
-| B1 | Online Prefill scale-up 1→2 | `motor-scale` | `prefill-scale-up-1-to-2` | `pymotor_ras_up_down_scale_0001` |
-| B2 | Coordinator active/standby failover | `motor-reliability` | `coordinator-failover` | `ras_coordinator_active_passive_0004` |
-| B3 | Decode engine process restart | `motor-reliability` | `decode-engine-restart` | `ras_pd_restart_0002` |
-| B4 | Prefill NPU link fault isolation and redundant recovery | `motor-reliability` | `prefill-link-isolation` | `ras_p_redundant_0001` |
-| B5 | GPQA accuracy | `motor-accuracy` | `gpqa-diamond-0shot-cot-chat` | `pymotor_acc_0008` |
-| B6 | GSM8K performance | `motor-benchmark` | user-confirmed formal workload | `pymotor_performance_0009` |
+Record **what** the suite is meant to exercise. Resolve **where** (host paths,
+image digests, weight mounts) on the live endpoint when signing a profile or
+starting a run. Do not treat absolute paths as part of this Skill.
 
-Default behavior:
-
-- Run Phase A automatically.
-- Present Phase B as an optional continuation with per-stage consent. Do not
-  inject faults, scale, or start AISBench load without approval.
-- When the user says “全量 / 完整 / 全部 / full acceptance including RAS and
-  benchmark”, still collect consent stage-by-stage; show the full planned order
-  up front.
-
-### Suite-owned gates
-
-| Stage | Suite assertion |
+| Dimension | Reference intent |
 |---|---|
-| B5 GPQA accuracy | `abs(accuracy - 0.807) <= 0.01` **or** `accuracy > 0.807`; hard FAIL when `accuracy < 0.797` |
-| B6 performance | baseline must be supplied or confirmed by the user; never invented |
+| Engine | vLLM Ascend, PD disaggregated |
+| Hardware class | Ascend `800I_A2` |
+| Model family | DeepSeek-V3.1 Terminus w8a8 + MTP (QuaRot); served name `dsv3` |
+| Quant / speculative | `quantization=ascend`; speculative `deepseek_mtp` with 1 draft token |
+| KV transfer | MooncakeConnectorV1 — Prefill `kv_producer`, Decode `kv_consumer` |
+| Starting topology | Prefill instances `2`, Decode instances `1` |
+| Prefill packing | 2 pods / instance × 8 NPU / pod |
+| Decode packing | 4 pods / instance × 8 NPU / pod |
+| Prefill parallel | TP=`8`, DP=`2`, EP enabled |
+| Decode parallel | TP=`1`, DP=`32`, EP enabled |
+| Context | `max_model_len=16384` |
+| HA fixture | Controller and Coordinator master/standby enabled |
+| Scale case start | Prefill online scale uses the suite's `1→2` contract; if the live service is already at P=2, re-baseline or start from the scale contract's declared initial topology before mutating |
 
-`motor-accuracy` and `motor-benchmark` produce raw metrics only. The suite owns
-the final pass/fail for those stages.
+A signed unattended profile may narrow or substitute this intent only when the
+change is explicit (different model family, parallel sizes, or topology). Paths
+for `user_config` / `env` / weights remain endpoint-local placeholders.
 
-### Phase B ordering notes
+## Common fixtures
 
-- Run B1 before B2–B4 when all are selected; scaling changes topology that later
-  RAS stages must re-baseline.
-- B2–B4 are independent fault experiments; run only the scenarios the user
-  selects. Never run multiple injections in one transaction.
-- B5 and B6 are long-running AISBench stages. Require confirmed evaluator paths,
-  dataset availability, and workload parameters before consent.
-- B6 follows `motor-benchmark` formal rules: no `--debug`, no invented baseline.
-  Legacy `7400 * 0.97` throughput gate is a reference hint only until the user
-  confirms a comparable formal workload.
+The real automation source owns setup and teardown. A suite integration must
+retain these observable outcomes without turning them into separate cases:
 
-## Overall result rules
+- prepare the execution-scoped configuration and mutable evaluator workspace;
+- create or reuse only the intended service;
+- wait with a bounded condition rather than an unexplained fixed sleep;
+- run each case's required inference probe;
+- restore every injected fault;
+- delete only resources created by that run;
+- preserve raw output, configuration, revisions, commands, metrics, and cleanup
+  evidence.
 
-- Overall `PASS` requires every **selected required** stage to `PASS`.
-- Optional stages excluded by scope are `NOT RUN`, not `PASS`.
-- Unsupported or unimplemented stage requests are `CAPABILITY GAP`.
-- Never report overall `PASS` when a required stage is `BLOCKED`, `FAIL`, or
-  `CAPABILITY GAP`.
+## Result rules
 
-## Evidence
+- `PASS`: the case's complete pass condition is proved by raw evidence.
+- `FAIL`: the case ran validly and its assertion failed.
+- `BLOCKED`: a required target, permission, input, dataset, tool, or comparable
+  baseline is missing.
+- `NOT RUN`: the case was not selected or could not safely run after an earlier
+  restoration failure.
+- `RESTORATION FAILED`: the case changed the target and could not prove it was
+  restored. Stop before another mutation or load.
 
-Each stage inherits its owning Skill's artifact directory convention:
-
-| Owner | Default artifact root |
-|---|---|
-| `motor-scale` | `.motor-workspace-local/scale/...` |
-| `motor-reliability` | `.motor-workspace-local/reliability/...` |
-| `motor-accuracy` | `.motor-workspace-local/accuracy-runs/...` |
-| `motor-benchmark` | `.motor-workspace-local/benchmark-runs/...` |
-| failure routing | `.motor-workspace-local/diagnosis/...` |
-
-The suite itself does not introduce a separate workflow gate or run ID.
+Overall `PASS` requires every selected case and final cleanup to pass. After an
+ordinary isolated case failure, preserve evidence and continue only when the
+target is restored and the next case is independent.
