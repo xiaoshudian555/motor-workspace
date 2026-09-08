@@ -29,3 +29,29 @@ Save artifacts only to a user-approved path or untracked
 `.motor-workspace-local/`, with source command and timestamp. When logs match
 precision auto-recovery terminate markers, recommend the corresponding
 specialized diagnosis skill.
+
+## Result categories
+
+Pick one primary category and a confidence level:
+
+| Category | Meaning |
+|---|---|
+| environment | cluster API, scheduler, operator, node, NPU resource, image, or mount |
+| deployment-config | native Motor config or generated workload mismatch |
+| workload-startup | Pod scheduling, image pull, container startup, probe, or crash |
+| coordinator-control | Coordinator/Controller registration, topology, or convergence |
+| inference-path | Service/endpoint/protocol/request routing or engine request failure |
+| benchmark-client | load generator, dataset, config, rate/concurrency, or invalid result |
+| accuracy-client | evaluator, dataset, generation parameters, or invalid accuracy artifact |
+| scale-control | native `--update_instance_num`, topology convergence, or post-scale inference |
+| performance | valid workload misses baseline; requires performance attribution |
+| specialized-recovery | a supported recovery-specific diagnosis route matched |
+| unknown | evidence is insufficient or contradictory |
+
+The report must distinguish:
+
+- **symptom**: the failed assertion or user-visible break;
+- **proximate cause**: the closest evidenced failure;
+- **root cause**: only when the evidence chain proves it;
+- **repair**: never performed automatically by collection or by
+  `motor-smoke-suite` failure routing.
