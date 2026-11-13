@@ -1,7 +1,7 @@
 <!-- Generated Claude Code shim from .agents/skills/motor-deploy/SKILL.md. Do not edit. -->
 ---
 name: motor-deploy
-description: "Motor deployment dispatcher for 拉起一个服务, 启动/部署/重启/停止/查看 Motor, 部署前检查, 检查部署环境, wheel/whl 替换, 构造故障, 故障注入, or 验证故障恢复. Route to repo-local skills and Motor's native deployer."
+description: "Use only when the request explicitly invokes $motor-deploy, or explicitly asks to use Motor's native deployer for a named service/model in a concrete target environment and perform a live lifecycle action. Covers Motor preflight, deploy, status, restart, stop, scale, fault injection, and recovery validation. Do not trigger for generic start/deploy wording, Docker-only or RBG workflows, local scripts/guides/config examples, or code-only work."
 ---
 
 # Motor Deploy Dispatcher

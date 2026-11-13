@@ -25,6 +25,29 @@ For a deploy or startup failure, return the evidence to
 common collector and does not force an environment, deployer, config, or code
 category.
 Do not restart, delete, repair, or inject faults while collecting evidence.
+Before the first `kubectl` or remote collection command, query experience cards
+from this workspace:
+
+```bash
+python3 scaffold/tools/diagnosis_experience.py --symptom "<redacted symptom>"
+```
+
+The entry records `entry=motor-diagnosis`. Use at most two matched cards. A
+`HIT` is only a clue: perform the `use_check` printed with it. After that
+check, run the same query again with `--check <card id>=pass|fail` and
+`--observed "<card id>=<short fact from this run>"` for that card only. Do not
+submit `--check` without that observation. When the session id is already
+known, pass `--session <id>`. The script only reads `CURSOR_CONVERSATION_ID`
+when that variable is already set; do not guess another platform's variable
+name. The flag does not apply any other
+hit. `CHECK_FAILED` means do not use that card this time. Revise the card only
+when the observation overturns its conclusion, not merely because this scene
+does not match.
+A source file that still exists is not itself a passed check. For a Conductor
+KV miss, query this entry before treating a dropped `block_size=4096` event as
+the cause.
+`no_match` is a normal result; keep the `experience_query` line in the
+diagnosis note. Do not open `failure_corpus.tsv` for this lookup.
 Save artifacts only to a user-approved path or untracked
 `.motor-workspace-local/`, with source command and timestamp. When logs match
 precision auto-recovery terminate markers, recommend the corresponding

@@ -1,6 +1,6 @@
 interface:
   display_name: "Motor Workspace Deploy"
-  short_description: "Route Motor deploy, wheel, feasibility, and reliability work"
-  default_prompt: "Use $motor-deploy to route this Motor workspace deployment, wheel replacement, or feasibility request and enforce unsupported reliability boundaries."
+  short_description: "Route concrete Motor-native deployment lifecycle work"
+  default_prompt: "Use $motor-deploy only for a named service/model in a concrete target environment when the request is explicitly about Motor-native preflight, deployment, live status, restart, stop, scale, fault injection, or recovery validation. Exclude Docker-only, RBG, generic service-start wording, artifact authoring, and code-only work."
 policy:
   allow_implicit_invocation: true
